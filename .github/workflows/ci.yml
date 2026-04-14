@@ -1,0 +1,85 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    # Nightly soak at 03:17 UTC.
+    - cron: "17 3 * * *"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  precommit:
+    name: precommit (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # Emily is Apple-Silicon only. macos-14 is arm64 (M1).
+        os: [macos-14]
+    env:
+      MIX_ENV: test
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Beam
+        uses: erlef/setup-beam@v1
+        with:
+          version-file: .tool-versions
+          version-type: strict
+
+      - name: Cache MLX prebuilt
+        uses: actions/cache@v4
+        with:
+          path: ~/Library/Caches/emily
+          key: mlx-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('mix.exs') }}
+
+      - name: Cache deps
+        uses: actions/cache@v4
+        with:
+          path: deps
+          key: deps-${{ runner.os }}-${{ hashFiles('mix.lock') }}
+          restore-keys: deps-${{ runner.os }}-
+
+      - name: Cache build
+        uses: actions/cache@v4
+        with:
+          path: _build
+          key: build-${{ runner.os }}-${{ hashFiles('mix.lock', 'c_src/**', 'Makefile', '.tool-versions') }}
+          restore-keys: build-${{ runner.os }}-
+
+      - run: mix deps.get
+
+      - run: mix precommit
+
+  soak:
+    name: soak
+    # Soak is noisy (500 × 4 MB allocations); only run on the nightly
+    # schedule, not on every PR.
+    if: github.event_name == 'schedule'
+    runs-on: macos-14
+    env:
+      MIX_ENV: test
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Beam
+        uses: erlef/setup-beam@v1
+        with:
+          version-file: .tool-versions
+          version-type: strict
+
+      - name: Cache MLX prebuilt
+        uses: actions/cache@v4
+        with:
+          path: ~/Library/Caches/emily
+          key: mlx-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('mix.exs') }}
+
+      - run: mix deps.get
+      - run: mix compile
+      - run: mix test --only soak
