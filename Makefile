@@ -4,14 +4,14 @@ MLX_STAGE_DIR  := $(PRIV_DIR)/mlx/lib
 
 BUILD_DIR := $(EMILY_CACHE_DIR)/build-$(EMILY_VERSION)
 
-# Sources
-SOURCES := $(wildcard c_src/*.cpp)
-HEADERS := $(wildcard c_src/*.h) $(wildcard c_src/*.hpp)
+# Sources — include ops/* and any other subdirs under c_src.
+SOURCES := $(shell find c_src -name '*.cpp')
+HEADERS := $(shell find c_src \( -name '*.h' -o -name '*.hpp' \))
 OBJECTS := $(patsubst c_src/%.cpp,$(BUILD_DIR)/%.o,$(SOURCES))
 
 # Flags
 CXXFLAGS := -std=c++17 -O3 -fPIC -fvisibility=hidden -Wall -Wextra
-CXXFLAGS += -I$(ERTS_INCLUDE_DIR)
+CXXFLAGS += -I$(ERTS_INCLUDE_DIR) -Ic_src
 # Third-party headers: use -isystem so warnings inside them (e.g. MLX's
 # -Wdeprecated-copy on _MLX_BFloat16) don't clutter our builds or trip
 # -Werror.
@@ -41,6 +41,7 @@ $(PRIV_DIR):
 	@mkdir -p $(PRIV_DIR)
 
 $(BUILD_DIR)/%.o: c_src/%.cpp $(HEADERS) | $(BUILD_DIR)
+	@mkdir -p $(dir $@)
 	$(CXX) $(CXXFLAGS) -c $< -o $@
 
 $(MLX_STAGE_DIR): | $(PRIV_DIR)
