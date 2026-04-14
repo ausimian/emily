@@ -354,8 +354,9 @@ defmodule Emily.NativeTest do
     end
 
     test "logsumexp" do
-      x = f32([0.0, 0.0, 0.0], [3])
-      assert_close(to_f32_list(Native.logsumexp(x, [0], false)), [:math.log(3.0)])
+      x = f32([1.0, 2.0, 3.0], [3])
+      expected = :math.log(:math.exp(1.0) + :math.exp(2.0) + :math.exp(3.0))
+      assert_close(to_f32_list(Native.logsumexp(x, [0], false)), [expected])
     end
 
     test "argmax / argmin" do
