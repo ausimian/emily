@@ -23,4 +23,14 @@ fine::ResourcePtr<Tensor> astype(
 }
 FINE_NIF(astype, 0);
 
+// bitcast: reinterpret the bits as a different dtype of the same
+// element size. MLX exposes this as `mx::view`.
+fine::ResourcePtr<Tensor> bitcast(
+    ErlNifEnv *,
+    fine::ResourcePtr<Tensor> a,
+    std::tuple<fine::Atom, int64_t> dtype) {
+  return wrap(mx::view(a->array, to_mlx_dtype(dtype)));
+}
+FINE_NIF(bitcast, 0);
+
 } // namespace

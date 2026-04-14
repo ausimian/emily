@@ -147,12 +147,26 @@ defmodule Emily.Backend.LifecycleTest do
   end
 
   describe "bitcast" do
-    test "raises" do
-      t = Nx.tensor([1.0], backend: Emily.Backend)
+    # MLX exposes `mx::view(array, dtype)` — a zero-copy reinterpret
+    # cast between equal-width dtypes. Nx.Random uses this to move
+    # between float and uint of matching bit width (e.g. f32 ↔ u32).
+    test "reinterprets f32 bits as u32" do
+      t = Nx.tensor([1.0, 2.0, -1.0], type: {:f, 32}, backend: Emily.Backend)
 
-      assert_raise ArgumentError, ~r/bitcast/, fn ->
-        Nx.bitcast(t, {:s, 32})
-      end
+      emily = Nx.bitcast(t, {:u, 32})
+      ref = Nx.tensor([1.0, 2.0, -1.0], type: {:f, 32}) |> Nx.bitcast({:u, 32})
+
+      assert Nx.type(emily) == {:u, 32}
+      assert Nx.to_flat_list(emily) == Nx.to_flat_list(ref)
+    end
+
+    test "reinterprets u32 bits as f32" do
+      u = Nx.tensor([1_065_353_216, 1_073_741_824], type: {:u, 32}, backend: Emily.Backend)
+
+      emily = Nx.bitcast(u, {:f, 32})
+
+      assert Nx.type(emily) == {:f, 32}
+      assert Nx.to_flat_list(emily) == [1.0, 2.0]
     end
   end
 end
