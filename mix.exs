@@ -59,6 +59,11 @@ defmodule Emily.MixProject do
       {:bumblebee,
        github: "elixir-nx/bumblebee", ref: "273805e95507dc7866b958d90e0012a3abad1761", only: :test},
       {:tokenizers, "~> 0.5", only: :test},
+      # Axon is already pulled in transitively by Bumblebee, but the M5
+      # exit-criterion test (Axon MLP forward under `Emily.Compiler`)
+      # reaches for it directly — pin it explicitly so the test isn't
+      # hostage to a Bumblebee dep change.
+      {:axon, "~> 0.7", only: :test},
       {:stream_data, "~> 1.1", only: [:dev, :test]},
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
       {:ex_doc, "~> 0.34", only: :docs, runtime: false}

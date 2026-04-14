@@ -2,6 +2,49 @@
 
 ## Added
 
+- M5 — `Emily.Compiler`, an `Nx.Defn.Compiler` implementation that runs
+  `defn` computations on `Emily.Backend`. Wraps `Nx.Defn.Evaluator` after
+  validating options and pinning the result backend; the Evaluator
+  already walks `Nx.Defn.Expr` in Elixir and dispatches each op via
+  `Nx.Shared.list_impl!/1`, which finds `Emily.Backend` whenever the
+  operands carry it.
+  - **`__to_backend__/1`** returns `{Emily.Backend, [device: …]}` so
+    `Nx.Defn.to_backend/1` (consulted by `Nx.Serving` and friends)
+    allocates inputs and outputs on Emily rather than the process default
+    backend. Honours `:device` opt; defaults to `:gpu`.
+  - **`__partitions_options__/1`** pins to a single partition. MLX's
+    Metal runtime is not safe for concurrent kernel dispatch from
+    multiple OS threads (the same constraint that forces
+    `max_cases: 1` in `test_helper.exs`); a multi-partition serving
+    would race the driver. `:max_concurrency` is accepted for
+    `Nx.Serving` API compatibility but values >1 raise.
+  - **No external compile cache.** `__compile__/4` returns a closure
+    that captures the walked plan; the closure *is* the cache. Callers
+    that want reuse across invocations use `Nx.Defn.compile/3` and hold
+    the returned function — Bumblebee / `Nx.Serving` already do this on
+    warmup. PLAN.md originally specified an ETS cache keyed by
+    `{mfa, input_signature}`; deliberately deviated after accounting
+    for the per-call ETS deep-copy cost on a Qwen3-sized expression
+    tree. PLAN.md updated to record the rationale.
+  - **No `mlx::core::compile` wrapping.** That is M6; lazy evaluation
+    at the Backend layer suffices for correctness.
+  - **`test/emily/compiler_test.exs`** — callback-contract tests
+    (`__to_backend__` device routing, partition pinning, unknown-option
+    rejection, `:max_concurrency > 1` refusal); op-equivalence tests
+    across elementwise / reduction / shape / linalg / container-output
+    paths; control-flow equivalence under `defn` for `while` (the
+    construct Qwen3's KV-cache update relies on) and `cond`; a
+    `Nx.Defn.compile/3` reuse test confirming the closure executes
+    repeatedly without re-walking.
+  - **`test/emily/compiler_axon_test.exs`** — the M5 exit criterion. A
+    3-layer Axon MLP forward pass under `Emily.Compiler` matches
+    `Nx.Defn.Evaluator` on the same backend within float tolerance,
+    plus a `Nx.Defn.compile/3` reuse case driving multiple inputs
+    through one walk.
+  - **`:axon`** added as an explicit `only: :test` dep — already
+    transitively available via Bumblebee, but the Axon MLP test reaches
+    for it directly and shouldn't be hostage to a Bumblebee dep change.
+
 - M0 scaffold: mix project, MLX 0.25.1 prebuilt fetch pipeline,
   Makefile wiring `fine` + MLX, `Emily.Native` NIF surface for tensor
   round-trip, application supervisor skeleton, smoke test suite.
