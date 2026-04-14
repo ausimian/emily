@@ -930,20 +930,71 @@ defmodule Emily.Backend do
   end
 
   # =================================================================
-  # Conv (delegated to BinaryBackend for M2)
+  # Conv
   # =================================================================
   #
-  # Nx's conv signature is rich (batch groups, feature groups,
-  # permutations, dilations). MLX conv_general covers most of this but
-  # the translation is involved. For M2 we go through BinaryBackend;
-  # native conv lands in M3 alongside Bumblebee integration.
-
-  # Conv lands natively via Native.conv_general in M3 alongside
-  # Bumblebee integration. Nx.conv on BinaryBackend is correct but
-  # CPU-bound — fine for tests, unusable for real workloads.
+  # MLX `conv_general` expects NHWC input and OHWI weight; Nx's
+  # canonical layout is NCHW / OIHW. Nx does not pre-transpose tensors
+  # before dispatching — it delivers them in their original layout plus
+  # `input_permutation`, `kernel_permutation`, `output_permutation`
+  # such that `Nx.transpose(user_input, axes: input_permutation)` is
+  # the canonical form. We transpose into NHWC/OHWI on the way in, call
+  # the NIF, then reverse the layout on the way out.
+  #
+  # `batch_group_size > 1` and complex-typed conv have no MLX primitive
+  # and fall back to `via_binary`; they are rare enough not to warrant
+  # a handwritten MLX reshape trick.
   @impl true
-  def conv(out, input, kernel, opts),
-    do: via_binary(out, [input, kernel], &Nx.conv(&1, &2, opts))
+  def conv(out, input, kernel, opts) do
+    cond do
+      opts[:batch_group_size] > 1 ->
+        via_binary(out, [input, kernel], &Nx.conv(&1, &2, opts))
+
+      match?({:c, _}, out.type) ->
+        via_binary(out, [input, kernel], &Nx.conv(&1, &2, opts))
+
+      true ->
+        ip = opts[:input_permutation]
+        kp = opts[:kernel_permutation]
+        op = opts[:output_permutation]
+        {lows, highs} = opts[:padding] |> Enum.unzip()
+
+        input_to_nhwc = [hd(ip)] ++ Enum.drop(ip, 2) ++ [Enum.at(ip, 1)]
+        kernel_to_ohwi = [hd(kp)] ++ Enum.drop(kp, 2) ++ [Enum.at(kp, 1)]
+        rank = tuple_size(out.shape)
+        nhwc_to_nchw = [0, rank - 1] ++ Enum.to_list(1..(rank - 2)//1)
+        inv_op = invert_permutation(op)
+
+        ir = input |> ref() |> Native.astype(out.type) |> Native.transpose(input_to_nhwc)
+        kr = kernel |> ref() |> Native.astype(out.type) |> Native.transpose(kernel_to_ohwi)
+
+        ir
+        |> Native.conv_general(
+          kr,
+          opts[:strides],
+          {lows, highs},
+          opts[:kernel_dilation],
+          opts[:input_dilation],
+          opts[:feature_group_size],
+          false
+        )
+        |> Native.transpose(nhwc_to_nchw)
+        |> Native.transpose(inv_op)
+        |> wrap(out)
+    end
+  end
+
+  # Invert a 0-based permutation: given `perm` where position i holds
+  # j, produce `inv` where position j holds i. Used to reverse
+  # `output_permutation` — Nx delivers it in "user → canonical" form
+  # (see `deps/nx/lib/nx/shape.ex:729-735`), so we need the inverse to
+  # go "canonical → user".
+  defp invert_permutation(perm) do
+    perm
+    |> Enum.with_index()
+    |> Enum.sort()
+    |> Enum.map(&elem(&1, 1))
+  end
 
   # =================================================================
   # Unsupported / fallback callbacks

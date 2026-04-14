@@ -2,6 +2,42 @@
 
 ## Added
 
+- M8 — Native `conv`. `Emily.Backend.conv/4` now dispatches directly
+  to `Native.conv_general` (already bound to `mlx::core::conv_general`
+  since M1) instead of round-tripping through `Nx.BinaryBackend`.
+  The previous fallback was correct but CPU-bound — ≥90% of the ViT
+  and Whisper forward-pass cost. ViT/Whisper full-checkpoint
+  conformance tests drop from tens of seconds to under 2 s as a
+  side-effect.
+  - **Layout translation.** MLX `conv_general` expects NHWC input and
+    OHWI weight and returns NHWC; Nx's canonical layout is NCHW/OIHW.
+    The new callback composes the caller's `input_permutation`,
+    `kernel_permutation`, and `output_permutation` opts with the
+    NCHW↔NHWC and OIHW↔OHWI transposes, applying the inverse of
+    `output_permutation` on the way out (Nx delivers it in
+    user→canonical form; see
+    [`deps/nx/lib/nx/shape.ex:729-735`](https://hexdocs.pm/nx/Nx.Shape.html)).
+    Two ordered transposes per tensor rather than one composed
+    transpose — MLX's lazy graph fuses them and the step-wise form is
+    obviously correct across rank 3, 4, and 5.
+  - **Integer-operand coercion.** `Nx.conv` returns a float but does
+    not cast its operands; MLX conv is float-only. The backend now
+    runs `Native.astype(ref, out.type)` on input and kernel before
+    the transpose chain. Same-type astype is elided by MLX.
+  - **Remaining fallbacks.** `batch_group_size > 1` has no MLX
+    primitive and still routes through `via_binary`. Complex-typed
+    conv ditto. Neither appears in the pinned Bumblebee ref.
+  - **`test/emily/backend_conv_test.exs`** (new) — oracle suite vs
+    `Nx.BinaryBackend`. Covers 1-D / 2-D / 3-D; stride, `:same` /
+    `:valid` / explicit asymmetric padding; `kernel_dilation` and
+    `input_dilation > 1`; grouped and depthwise conv; all three
+    permutation options (independently and combined for an NHWC
+    end-to-end caller); and integer-input→float-output coercion.
+  - **`test/emily/backend_fallbacks_test.exs`** — removed the
+    now-obsolete "conv routes through BinaryBackend" test. Added a
+    `batch_group_size > 1` fallback case asserting the rare path
+    still matches BinaryBackend.
+
 - M7 — Bumblebee conformance breadth. Two new models across four
   new test suites extend M3 (DistilBERT) and M4 (Qwen3) beyond
   encoder-only/decoder-only text into vision and audio.
