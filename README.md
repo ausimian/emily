@@ -12,8 +12,7 @@ next. See [`PLAN.md`](PLAN.md) for the full roadmap and
 
 To run Bumblebee models (notably Qwen3) on Apple Silicon with Metal
 acceleration, via a layered architecture that keeps each layer
-independently testable and avoids the [nif_call-deadlock
-class](https://github.com/elixir-nx/emlx/issues/88) that grounded EMLX.
+independently testable.
 
 ## Architecture
 
@@ -24,8 +23,8 @@ Emily.Native      (thin NIF shim)    — one function per MLX op, no policy
 MLX C++           (vendored binary)  — cocoa-xu/mlx-build prebuilts, pinned
 ```
 
-One-directional dispatch: Elixir → C++ → MLX. C++ never calls back into
-BEAM, so the EMLX #88 deadlock class is structurally impossible.
+One-directional dispatch: Elixir → C++ → MLX. C++ never calls back
+into BEAM.
 
 ## Requirements
 
@@ -105,8 +104,8 @@ mix test --only soak               # memory + concurrency soak harnesses
 Each layer has its own oracle: hand-computed expected values at the
 Native layer, `Nx.BinaryBackend` on the same inputs at the Backend
 layer, `Emily.Backend` in non-defn mode at the Compiler layer, and
-HuggingFace Transformers (or EXLA) reference slices end-to-end. A bug
-can only be introduced in the layer where its test fails.
+HuggingFace Transformers reference slices end-to-end. A bug can only
+be introduced in the layer where its test fails.
 
 ## License
 
