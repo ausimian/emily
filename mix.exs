@@ -21,6 +21,7 @@ defmodule Emily.MixProject do
       aliases: aliases(),
       compilers: [:emily_mlx, :elixir_make] ++ Mix.compilers(),
       make_env: &make_env/0,
+      test_coverage: test_coverage(),
       docs: docs(),
       package: package()
     ]
@@ -39,6 +40,12 @@ defmodule Emily.MixProject do
 
   defp elixirc_paths(:test), do: ["lib", "test/support"]
   defp elixirc_paths(_), do: ["lib"]
+
+  # Emily.Native is pure NIF stubs — :erlang.load_nif/2 patches the bytecode
+  # at load time, so the stub bodies never run and cover reports 0% on them.
+  # Excluding the module drops that artefact and lets the remaining Elixir
+  # coverage number mean something.
+  defp test_coverage, do: [ignore_modules: [Emily.Native]]
 
   defp deps do
     [
