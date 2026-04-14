@@ -11,7 +11,11 @@ OBJECTS := $(patsubst c_src/%.cpp,$(BUILD_DIR)/%.o,$(SOURCES))
 
 # Flags
 CXXFLAGS := -std=c++17 -O3 -fPIC -fvisibility=hidden -Wall -Wextra
-CXXFLAGS += -I$(ERTS_INCLUDE_DIR) -I$(FINE_INCLUDE_DIR) -I$(MLX_INCLUDE_DIR)
+CXXFLAGS += -I$(ERTS_INCLUDE_DIR)
+# Third-party headers: use -isystem so warnings inside them (e.g. MLX's
+# -Wdeprecated-copy on _MLX_BFloat16) don't clutter our builds or trip
+# -Werror.
+CXXFLAGS += -isystem $(FINE_INCLUDE_DIR) -isystem $(MLX_INCLUDE_DIR)
 
 LDFLAGS  := -L$(MLX_LIB_DIR) -lmlx -shared
 
