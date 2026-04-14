@@ -31,8 +31,13 @@ defmodule Emily.Compiler do
        per-call ETS deep-copy cost on a Qwen3-sized expression tree.
 
     2. **No `mlx::core::compile` wrapping.** Lazy evaluation at the
-       Backend layer suffices for correctness; kernel-fusion via
-       `mlx::core::compile` is M6.
+       Backend layer is the shipping story. Wrapping
+       `mlx::core::compile` was scoped as M6 and then dropped after a
+       pure-C++ microbenchmark showed the fusion win on transformer
+       workloads is below the PLAN's 1.20× gate (GPU ~1.04–1.07×; CPU
+       regresses). The bench harness remains in `bench/native/` for
+       re-measurement against future MLX releases; see
+       `bench/compile_microbench.md` for the numbers and reasoning.
 
   Concretely, `__jit__/5` and `__compile__/4` delegate to
   `Nx.Defn.Evaluator` after option validation. The Evaluator dispatches

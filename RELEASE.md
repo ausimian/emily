@@ -1,5 +1,37 @@
 # Release notes for next release
 
+## Changed
+
+- M6 — `mlx::core::compile` wrapping: **dropped** after Phase-1
+  de-risk. A pure-C++ microbenchmark on MLX 0.25.1 against an Apple
+  Silicon GPU showed the fusion win on a Qwen3-0.6B-shaped transformer
+  block is 1.04–1.07× on GPU (below the PLAN's 1.20× gate) and a
+  regression on CPU (0.82–0.88×). A sanity workload (pure elementwise
+  chain) in the same harness shows the expected 2.78× GPU / 1.47× CPU
+  wins, confirming the measurement is trustworthy — the limiting factor
+  is that MLX compile doesn't fuse matmul with surrounding elementwise
+  ops, and transformer inference is matmul-dominated. The BEAM-
+  integrated compile path could not exceed this C++ ceiling, so Phase 2
+  and 3 were not built.
+  - **`bench/native/compile_microbench.cpp`** — standalone C++
+    microbench (hand-written RMSNorm + GQA-lite attention + SwiGLU
+    block, plus an 8-op elementwise sanity test). Links against the
+    vendored libmlx via the same rpath the NIF uses.
+  - **`mix bench.native`** (`lib/mix/tasks/bench.native.ex`) — Mix task
+    that invokes the new `bench-native` Makefile target with the same
+    env `elixir_make` sets, ensuring the bench uses the project's
+    pinned MLX without a second fetch. Supports `--seq`, `--warmup`,
+    `--iters` args via `mix bench.native -- <args>`.
+  - **`bench-native`** target added to the root `Makefile`, producing
+    `$(BUILD_DIR)/compile_microbench`.
+  - **`bench/compile_microbench.md`** — full results table +
+    reproduction instructions. Retained so the decision can be
+    re-measured against future MLX releases without rebuilding the
+    harness.
+  - **`PLAN.md`** updated: M6 section rewritten to record the drop,
+    core design decision #1 and the M5 section footnote updated to
+    match.
+
 ## Added
 
 - M5 — `Emily.Compiler`, an `Nx.Defn.Compiler` implementation that runs

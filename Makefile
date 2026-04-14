@@ -30,9 +30,33 @@ endif
 
 MAKE_JOBS ?= $(JOBS)
 
-.PHONY: all clean
+.PHONY: all clean bench-native
 
 all: $(NIF_SO)
+
+# ------------------------------------------------------------------
+# bench-native: standalone C++ microbenchmarks under bench/native/.
+#
+# Invoked by `mix bench.native` (which sets the same env elixir_make
+# uses for the NIF build). Links against the vendored libmlx via the
+# same rpath the NIF does, so the binary finds its own shared library
+# without relying on global DYLD/LD paths.
+# ------------------------------------------------------------------
+
+BENCH_NATIVE_SRC := bench/native/compile_microbench.cpp
+BENCH_NATIVE_BIN := $(BUILD_DIR)/compile_microbench
+
+$(BENCH_NATIVE_BIN): $(BENCH_NATIVE_SRC) | $(BUILD_DIR)
+	$(CXX) -std=c++17 -O3 -Wall -Wextra \
+	    -isystem $(MLX_INCLUDE_DIR) \
+	    $(BENCH_NATIVE_SRC) \
+	    -L$(MLX_LIB_DIR) -lmlx \
+	    -Wl,-rpath,$(MLX_LIB_DIR) \
+	    -o $(BENCH_NATIVE_BIN)
+
+bench-native: $(BENCH_NATIVE_BIN)
+	@echo "Running $(BENCH_NATIVE_BIN)"
+	@$(BENCH_NATIVE_BIN) $(BENCH_NATIVE_ARGS)
 
 $(BUILD_DIR):
 	@mkdir -p $(BUILD_DIR)
