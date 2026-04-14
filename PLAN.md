@@ -41,8 +41,9 @@ into BEAM.
 ## Core design decisions
 
 1. **Backend-first; compiler layered on top.** The Backend is enough to
-   run Bumblebee. `mlx::core::compile` is an opt-in optimisation added
-   last.
+   run Bumblebee. Wrapping `mlx::core::compile` was planned as an
+   opt-in optimisation on top, but was dropped after de-risking — see
+   M6 for the measurement and reasoning.
 2. **Trace in Elixir, not in C++.** `Nx.Defn.Expr` is already a fully
    traced tree; we walk it from Elixir and emit one `Emily.Native` call
    per node. No C++→BEAM callbacks.
@@ -152,7 +153,9 @@ throughput number.
     rejected once we accounted for the per-call ETS deep-copy cost on a
     Qwen3-sized expression tree. The closure-capture path avoids the copy
     and matches the upstream Evaluator pattern.*
-- **Do not use `mlx::core::compile` yet.** Lazy eval at the Backend layer suffices.
+- **Do not use `mlx::core::compile`.** M6 de-risked this and dropped
+  it — the fusion win on transformer-shaped workloads is below the
+  1.20× gate. Lazy eval at the Backend layer is the shipping story.
 
 **Testing — Layer 3 (Compiler):**
 
@@ -173,20 +176,43 @@ throughput number.
 match `Nx.Defn.Evaluator` running on the same backend within float
 tolerance. (Training is out of scope for v1.)
 
-### M6 — `mlx::core::compile` wrapping
+### M6 — `mlx::core::compile` wrapping — **dropped**
 
-- After Compiler has built the lazy op sequence, optionally wrap it in
-  `mlx::core::compile` for shape-pinned specialisation
-- Purely an optimisation; Backend-only path remains the default
-- Thunk constructed in a single NIF call from a recorded op list; MLX
-  traces a closure that replays ops against placeholders — no BEAM
-  callbacks
+De-risked in pure C++ before paying the Backend/Compiler integration
+cost, per the PLAN gate ("If <20% win, drop"). Full results:
+[`bench/compile_microbench.md`](bench/compile_microbench.md).
 
-**Testing:** equivalence tests rerun with `mlx_compile: true`; benchmark
-speedup on a Qwen3 forward pass. If <20% win, drop.
+Summary of findings on MLX 0.25.1, Apple Silicon:
 
-**Exit:** compile mode is off by default, opt-in, demonstrably faster,
-zero regressions.
+- **Pure elementwise workload (harness validation):** 2.78× on GPU,
+  1.47× on CPU — confirms `mx::compile` does what it advertises when
+  fusion is available.
+- **Transformer block (Qwen3-0.6B-shaped, seq ∈ {128, 512}):**
+  1.04–1.07× on GPU, **regression** (0.82–0.88×) on CPU. Fails the
+  1.20× gate across every workload shape tested.
+
+Why: transformer inference is matmul-dominated, and MLX's compile does
+not fuse matmul kernels with adjacent elementwise ops. The fusion
+surface (RMSNorm chains, softmax neighbourhood, SwiGLU's silu×up) is a
+small fraction of block runtime, bounding whole-block speedup to
+single-digit percent. On CPU the tape-replay overhead exceeds the
+fusion gain.
+
+The BEAM-integrated compile path could not outperform this C++ ceiling,
+so shipping M6 would deliver a <20% speedup at best — and a regression
+at worst if a user selects the CPU device.
+
+**Artefacts retained** so the decision can be re-measured against
+future MLX releases without rebuilding the harness:
+
+- `bench/native/compile_microbench.cpp` — the microbench source
+- `lib/mix/tasks/bench.native.ex` — `mix bench.native` task
+- `bench-native` target in the root `Makefile`
+- `bench/compile_microbench.md` — results + reproduction instructions
+
+If MLX gains matmul-adjacent fusion (bias-fused matmul, attention
+fusion outside `fast::scaled_dot_product_attention`), re-run the bench
+and revisit.
 
 ### M7 — 1.0 release
 
