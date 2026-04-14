@@ -110,6 +110,69 @@
   last-axis fast path stays on MLX; interior-axis usage is rare on
   our M3/M4 critical path (transformer inference doesn't need it).
 
+- M4 — Qwen3 inference. `Qwen/Qwen3-0.6B` greedy-decodes end-to-end on
+  `Emily.Backend` through Bumblebee's causal-LM serving. Everything on
+  Qwen3's critical path (QK-norm, rotary embeddings, GQA, SwiGLU FFN,
+  RMSNorm, tied embeddings, KV-cache `put_slice` in a `defn` while
+  loop) runs correctly.
+  - **Native `put_slice/4`** in `Emily.Backend`, backed by a new
+    `Native.slice_update/3` NIF over `mx::slice_update`. Replaces the
+    BinaryBackend round-trip — autoregressive decoding calls
+    `put_slice` per layer per token to append into the KV cache, and
+    the old fallback transferred ~1 MB of cache state through the
+    allocator on every call. Also fixes a latent bug in the old
+    implementation: dynamic scalar-tensor `start_indices` on
+    `Emily.Backend` used to slip through unconverted and crash inside
+    BinaryBackend. `slice_start` is now applied to every start
+    index, matching the `slice/5` callback.
+  - **Operand-type promotion in `put_slice`.** `Nx.put_slice`
+    promotes the output type across tensor/update (an s32 pad buffer
+    clashing with an s64 decoder input becomes s64), but the backend
+    callback still receives the original-type operands. We cast both
+    `t` and `slice` to `out.type` via `Native.astype` before
+    dispatching to `slice_update`. Without this the MLX buffer
+    silently disagrees with the Nx shape metadata — the first symptom
+    is `Nx.to_binary` returning a half-sized binary and
+    `BinaryBackend.bitstring_part` raising a match error deep inside
+    the tokenizer decode. Mirrors the arithmetic-op promotion fix
+    landed in M3.
+  - **`test/emily/conformance/qwen3_test.exs`**
+    (`@moduletag :conformance`) — ports `Bumblebee.Text.Qwen3Test`
+    verbatim (three architectures: `:base`,
+    `:for_causal_language_modeling`, `:for_sequence_classification`),
+    with HF reference slices checked in, plus a `greedy generation`
+    describe block that drives
+    `Bumblebee.Text.Generation.build_generate` on the tiny-random
+    causal LM. That smoke test feeds synthetic `input_ids` in
+    `[0, 1024)` (tokenizer vocab is 151 k but the tiny checkpoint's
+    embedding is 1024 rows), greedy-decodes 16 tokens through the
+    full generation pipeline (`Axon.predict` + logit processing +
+    `Nx.argmax` + `put_slice` KV-cache update + `defn while`), and
+    asserts bit-exact equality against both `Nx.BinaryBackend` run
+    on the same inputs *and* a checked-in 16-token reference.
+  - **`test/emily/conformance/qwen3_full_test.exs`**
+    (`@moduletag :qwen3_full`, excluded from `--only conformance`
+    because the checkpoint is ~1.5 GB) — loads `Qwen/Qwen3-0.6B`
+    proper, greedy-decodes 32 tokens from a fixed prompt through
+    `Nx.Serving`, and asserts the completion string matches a
+    checked-in reference. Run with `mix test --only qwen3_full`.
+  - **`bench/qwen3_tokens_per_sec.exs`** — standalone wall-clock
+    throughput harness. Loads `Qwen/Qwen3-0.6B`, runs N warmup
+    iterations + M measured iterations of greedy decode, reports
+    tokens/sec. Prompt, token count, and iteration counts are
+    overridable via `EMILY_BENCH_*` env vars. Baseline observed on a
+    dev M3 host: ~13.8 tok/s at 16 new tokens under the
+    `Nx.Defn.Evaluator` compiler (no `mlx::core::compile` wrap yet —
+    that lands in M6). Intended as a regression gate, not a headline
+    number.
+  - **Bumblebee dependency** bumped from Hex 0.6.3 to a pinned `main`
+    commit (`273805e9…`) so `Bumblebee.Text.Qwen3` is available — the
+    text port is on main but not yet in a Hex release. Revert to a
+    Hex version as soon as one ships Qwen3 support.
+  - **`test_helper.exs`** extended the exclude list with
+    `:qwen3_full` so the weights-heavy test stays out of
+    `mix test --only conformance`.
+
 - M3 — DistilBERT end-to-end on Bumblebee. Every Nx op on the
   transformer critical path now runs natively on MLX; the full
   forward pass matches HuggingFace Transformers (PyTorch) reference

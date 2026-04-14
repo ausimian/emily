@@ -592,13 +592,21 @@ defmodule Emily.Backend do
   defp slice_start(i) when is_integer(i), do: i
   defp slice_start(%T{} = t), do: t |> Nx.backend_copy(Nx.BinaryBackend) |> Nx.to_number()
 
-  # put_slice: MLX has no direct primitive; route via BinaryBackend.
-  # Nx's Backend contract order is (out, tensor, start_indices, slice).
-  # start_indices arrive as scalar tensors on Emily.Backend; Nx auto-
-  # transfers them when the BinaryBackend call goes through `to_indices`.
+  # put_slice: implemented natively via MLX `slice_update`. Nx promotes
+  # operand types at the API layer — `Nx.put_slice(s32_buf, _, s64_upd)`
+  # declares an s64 output — but our callback arguments still carry the
+  # original backend types. We cast both `t` and `slice` to `out.type`
+  # before dispatching so the MLX buffer matches Nx's shape/type view.
+  # Scalar-tensor starts are materialised to integers here (dynamic
+  # indices show up when autoregressive loops dispatch put_slice from
+  # within `defn`).
   @impl true
-  def put_slice(out, t, start_indices, slice),
-    do: via_binary(out, [t, slice], &Nx.put_slice(&1, start_indices, &2))
+  def put_slice(%T{type: type} = out, %T{} = t, start_indices, %T{} = slice) do
+    starts = Enum.map(start_indices, &slice_start/1)
+    src_ref = Native.astype(ref(t), type)
+    update_ref = Native.astype(ref(slice), type)
+    Native.slice_update(src_ref, update_ref, starts) |> wrap(out)
+  end
 
   @impl true
   def select(%T{} = out, pred, on_true, on_false) do
