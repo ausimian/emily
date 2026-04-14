@@ -7,59 +7,9 @@ defmodule Emily.NativeTest do
 
   use ExUnit.Case, async: true
 
+  import Emily.TensorHelpers
+
   alias Emily.Native
-
-  # ---------- Helpers ----------
-
-  defp f32(list, shape) when is_list(list) do
-    bin = for x <- list, into: <<>>, do: <<x * 1.0::float-32-native>>
-    Native.from_binary(bin, shape, {:f, 32})
-  end
-
-  defp f32_scalar(x), do: f32([x], [])
-
-  defp to_f32_list(tensor) do
-    bin = Native.to_binary(tensor)
-    for <<f::float-32-native <- bin>>, do: f
-  end
-
-  defp s32(list, shape) when is_list(list) do
-    bin = for x <- list, into: <<>>, do: <<x::signed-integer-32-native>>
-    Native.from_binary(bin, shape, {:s, 32})
-  end
-
-  defp to_s32_list(tensor) do
-    bin = Native.to_binary(tensor)
-    for <<i::signed-integer-32-native <- bin>>, do: i
-  end
-
-  defp pred(list, shape) when is_list(list) do
-    bin = for b <- list, into: <<>>, do: <<if(b, do: 1, else: 0)>>
-    Native.from_binary(bin, shape, {:pred, 1})
-  end
-
-  defp to_pred_list(tensor) do
-    bin = Native.to_binary(tensor)
-    for <<b::unsigned-integer-8 <- bin>>, do: b == 1
-  end
-
-  defp assert_close(actual, expected, tol \\ 1.0e-5)
-
-  defp assert_close(actual, expected, tol) when is_list(actual) and is_list(expected) do
-    assert length(actual) == length(expected),
-           "length mismatch: #{inspect(actual)} vs #{inspect(expected)}"
-
-    Enum.zip(actual, expected)
-    |> Enum.each(fn {a, e} -> assert_close(a, e, tol) end)
-  end
-
-  defp assert_close(actual, expected, tol) when is_number(actual) and is_number(expected) do
-    if abs(actual - expected) <= tol + tol * abs(expected) do
-      :ok
-    else
-      flunk("expected #{expected}, got #{actual} (tol=#{tol})")
-    end
-  end
 
   # ---------- Creation ----------
 
@@ -536,6 +486,231 @@ defmodule Emily.NativeTest do
 
       :erlang.garbage_collect()
       assert to_f32_list(d) == [121.0, 484.0, 1089.0, 1936.0]
+    end
+  end
+
+  # ---------- Sort ----------
+
+  describe "sort / topk" do
+    test "sort/2 and argsort/2 along last axis" do
+      x = f32([3.0, 1.0, 2.0], [3])
+      assert to_f32_list(Native.sort(x, -1)) == [1.0, 2.0, 3.0]
+      assert to_s32_list(Native.argsort(x, -1)) == [1, 2, 0]
+    end
+
+    test "partition/3 places kth smallest first" do
+      x = f32([5.0, 2.0, 4.0, 1.0, 3.0], [5])
+      # Partitioning around kth=2 guarantees first 2 entries are the two
+      # smallest in some order, and later entries are >= those.
+      result = to_f32_list(Native.partition(x, 2, -1))
+      assert Enum.sort(Enum.take(result, 2)) == [1.0, 2.0]
+    end
+
+    test "topk/3 returns the k largest (unordered)" do
+      x = f32([3.0, 1.0, 4.0, 1.0, 5.0, 9.0, 2.0, 6.0], [8])
+      result = to_f32_list(Native.topk(x, 3, -1)) |> Enum.sort()
+      assert result == [5.0, 6.0, 9.0]
+    end
+  end
+
+  # ---------- Misc ----------
+
+  describe "clip / roll / softmax" do
+    test "clip/3" do
+      x = f32([-1.0, 0.5, 2.0, 3.5], [4])
+      lo = f32_scalar(0.0)
+      hi = f32_scalar(2.0)
+      assert to_f32_list(Native.clip(x, lo, hi)) == [0.0, 0.5, 2.0, 2.0]
+    end
+
+    test "roll/3" do
+      x = f32([1.0, 2.0, 3.0, 4.0], [4])
+      assert to_f32_list(Native.roll(x, 1, 0)) == [4.0, 1.0, 2.0, 3.0]
+      assert to_f32_list(Native.roll(x, -1, 0)) == [2.0, 3.0, 4.0, 1.0]
+    end
+
+    test "softmax/3 along last axis sums to 1" do
+      x = f32([1.0, 2.0, 3.0], [3])
+      result = to_f32_list(Native.softmax(x, [0], false))
+      assert_close(Enum.sum(result), 1.0)
+      # Monotonically increasing input → monotonically increasing output.
+      assert Enum.sort(result) == result
+    end
+
+    test "logcumsumexp/4 matches log(cumsum(exp(x)))" do
+      x = f32([1.0, 2.0, 3.0, 4.0], [4])
+      result = to_f32_list(Native.logcumsumexp(x, 0, false, true))
+
+      # Reference: [log(e^1), log(e^1+e^2), log(e^1+e^2+e^3),
+      #             log(e^1+e^2+e^3+e^4)].
+      expected =
+        [:math.exp(1.0), :math.exp(2.0), :math.exp(3.0), :math.exp(4.0)]
+        |> Enum.scan(&+/2)
+        |> Enum.map(&:math.log/1)
+
+      assert_close(result, expected, 1.0e-4)
+    end
+
+    test "array_equal/3" do
+      a = f32([1.0, 2.0, 3.0], [3])
+      b = f32([1.0, 2.0, 3.0], [3])
+      c = f32([1.0, 2.0, 4.0], [3])
+      assert to_pred_list(Native.array_equal(a, b, false)) == [true]
+      assert to_pred_list(Native.array_equal(a, c, false)) == [false]
+    end
+  end
+
+  # ---------- Axis-aligned gather/scatter ----------
+
+  describe "axis-aligned gather/scatter" do
+    test "take_along_axis/3" do
+      x = f32([10.0, 20.0, 30.0, 40.0, 50.0, 60.0], [2, 3])
+      idx = s32([2, 0, 1, 1, 2, 0], [2, 3])
+      r = Native.take_along_axis(x, idx, 1)
+      # Row 0: [30, 10, 20]; Row 1: [50, 60, 40]
+      assert to_f32_list(r) == [30.0, 10.0, 20.0, 50.0, 60.0, 40.0]
+    end
+
+    test "put_along_axis/4 writes values back into the source" do
+      x = f32([0.0, 0.0, 0.0, 0.0], [4])
+      idx = s32([0, 2], [2])
+      vals = f32([1.0, 2.0], [2])
+      r = Native.put_along_axis(x, idx, vals, 0)
+      assert to_f32_list(r) == [1.0, 0.0, 2.0, 0.0]
+    end
+
+    test "scatter_add_axis/4 accumulates at the indices" do
+      x = f32([10.0, 20.0, 30.0], [3])
+      idx = s32([0, 0, 2], [3])
+      vals = f32([1.0, 1.0, 5.0], [3])
+      r = Native.scatter_add_axis(x, idx, vals, 0)
+      # idx 0 gets +1+1; idx 2 gets +5.
+      assert to_f32_list(r) == [12.0, 20.0, 35.0]
+    end
+  end
+
+  # ---------- Convolution ----------
+
+  describe "conv_general" do
+    test "1-D convolution with stride=1, no padding, identity kernel" do
+      # Input shape NLC: [1, 4, 1]
+      input = f32([1.0, 2.0, 3.0, 4.0], [1, 4, 1])
+      # Kernel shape O_i x K x C: [1, 2, 1]
+      weight = f32([1.0, 1.0], [1, 2, 1])
+
+      r =
+        Native.conv_general(
+          input,
+          weight,
+          [1],
+          {[0], [0]},
+          [1],
+          [1],
+          1,
+          false
+        )
+
+      assert Native.shape(r) == [1, 3, 1]
+      assert to_f32_list(r) == [3.0, 5.0, 7.0]
+    end
+  end
+
+  # ---------- Random ----------
+
+  describe "random" do
+    test "random_key/1 is deterministic for the same seed" do
+      k1 = Native.random_key(42)
+      k2 = Native.random_key(42)
+
+      assert to_s32_list(Native.astype(k1, {:s, 32})) ==
+               to_s32_list(Native.astype(k2, {:s, 32}))
+    end
+
+    test "random_uniform/5 produces values in [low, high)" do
+      key = Native.random_key(7)
+      low = f32_scalar(0.0)
+      high = f32_scalar(1.0)
+      t = Native.random_uniform(low, high, [1000], {:f, 32}, key)
+      vals = to_f32_list(t)
+
+      assert Enum.all?(vals, &(&1 >= 0.0))
+      assert Enum.all?(vals, &(&1 < 1.0))
+
+      mean = Enum.sum(vals) / length(vals)
+      assert_close(mean, 0.5, 5.0e-2)
+    end
+
+    test "random_normal/5 has roughly the right mean and stdev" do
+      key = Native.random_key(99)
+      t = Native.random_normal([2048], {:f, 32}, 0.0, 1.0, key)
+      vals = to_f32_list(t)
+
+      mean = Enum.sum(vals) / length(vals)
+      var = Enum.sum(Enum.map(vals, &((&1 - mean) * (&1 - mean)))) / length(vals)
+
+      assert_close(mean, 0.0, 5.0e-2)
+      assert_close(:math.sqrt(var), 1.0, 5.0e-2)
+    end
+
+    test "random_bernoulli/3 yields 0/1 pred values" do
+      key = Native.random_key(1)
+      p = f32_scalar(0.3)
+      t = Native.random_bernoulli(p, [256], key)
+      assert Native.dtype(t) == {:pred, 1}
+      assert Enum.all?(to_pred_list(t), &is_boolean/1)
+    end
+
+    test "random with nil key still produces the right shape/dtype" do
+      # Uses the default key sequence — value is non-deterministic, so
+      # only assert shape/dtype.
+      t = Native.random_normal([4], {:f, 32}, 0.0, 1.0, nil)
+      assert Native.shape(t) == [4]
+      assert Native.dtype(t) == {:f, 32}
+    end
+
+    test "random_split/2 yields distinct keys" do
+      k = Native.random_key(5)
+      split = Native.random_split(k, 2)
+      assert Native.shape(split) == [2, 2]
+    end
+  end
+
+  # ---------- FFT ----------
+
+  describe "fft" do
+    test "fftn ∘ ifftn round-trips within tolerance" do
+      x = f32([1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0], [8])
+      # Cast to complex64 for FFT.
+      xc = Native.astype(x, {:c, 64})
+      fwd = Native.fftn(xc, [8], [0])
+      inv = Native.ifftn(fwd, [8], [0])
+      back = Native.astype(Native.real(inv), {:f, 32})
+      assert_close(to_f32_list(back), [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0], 1.0e-4)
+    end
+
+    test "rfftn produces (n/2 + 1) frequency bins" do
+      x = f32([1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0], [8])
+      r = Native.rfftn(x, [8], [0])
+      assert Native.shape(r) == [5]
+      assert Native.dtype(r) == {:c, 64}
+    end
+  end
+
+  # ---------- Memory ----------
+
+  describe "memory" do
+    test "memory NIFs return non-negative ints" do
+      assert is_integer(Native.get_active_memory())
+      assert Native.get_active_memory() >= 0
+      assert is_integer(Native.get_peak_memory())
+      assert Native.get_peak_memory() >= 0
+      assert is_integer(Native.get_cache_memory())
+      assert Native.get_cache_memory() >= 0
+    end
+
+    test "reset_peak_memory / clear_cache return :ok" do
+      assert :ok = Native.reset_peak_memory()
+      assert :ok = Native.clear_cache()
     end
   end
 end
