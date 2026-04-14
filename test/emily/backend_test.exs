@@ -455,6 +455,62 @@ defmodule Emily.BackendTest do
       ref = Nx.dot(a, b)
       assert_close(emily, ref)
     end
+
+    # Batched dot is the transformer-attention hot path. We test the
+    # permute + reshape + matmul translation directly here rather than
+    # relying on the DistilBERT conformance run to catch misbehaviour.
+    property "1 batch axis: (B, M, K) x (B, K, N)" do
+      check all(
+              b <- StreamData.integer(1..4),
+              m <- StreamData.integer(1..4),
+              k <- StreamData.integer(1..4),
+              n <- StreamData.integer(1..4),
+              a <- tensor({b, m, k}, {:f, 32}),
+              c <- tensor({b, k, n}, {:f, 32}),
+              max_runs: @max_runs
+            ) do
+        emily = Nx.dot(to_emily(a), [2], [0], to_emily(c), [1], [0])
+        ref = Nx.dot(a, [2], [0], c, [1], [0])
+        assert_close(emily, ref, tol: 1.0e-3)
+      end
+    end
+
+    # Models the DistilBERT attention shape post-head-split:
+    # query/key {batch, heads, seq, head_dim} with batch=[0,1],
+    # contract=[3], free=[2] → weights {batch, heads, seq_q, seq_k}.
+    property "2 batch axes: attention weights" do
+      check all(
+              bs <- StreamData.integer(1..2),
+              heads <- StreamData.integer(1..3),
+              seq <- StreamData.integer(2..4),
+              head_dim <- StreamData.integer(2..4),
+              q <- tensor({bs, heads, seq, head_dim}, {:f, 32}),
+              k <- tensor({bs, heads, seq, head_dim}, {:f, 32}),
+              max_runs: @max_runs
+            ) do
+        emily = Nx.dot(to_emily(q), [3], [0, 1], to_emily(k), [3], [0, 1])
+        ref = Nx.dot(q, [3], [0, 1], k, [3], [0, 1])
+        assert_close(emily, ref, tol: 1.0e-3)
+      end
+    end
+
+    # Scalar-free output (contract all non-batch dims on both sides).
+    test "batched vector-vector" do
+      a = Nx.iota({3, 5}, type: {:f, 32})
+      b = Nx.iota({3, 5}, type: {:f, 32})
+      emily = Nx.dot(to_emily(a), [1], [0], to_emily(b), [1], [0])
+      ref = Nx.dot(a, [1], [0], b, [1], [0])
+      assert_close(emily, ref, tol: 1.0e-3)
+    end
+
+    test "batched matmul with multiple free axes on each side" do
+      # a: {B, M1, M2, K}, b: {B, K, N1, N2} → {B, M1, M2, N1, N2}
+      a = Nx.iota({2, 2, 3, 4}, type: {:f, 32}) |> Nx.divide(100.0)
+      b = Nx.iota({2, 4, 2, 3}, type: {:f, 32}) |> Nx.divide(100.0)
+      emily = Nx.dot(to_emily(a), [3], [0], to_emily(b), [1], [0])
+      ref = Nx.dot(a, [3], [0], b, [1], [0])
+      assert_close(emily, ref, tol: 1.0e-3)
+    end
   end
 
   # ---------------- Sort ----------------

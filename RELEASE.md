@@ -110,6 +110,58 @@
   last-axis fast path stays on MLX; interior-axis usage is rare on
   our M3/M4 critical path (transformer inference doesn't need it).
 
+- M3 — DistilBERT end-to-end on Bumblebee. Every Nx op on the
+  transformer critical path now runs natively on MLX; the full
+  forward pass matches HuggingFace Transformers (PyTorch) reference
+  values within f32 tolerance.
+  - **Native batched `dot/7`** in `Emily.Backend`, replacing the
+    BinaryBackend bounce. Permutes operands to
+    `[batch… , free… , contract…]`/`[batch…, contract…, free…]`,
+    collapses to 3-D, dispatches to `Native.matmul` (which treats
+    leading dims as batch), reshapes to Nx's canonical
+    `batch ++ free_a ++ free_b` layout. Hits 12× per DistilBERT
+    forward pass (2× per attention layer × 6 layers). Falls back to
+    BinaryBackend for non-float dtypes — MLX matmul is float-only.
+  - **Binary op type promotion** fixed at the Backend boundary.
+    MLX's cross-type promotion for mixed integer widths (e.g.
+    `right_shift(u64, s32)`) falls to float32 and then rejects the
+    op. `Emily.Backend` now casts both operands to the Nx-computed
+    output type (for arithmetic/bitwise) or merged input type (for
+    compare/logical) before dispatching to MLX. Unblocks
+    `Nx.Random.key`, which is pulled in transitively even in
+    inference-only models via Axon's dropout defn.
+  - **Dynamic `slice` starts.** Nx passes scalar-tensor starts under
+    `defn` evaluation; `Emily.Backend.slice` now materialises them
+    to their concrete values on the fly.
+  - **`bitcast`** implemented via `mx::view` (zero-copy reinterpret
+    cast between equal-width dtypes). Required by `Nx.Random` to
+    move between f32 and u32 bit patterns.
+  - **`argmax`/`argmin` keep-axis robustness.** Derive the keep-axis
+    flag from `out.shape` vs input rank instead of trusting the raw
+    opts key (Nx's user-facing API uses `:keep_axis`, singular, while
+    some callers pass `:keep_axes`).
+  - **`test/emily/conformance/distilbert_test.exs`**
+    (`@moduletag :conformance`, excluded by default; run with
+    `mix test --only conformance`) — ports Bumblebee's own DistilBERT
+    tests verbatim. Six architecture variants (`:base`,
+    `:for_masked_language_modeling`,
+    `:for_sequence_classification`, `:for_token_classification`,
+    `:for_question_answering`, `:for_multiple_choice`) plus an
+    `Nx.Serving.batched_run` smoke test exercising the QA pipeline
+    end-to-end (tokenizer → model → postprocess).
+  - **CI runs the conformance suite** on every push/PR as a separate
+    step after `mix precommit`. `~/Library/Caches/bumblebee` is
+    cached across runs so the ~3 MB HF fixture download happens
+    once. Local `mix test` remains opt-in via `--only conformance`
+    so a fresh-clone/offline contributor isn't blocked by network.
+  - **Batched-dot property tests** added to
+    `test/emily/backend_test.exs` — 1- and 2-axis batch cases plus
+    edge shapes (scalar output, multi-free-axis both sides).
+  - **Test-only deps:** `bumblebee ~> 0.6`, `tokenizers ~> 0.5`
+    (both `only: :test`). Nx pinned to `~> 0.10` (down from 0.11)
+    to match Bumblebee's current constraint; emily's own API is
+    unaffected.
+
 ## Notes
 
 - Ops files use anonymous namespaces to prevent NIF function names
@@ -120,3 +172,6 @@
   `hadamard_transform`, quantized matmul, `linalg.*` decompositions
   (LU, QR, Cholesky, SVD). These will be added opportunistically when
   M2/M3 callers need them.
+- Deferred beyond M3: native `conv` translation (PLAN lists it under
+  M3, but DistilBERT and M4's Qwen3 don't use it; the BinaryBackend
+  fallback remains until a CV model lands on Emily).

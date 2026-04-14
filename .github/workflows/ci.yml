@@ -50,6 +50,24 @@ jobs:
           key: build-${{ runner.os }}-${{ hashFiles('mix.lock', 'c_src/**', 'Makefile', '.tool-versions') }}
           restore-keys: build-${{ runner.os }}-
 
+      # The Bumblebee cache holds tiny-random HuggingFace fixtures
+      # downloaded by the conformance suite (~3 MB across 7 repos).
+      # Cached by conformance test content so new fixtures invalidate;
+      # restore-keys lets unrelated changes reuse the existing cache.
+      - name: Cache Bumblebee fixtures
+        uses: actions/cache@v4
+        with:
+          path: ~/Library/Caches/bumblebee
+          key: bumblebee-${{ runner.os }}-${{ hashFiles('test/emily/conformance/**') }}
+          restore-keys: bumblebee-${{ runner.os }}-
+
       - run: mix deps.get
 
       - run: mix precommit
+
+      # Conformance tests are excluded from the default suite because
+      # they require network access on a cold cache (see
+      # test/test_helper.exs). In CI we always want them green — a
+      # DistilBERT forward pass is the canonical integration signal
+      # that no Nx op on the transformer critical path has regressed.
+      - run: mix test --only conformance

@@ -5,4 +5,9 @@
 # versions). Serialise module execution unconditionally; the entire
 # suite still completes in seconds. See
 # `test/soak/backend_concurrency_test.exs` for the full story.
-ExUnit.start(max_cases: 1)
+#
+# Conformance tests pull tiny-random HuggingFace models at runtime and
+# take ~tens of seconds per model on a cold cache — opt-in via
+# `mix test --only conformance`. (Soak tests deliberately stay in the
+# default suite; see `test/soak/memory_test.exs` for the rationale.)
+ExUnit.start(max_cases: 1, exclude: [:conformance])

@@ -52,6 +52,8 @@ defmodule Emily.MixProject do
       {:elixir_make, "~> 0.9"},
       {:fine, "~> 0.1"},
       {:nx, "~> 0.10"},
+      {:bumblebee, "~> 0.6", only: :test},
+      {:tokenizers, "~> 0.5", only: :test},
       {:stream_data, "~> 1.1", only: [:dev, :test]},
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
       {:ex_doc, "~> 0.34", only: :docs, runtime: false}

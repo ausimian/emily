@@ -57,6 +57,9 @@ defmodule Emily.Native do
   @spec astype(tensor(), dtype()) :: tensor()
   def astype(_a, _dtype), do: nif()
 
+  @spec bitcast(tensor(), dtype()) :: tensor()
+  def bitcast(_a, _dtype), do: nif()
+
   # --- Unary -------------------------------------------------------
 
   unary_ops = [

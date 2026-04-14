@@ -12,7 +12,7 @@ defmodule Emily.Backend do
     * `{:f, 64}` is not supported — Metal cannot execute f64. Operations
       that would allocate an f64 tensor raise `ArgumentError` with a
       message pointing to f32.
-    * `bitcast`, `from_pointer`, `to_pointer`, `population_count`, and
+    * `from_pointer`, `to_pointer`, `population_count`, and
       `count_leading_zeros` raise `ArgumentError` — MLX has no primitive.
     * Window operations (`window_sum`, `window_scatter_max`, etc.) and
       advanced linalg (`lu`, `svd`, `qr`, `cholesky`, `eigh`, `solve`,
@@ -303,9 +303,13 @@ defmodule Emily.Backend do
     t |> ref() |> Native.astype(type) |> wrap(out)
   end
 
+  # bitcast: reinterpret the bits as the output dtype (same element
+  # size). MLX exposes this as `mx::view`. Used by Nx.Random to move
+  # between uint and float of matching width.
   @impl true
-  def bitcast(_out, _t),
-    do: raise(ArgumentError, "Emily.Backend does not implement bitcast (MLX has no primitive)")
+  def bitcast(%T{type: type} = out, t) do
+    t |> ref() |> Native.bitcast(type) |> wrap(out)
+  end
 
   # =================================================================
   # Unary ops
@@ -393,7 +397,15 @@ defmodule Emily.Backend do
   # Binary ops
   # =================================================================
 
-  @renamed_binary [
+  # Arithmetic + bitwise: cast both operands to `out.type` before
+  # handing to MLX. Two reasons:
+  #   1. MLX's cross-type promotion for mixed integer widths (e.g.,
+  #      u64 + s32) falls back to float32 — which then fails on
+  #      integer-only ops like right_shift. `Nx.Random.key` hits this.
+  #   2. `divide` has `out.type = float` even for integer operands
+  #      (`Nx.Type.to_floating/1`); casting to out.type first produces
+  #      the float division Nx promises.
+  @renamed_arith_binary [
     subtract: :subtract,
     multiply: :multiply,
     divide: :divide,
@@ -402,14 +414,6 @@ defmodule Emily.Backend do
     atan2: :arctan2,
     min: :minimum,
     max: :maximum,
-    equal: :equal,
-    not_equal: :not_equal,
-    less: :less,
-    less_equal: :less_equal,
-    greater: :greater,
-    greater_equal: :greater_equal,
-    logical_and: :logical_and,
-    logical_or: :logical_or,
     bitwise_and: :bitwise_and,
     bitwise_or: :bitwise_or,
     bitwise_xor: :bitwise_xor,
@@ -417,21 +421,55 @@ defmodule Emily.Backend do
     right_shift: :right_shift
   ]
 
-  for {nx_name, native_name} <- @renamed_binary do
+  for {nx_name, native_name} <- @renamed_arith_binary do
+    @impl true
+    def unquote(nx_name)(%T{type: type} = out, a, b) do
+      ra = Native.astype(ref(a), type)
+      rb = Native.astype(ref(b), type)
+      Native.unquote(native_name)(ra, rb) |> wrap(out)
+    end
+  end
+
+  # Compare + logical: out.type is `{:u, 8}` (pred), but MLX still
+  # needs the operands at a matched non-pred type to compare. Cast to
+  # `Nx.Type.merge(a, b)` so MLX sees a consistent arithmetic type.
+  @renamed_pred_binary [
+    equal: :equal,
+    not_equal: :not_equal,
+    less: :less,
+    less_equal: :less_equal,
+    greater: :greater,
+    greater_equal: :greater_equal,
+    logical_and: :logical_and,
+    logical_or: :logical_or
+  ]
+
+  for {nx_name, native_name} <- @renamed_pred_binary do
     @impl true
     def unquote(nx_name)(out, a, b) do
-      Native.unquote(native_name)(ref(a), ref(b)) |> wrap(out)
+      target = Nx.Type.merge(a.type, b.type)
+      ra = Native.astype(ref(a), target)
+      rb = Native.astype(ref(b), target)
+      Native.unquote(native_name)(ra, rb) |> wrap(out)
     end
   end
 
   @impl true
-  def add(out, a, b), do: Native.add(ref(a), ref(b)) |> wrap(out)
+  def add(%T{type: type} = out, a, b) do
+    ra = Native.astype(ref(a), type)
+    rb = Native.astype(ref(b), type)
+    Native.add(ra, rb) |> wrap(out)
+  end
 
   # See moduledoc: we intentionally use MLX floor_divide for quotient,
   # matching its rounding (floor toward -inf) rather than Nx's
   # truncate-toward-zero. The two agree for non-negative operands.
   @impl true
-  def quotient(out, a, b), do: Native.floor_divide(ref(a), ref(b)) |> wrap(out)
+  def quotient(%T{type: type} = out, a, b) do
+    ra = Native.astype(ref(a), type)
+    rb = Native.astype(ref(b), type)
+    Native.floor_divide(ra, rb) |> wrap(out)
+  end
 
   # logical_xor: MLX has no direct op. Compose via `not_equal` on
   # booleanised inputs. With u8 inputs, `not_equal(0)` yields truthy
@@ -543,9 +581,16 @@ defmodule Emily.Backend do
 
   @impl true
   def slice(%T{} = out, t, starts, lengths, strides) do
+    # Nx passes starts as either integers or scalar tensors (dynamic
+    # slicing). MLX's slice takes integer bounds; under the evaluator
+    # we materialise scalar-tensor starts to their concrete value.
+    starts = Enum.map(starts, &slice_start/1)
     stops = Enum.zip_with(starts, lengths, fn s, l -> s + l end)
     Native.slice(ref(t), starts, stops, strides) |> wrap(out)
   end
+
+  defp slice_start(i) when is_integer(i), do: i
+  defp slice_start(%T{} = t), do: t |> Nx.backend_copy(Nx.BinaryBackend) |> Nx.to_number()
 
   # put_slice: MLX has no direct primitive; route via BinaryBackend.
   @impl true
@@ -609,10 +654,14 @@ defmodule Emily.Backend do
     end
   end
 
+  # Nx's argmax/argmin take `:keep_axis` (singular) on user-facing API
+  # but the backend callback exposes raw opts whose spelling has drifted
+  # across Nx versions. Derive `keep` from the shape invariant instead:
+  # if `out.shape` has the same rank as the input, the axis was kept.
   @impl true
   def argmax(%T{} = out, t, opts) do
     axis = opts[:axis] || 0
-    keep = opts[:keep_axes] || false
+    keep = tuple_size(out.shape) == tuple_size(t.shape)
 
     ref(t)
     |> Native.argmax(axis, keep)
@@ -623,7 +672,7 @@ defmodule Emily.Backend do
   @impl true
   def argmin(%T{} = out, t, opts) do
     axis = opts[:axis] || 0
-    keep = opts[:keep_axes] || false
+    keep = tuple_size(out.shape) == tuple_size(t.shape)
 
     ref(t)
     |> Native.argmin(axis, keep)
@@ -666,20 +715,78 @@ defmodule Emily.Backend do
   # Dot product
   # =================================================================
 
-  # Non-batched tensor contraction: tensordot. Batched case: we
-  # reshape-merge batch axes, matmul, reshape back. For now only
-  # handle the non-batched case fully; batched falls back to
-  # BinaryBackend.
+  # Non-batched: tensordot. Batched: permute to [batch, free, contract]
+  # on a and [batch, contract, free] on b, flatten to 3-D, hand to
+  # MLX matmul (which treats leading dims as batch), reshape back to
+  # Nx's canonical `batch ++ free_a ++ free_b` layout.
   @impl true
   def dot(%T{} = out, a, contract_a, [], b, contract_b, []) do
     Native.tensordot(ref(a), ref(b), contract_a, contract_b) |> wrap(out)
   end
 
-  # Batched dot is on the transformer-attention critical path. M3
-  # replaces this BinaryBackend bounce with a native matmul-with-
-  # transpose pattern before Bumblebee lands.
-  def dot(out, a, contract_a, batch_a, b, contract_b, batch_b),
-    do: via_binary(out, [a, b], &Nx.dot(&1, contract_a, batch_a, &2, contract_b, batch_b))
+  def dot(%T{type: type} = out, a, contract_a, batch_a, b, contract_b, batch_b) do
+    # MLX matmul is float-only; ints/preds fall through to BinaryBackend.
+    # In practice every transformer-attention call is float, so this is
+    # the hot path.
+    if float_like?(type) do
+      batched_matmul(out, a, contract_a, batch_a, b, contract_b, batch_b)
+    else
+      via_binary(out, [a, b], &Nx.dot(&1, contract_a, batch_a, &2, contract_b, batch_b))
+    end
+  end
+
+  defp float_like?({kind, _}) when kind in [:f, :bf, :c], do: true
+  defp float_like?(_), do: false
+
+  # Nx guarantees batch axes on both tensors are [0, 1, ..., k-1] in
+  # increasing order, so the permutation simplifies: batch dims stay
+  # at the front, free axes sort in positional order, contract axes
+  # in the Nx-given pairing order.
+  defp batched_matmul(
+         %T{shape: out_shape} = out,
+         %T{shape: as} = a,
+         contract_a,
+         batch_a,
+         %T{shape: bs} = b,
+         contract_b,
+         _batch_b
+       ) do
+    a_rank = tuple_size(as)
+    b_rank = tuple_size(bs)
+    k = length(batch_a)
+
+    contract_set_a = MapSet.new(contract_a)
+    contract_set_b = MapSet.new(contract_b)
+
+    free_a = for i <- k..(a_rank - 1)//1, not MapSet.member?(contract_set_a, i), do: i
+    free_b = for i <- k..(b_rank - 1)//1, not MapSet.member?(contract_set_b, i), do: i
+
+    b_prod = dim_product(batch_a, as)
+    m = dim_product(free_a, as)
+    n = dim_product(free_b, bs)
+    k_prod = dim_product(contract_a, as)
+
+    perm_a = batch_a ++ free_a ++ contract_a
+    perm_b = batch_a ++ contract_b ++ free_b
+
+    ra =
+      a
+      |> ref()
+      |> Native.transpose(perm_a)
+      |> Native.reshape([b_prod, m, k_prod])
+
+    rb =
+      b
+      |> ref()
+      |> Native.transpose(perm_b)
+      |> Native.reshape([b_prod, k_prod, n])
+
+    Native.matmul(ra, rb)
+    |> Native.reshape(shape_list(out_shape))
+    |> wrap(out)
+  end
+
+  defp dim_product(axes, shape), do: Enum.reduce(axes, 1, &(elem(shape, &1) * &2))
 
   # =================================================================
   # Sort / argsort / top_k / all_close / take / take_along_axis
