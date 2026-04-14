@@ -593,9 +593,12 @@ defmodule Emily.Backend do
   defp slice_start(%T{} = t), do: t |> Nx.backend_copy(Nx.BinaryBackend) |> Nx.to_number()
 
   # put_slice: MLX has no direct primitive; route via BinaryBackend.
+  # Nx's Backend contract order is (out, tensor, start_indices, slice).
+  # start_indices arrive as scalar tensors on Emily.Backend; Nx auto-
+  # transfers them when the BinaryBackend call goes through `to_indices`.
   @impl true
-  def put_slice(out, t, slice, starts),
-    do: via_binary(out, [t, slice], &Nx.put_slice(&1, starts, &2))
+  def put_slice(out, t, start_indices, slice),
+    do: via_binary(out, [t, slice], &Nx.put_slice(&1, start_indices, &2))
 
   @impl true
   def select(%T{} = out, pred, on_true, on_false) do
