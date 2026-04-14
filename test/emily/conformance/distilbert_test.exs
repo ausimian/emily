@@ -203,5 +203,4 @@ defmodule Emily.Conformance.DistilbertTest do
       end
     end
   end
-
 end

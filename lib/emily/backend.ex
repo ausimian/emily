@@ -966,9 +966,10 @@ defmodule Emily.Backend do
   # `Emily.Backend` during conformance tests — and the resulting
   # mixed-backend operand list crashes inside BinaryBackend's op.
   defp via_binary(%T{} = out, tensors, fun) when is_list(tensors) do
-    result = Nx.with_default_backend(Nx.BinaryBackend, fn ->
-      tensors |> transfer_all() |> then(&apply(fun, &1))
-    end)
+    result =
+      Nx.with_default_backend(Nx.BinaryBackend, fn ->
+        tensors |> transfer_all() |> then(&apply(fun, &1))
+      end)
 
     from_binary(out, Nx.to_binary(result), [])
   end

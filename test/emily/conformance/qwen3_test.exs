@@ -180,5 +180,4 @@ defmodule Emily.Conformance.Qwen3Test do
       Enum.take(tokens, len_val)
     end
   end
-
 end

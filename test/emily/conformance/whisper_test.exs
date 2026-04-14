@@ -71,7 +71,7 @@ defmodule Emily.Conformance.WhisperTest do
 
     outputs = Axon.predict(model, params, inputs)
 
-    assert Nx.shape(outputs.logits) == {1, 8, 50257}
+    assert Nx.shape(outputs.logits) == {1, 8, 50_257}
 
     assert_all_close(
       outputs.logits[[.., 1..3, 1..3]],
