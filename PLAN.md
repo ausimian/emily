@@ -138,21 +138,40 @@ throughput number.
 
 ### M5 — `Emily.Compiler`: `Nx.Defn.Compiler` implementation
 
-- Walk `Nx.Defn.Expr` in Elixir, dispatching each node to `Emily.Backend`
-- Cache the walk result keyed by input signature in ETS
+- Walk `Nx.Defn.Expr` in Elixir, dispatching each node to `Emily.Backend`.
+  In practice this is what `Nx.Defn.Evaluator` already does — it dispatches
+  via `Nx.Shared.list_impl!/1` which finds whichever backend the operands
+  carry. `Emily.Compiler` validates options, points `__to_backend__/1` at
+  `Emily.Backend`, pins partitions to 1 (MLX kernel dispatch isn't
+  thread-safe), and delegates the walk.
+- Hold the walked plan in the closure returned by `__compile__/4`; the
+  closure *is* the cache. Callers that want reuse across invocations use
+  `Nx.Defn.compile/3` and hold the returned function — Bumblebee /
+  `Nx.Serving` already do this on warmup.
+  - *Earlier draft proposed an ETS cache keyed by `{mfa, input_signature}`;
+    rejected once we accounted for the per-call ETS deep-copy cost on a
+    Qwen3-sized expression tree. The closure-capture path avoids the copy
+    and matches the upstream Evaluator pattern.*
 - **Do not use `mlx::core::compile` yet.** Lazy eval at the Backend layer suffices.
 
 **Testing — Layer 3 (Compiler):**
 
-- **Equivalence tests**: every Backend test run wrapped in `defn` with
-  `compiler: Emily.Compiler`, assert identical output.
-- **Cache tests**: same call → hit; different shape → miss.
-- **Recompilation**: changed dtype → recompile; same shape+dtype → no
-  recompile.
+- **Equivalence tests**: a representative sample of ops (creation,
+  binary, reduction, shape, dot, container output) plus the `defn`-only
+  constructs `while` and `cond`; assert `compiler: Emily.Compiler` matches
+  raw Backend execution (and `Nx.Defn.Evaluator` for the `defn`-only
+  cases). The full Backend property suite isn't re-run per op — the
+  Backend already passes its own oracle suite, and the Compiler test
+  is structural ("did the walk reach the right backend with the right
+  args").
+- **Reuse**: a `Nx.Defn.compile/3` closure runs many inputs of the same
+  signature without re-walking the expression.
+- **Callback contracts**: `__to_backend__`, `__partitions_options__`,
+  unknown-option rejection, `:max_concurrency > 1` refusal.
 
 **Exit:** Axon MLPs forward with `compiler: Emily.Compiler`; results
-match Backend-only mode within float tolerance. (Training is out of
-scope for v1.)
+match `Nx.Defn.Evaluator` running on the same backend within float
+tolerance. (Training is out of scope for v1.)
 
 ### M6 — `mlx::core::compile` wrapping
 
