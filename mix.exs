@@ -52,7 +52,12 @@ defmodule Emily.MixProject do
       {:elixir_make, "~> 0.9"},
       {:fine, "~> 0.1"},
       {:nx, "~> 0.10"},
-      {:bumblebee, "~> 0.6", only: :test},
+      # Bumblebee >= 0.6.3 (the latest Hex release) lacks Qwen3 support.
+      # Pinned to a `main` commit that contains `Bumblebee.Text.Qwen3` so
+      # M4 can exercise Qwen3-0.6B end-to-end. Bump deliberately when a
+      # newer release lands on Hex.
+      {:bumblebee,
+       github: "elixir-nx/bumblebee", ref: "273805e95507dc7866b958d90e0012a3abad1761", only: :test},
       {:tokenizers, "~> 0.5", only: :test},
       {:stream_data, "~> 1.1", only: [:dev, :test]},
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false},

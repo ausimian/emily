@@ -8,6 +8,9 @@
 #
 # Conformance tests pull tiny-random HuggingFace models at runtime and
 # take ~tens of seconds per model on a cold cache — opt-in via
-# `mix test --only conformance`. (Soak tests deliberately stay in the
+# `mix test --only conformance`. `:qwen3_full` is an even heavier
+# conformance variant that downloads ~1.5 GB of weights, so it is
+# excluded even from `--only conformance`; run explicitly via
+# `mix test --only qwen3_full`. (Soak tests deliberately stay in the
 # default suite; see `test/soak/memory_test.exs` for the rationale.)
-ExUnit.start(max_cases: 1, exclude: [:conformance])
+ExUnit.start(max_cases: 1, exclude: [:conformance, :qwen3_full])

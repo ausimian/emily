@@ -221,6 +221,9 @@ defmodule Emily.Native do
   @spec slice(tensor(), [integer()], [integer()], [integer()]) :: tensor()
   def slice(_a, _start, _stop, _strides), do: nif()
 
+  @spec slice_update(tensor(), tensor(), [integer()]) :: tensor()
+  def slice_update(_src, _update, _start), do: nif()
+
   @spec take(tensor(), tensor(), integer()) :: tensor()
   def take(_a, _indices, _axis), do: nif()
 
