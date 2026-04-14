@@ -23,17 +23,11 @@ defmodule Emily.Conformance.DistilbertTest do
   """
 
   use ExUnit.Case, async: false
+  use Emily.ConformanceHelper
 
   @moduletag :conformance
   @moduletag capture_log: true
   @moduletag timeout: 120_000
-
-  setup_all do
-    prev = Nx.default_backend()
-    Nx.global_default_backend(Emily.Backend)
-    on_exit(fn -> Nx.global_default_backend(prev) end)
-    :ok
-  end
 
   test ":base" do
     assert {:ok, %{model: model, params: params, spec: spec}} =
@@ -210,30 +204,4 @@ defmodule Emily.Conformance.DistilbertTest do
     end
   end
 
-  # ----------------- helpers -----------------
-
-  # Mirrors Bumblebee.TestHelpers.assert_all_close: check that all
-  # elements agree within (atol + rtol * |right|) after materialising
-  # to BinaryBackend (so a mismatch produces a readable inspect diff).
-  defp assert_all_close(left, right, opts \\ []) do
-    atol = opts[:atol] || 1.0e-4
-    rtol = opts[:rtol] || 1.0e-4
-
-    equal_tensor =
-      left
-      |> Nx.all_close(right, atol: atol, rtol: rtol)
-      |> Nx.backend_transfer(Nx.BinaryBackend)
-
-    if Nx.to_number(equal_tensor) != 1 do
-      ExUnit.Assertions.flunk("""
-      expected
-
-      #{inspect(Nx.backend_copy(left, Nx.BinaryBackend))}
-
-      to be within tolerance of
-
-      #{inspect(Nx.backend_copy(right, Nx.BinaryBackend))}
-      """)
-    end
-  end
 end
