@@ -68,7 +68,9 @@ FINE_NIF(from_binary, 0);
 // We route through mx::contiguous() first so views with non-standard
 // strides (transpose, slice, swapaxes, broadcast_to) produce the
 // correct in-memory layout. For already-contiguous arrays MLX elides
-// the copy.
+// the copy. A handful of MLX ops (notably cumulative reductions on
+// interior axes of some 4-D shapes) raise "Unable to safely factor
+// shape" here; the Backend layer routes the known cases around us.
 std::string to_binary(ErlNifEnv *, fine::ResourcePtr<Tensor> tensor) {
   auto materialized = mx::contiguous(tensor->array);
   mx::eval(materialized);

@@ -59,6 +59,57 @@
   binary, reductions, and comparisons.
 - Makefile compiles `c_src/**/*.cpp` recursively.
 
+- M2 — `Emily.Backend`, the `Nx.Backend` implementation. Wraps every
+  required callback with a thin `Emily.Native` delegation, so any Nx
+  computation can run on MLX via
+  `Nx.global_default_backend(Emily.Backend)` or `backend:` opts.
+  - Creation, cast, unary, binary, shape, indexing, reductions,
+    cumulative reductions, sort family, dot, FFT, top_k, take,
+    take_along_axis, all_close — all routed directly to MLX NIFs.
+  - Compositions where no single MLX primitive exists: `erfc` (`1 -
+    erf`), `cbrt` (`sign(x) * |x|^(1/3)`), `logical_xor` (xor of
+    boolean-casted operands), `reverse` (take with reversed indices
+    per axis).
+  - BinaryBackend round-trip fallback for ops that need non-trivial
+    composition in v1: `conv`, multi-axis `gather`, `put_slice`,
+    batched `dot`, `reduce`/`window_reduce`, `window_sum`/`_max`/etc.,
+    `window_scatter_*`, `indexed_add`/`put`, and advanced linalg
+    (`lu`, `svd`, `triangular_solve`). Correct but slow; direct MLX
+    paths land incrementally as downstream consumers need them.
+  - Hard error on `{:f, 64}` (Metal has no f64) and on `bitcast`,
+    `from_pointer`/`to_pointer`, `population_count`,
+    `count_leading_zeros` — no MLX primitive.
+  - Scalar-on-foreign-backend handling: any tensor the callback
+    receives that isn't on `Emily.Backend` (Nx routinely passes
+    scalars on `Nx.BinaryBackend`) is transferred in transparently.
+  - u8↔pred coercion: MLX comparison/logical ops yield `mx::bool_`;
+    Nx expects `{:u, 8}`. Any callback whose declared output dtype is
+    `{:u, 8}` but whose MLX result is `pred` is cast at the wrap
+    boundary.
+  - `test/support/backend_generators.ex` — StreamData generators for
+    shape, dtype, and tensor values; `assert_close/3` with
+    dtype-aware tolerance.
+  - `test/emily/backend_test.exs` — property-based oracle tests vs.
+    `Nx.BinaryBackend` across creation, cast, every unary/binary,
+    shape, indexing, reductions, sort, and dot.
+  - `test/emily/backend_lifecycle_test.exs` — init/from_binary/
+    to_binary/backend_copy/backend_transfer/inspect/to_batched/bitcast
+    raisers.
+  - `test/soak/backend_soak_test.exs` — `@tag :soak` 500-iteration
+    MLP forward pass; asserts MLX active memory returns to baseline.
+  - `test/soak/backend_concurrency_test.exs` — `@tag :soak`
+    cross-process determinism check. Runs workers sequentially
+    (`max_concurrency: 1`) because MLX's Metal runtime is not
+    safe for concurrent kernel dispatch from multiple OS threads;
+    the limitation is upstream and documented in the test moduledoc.
+- Interior-axis cumulative reductions (`cumulative_sum` and friends
+  with `axis: i` where `i != rank - 1`) route through BinaryBackend.
+  MLX's cumulative kernels raise "Unable to safely factor shape" on
+  several 4-D-and-up view patterns — both the straight call and a
+  transpose-to-last-axis workaround hit the same factoring path. The
+  last-axis fast path stays on MLX; interior-axis usage is rare on
+  our M3/M4 critical path (transformer inference doesn't need it).
+
 ## Notes
 
 - Ops files use anonymous namespaces to prevent NIF function names
