@@ -68,20 +68,6 @@ defmodule Emily.Backend.FallbacksTest do
     end
   end
 
-  describe "convolution fallback" do
-    test "conv routes through BinaryBackend" do
-      # {batch=1, channels=1, height=3, width=3} input, {out=1, in=1, 2, 2} kernel.
-      input = Nx.iota({1, 1, 3, 3}, type: {:f, 32}, backend: Emily.Backend)
-      kernel = emily([[[[1.0, 0.0], [0.0, 1.0]]]])
-
-      result = Nx.conv(input, kernel)
-
-      assert Nx.shape(result) == {1, 1, 2, 2}
-      # Diagonal kernel: 0+4=4, 1+5=6, 3+7=10, 4+8=12.
-      assert flat(result) == [4.0, 6.0, 10.0, 12.0]
-    end
-  end
-
   describe "reduce fallbacks" do
     test "reduce with a custom accumulator function" do
       t = emily([1.0, 2.0, 3.0, 4.0])
@@ -247,6 +233,26 @@ defmodule Emily.Backend.FallbacksTest do
       t = emily([[[1.0, 4.0], [3.0, 2.0]], [[5.0, 8.0], [7.0, 6.0]]])
       result = Nx.cumulative_min(t, axis: 1)
       assert Nx.shape(result) == {2, 2, 2}
+    end
+
+    # Conv with `batch_group_size > 1`: MLX `conv_general` has no batch-group
+    # parameter, so Emily falls back to BinaryBackend for this rare path. The
+    # common `batch_group_size: 1` case is covered natively in
+    # `backend_conv_test.exs`.
+    test "conv with batch_group_size > 1 falls back" do
+      # Splitting batch=4 into 2 groups; each produces 1 output filter from
+      # its half of the input channels.
+      input = Nx.iota({4, 2, 3, 3}, type: {:f, 32}, backend: Emily.Backend)
+      kernel = Nx.iota({2, 2, 2, 2}, type: {:f, 32}, backend: Emily.Backend)
+
+      result = Nx.conv(input, kernel, batch_group_size: 2)
+
+      ref_input = Nx.iota({4, 2, 3, 3}, type: {:f, 32}, backend: Nx.BinaryBackend)
+      ref_kernel = Nx.iota({2, 2, 2, 2}, type: {:f, 32}, backend: Nx.BinaryBackend)
+      ref = Nx.conv(ref_input, ref_kernel, batch_group_size: 2)
+
+      assert Nx.shape(result) == Nx.shape(ref)
+      assert flat(result) == Nx.to_flat_list(ref)
     end
   end
 end
