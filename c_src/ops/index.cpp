@@ -50,4 +50,42 @@ fine::ResourcePtr<Tensor> where(
 }
 FINE_NIF(where, 0);
 
+// take_along_axis/3 — gather along `axis` using integer indices whose
+// shape matches `a` except along `axis`.
+fine::ResourcePtr<Tensor> take_along_axis(
+    ErlNifEnv *,
+    fine::ResourcePtr<Tensor> a,
+    fine::ResourcePtr<Tensor> indices,
+    int64_t axis) {
+  return wrap(mx::take_along_axis(
+      a->array, indices->array, static_cast<int>(axis)));
+}
+FINE_NIF(take_along_axis, 0);
+
+// put_along_axis/4 — write `values` into `a` at the given indices
+// along `axis`.
+fine::ResourcePtr<Tensor> put_along_axis(
+    ErlNifEnv *,
+    fine::ResourcePtr<Tensor> a,
+    fine::ResourcePtr<Tensor> indices,
+    fine::ResourcePtr<Tensor> values,
+    int64_t axis) {
+  return wrap(mx::put_along_axis(
+      a->array, indices->array, values->array, static_cast<int>(axis)));
+}
+FINE_NIF(put_along_axis, 0);
+
+// scatter_add_axis/4 — add `values` into `a` at the given indices
+// along `axis`.
+fine::ResourcePtr<Tensor> scatter_add_axis(
+    ErlNifEnv *,
+    fine::ResourcePtr<Tensor> a,
+    fine::ResourcePtr<Tensor> indices,
+    fine::ResourcePtr<Tensor> values,
+    int64_t axis) {
+  return wrap(mx::scatter_add_axis(
+      a->array, indices->array, values->array, static_cast<int>(axis)));
+}
+FINE_NIF(scatter_add_axis, 0);
+
 } // namespace

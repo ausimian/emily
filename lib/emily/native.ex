@@ -237,4 +237,133 @@ defmodule Emily.Native do
 
   @spec inner(tensor(), tensor()) :: tensor()
   def inner(_a, _b), do: nif()
+
+  # --- Sort --------------------------------------------------------
+
+  @spec sort(tensor(), integer()) :: tensor()
+  def sort(_a, _axis), do: nif()
+
+  @spec argsort(tensor(), integer()) :: tensor()
+  def argsort(_a, _axis), do: nif()
+
+  @spec partition(tensor(), integer(), integer()) :: tensor()
+  def partition(_a, _kth, _axis), do: nif()
+
+  @spec argpartition(tensor(), integer(), integer()) :: tensor()
+  def argpartition(_a, _kth, _axis), do: nif()
+
+  @spec topk(tensor(), integer(), integer()) :: tensor()
+  def topk(_a, _k, _axis), do: nif()
+
+  # --- Misc --------------------------------------------------------
+
+  @spec clip(tensor(), tensor(), tensor()) :: tensor()
+  def clip(_a, _a_min, _a_max), do: nif()
+
+  @spec roll(tensor(), integer(), integer()) :: tensor()
+  def roll(_a, _shift, _axis), do: nif()
+
+  @spec softmax(tensor(), [integer()], boolean()) :: tensor()
+  def softmax(_a, _axes, _precise), do: nif()
+
+  @spec logcumsumexp(tensor(), integer(), boolean(), boolean()) :: tensor()
+  def logcumsumexp(_a, _axis, _reverse, _inclusive), do: nif()
+
+  @spec array_equal(tensor(), tensor(), boolean()) :: tensor()
+  def array_equal(_a, _b, _equal_nan), do: nif()
+
+  # --- Axis-aligned gather/scatter ---------------------------------
+
+  @spec take_along_axis(tensor(), tensor(), integer()) :: tensor()
+  def take_along_axis(_a, _indices, _axis), do: nif()
+
+  @spec put_along_axis(tensor(), tensor(), tensor(), integer()) :: tensor()
+  def put_along_axis(_a, _indices, _values, _axis), do: nif()
+
+  @spec scatter_add_axis(tensor(), tensor(), tensor(), integer()) :: tensor()
+  def scatter_add_axis(_a, _indices, _values, _axis), do: nif()
+
+  # --- Convolution -------------------------------------------------
+
+  @spec conv_general(
+          tensor(),
+          tensor(),
+          [integer()],
+          {[integer()], [integer()]},
+          [integer()],
+          [integer()],
+          integer(),
+          boolean()
+        ) :: tensor()
+  def conv_general(
+        _input,
+        _weight,
+        _stride,
+        _padding,
+        _kernel_dilation,
+        _input_dilation,
+        _groups,
+        _flip
+      ),
+      do: nif()
+
+  # --- Random ------------------------------------------------------
+
+  @spec random_key(integer()) :: tensor()
+  def random_key(_seed), do: nif()
+
+  @spec random_split(tensor(), integer()) :: tensor()
+  def random_split(_key, _num), do: nif()
+
+  @spec random_uniform(tensor(), tensor(), [non_neg_integer()], dtype(), tensor() | nil) ::
+          tensor()
+  def random_uniform(_low, _high, _shape, _dtype, _key), do: nif()
+
+  @spec random_normal([non_neg_integer()], dtype(), float(), float(), tensor() | nil) ::
+          tensor()
+  def random_normal(_shape, _dtype, _loc, _scale, _key), do: nif()
+
+  @spec random_randint(tensor(), tensor(), [non_neg_integer()], dtype(), tensor() | nil) ::
+          tensor()
+  def random_randint(_low, _high, _shape, _dtype, _key), do: nif()
+
+  @spec random_bernoulli(tensor(), [non_neg_integer()], tensor() | nil) :: tensor()
+  def random_bernoulli(_p, _shape, _key), do: nif()
+
+  @spec random_gumbel([non_neg_integer()], dtype(), tensor() | nil) :: tensor()
+  def random_gumbel(_shape, _dtype, _key), do: nif()
+
+  @spec random_categorical(tensor(), integer(), integer(), tensor() | nil) :: tensor()
+  def random_categorical(_logits, _axis, _num_samples, _key), do: nif()
+
+  # --- FFT ---------------------------------------------------------
+
+  @spec fftn(tensor(), [non_neg_integer()], [integer()]) :: tensor()
+  def fftn(_a, _n, _axes), do: nif()
+
+  @spec ifftn(tensor(), [non_neg_integer()], [integer()]) :: tensor()
+  def ifftn(_a, _n, _axes), do: nif()
+
+  @spec rfftn(tensor(), [non_neg_integer()], [integer()]) :: tensor()
+  def rfftn(_a, _n, _axes), do: nif()
+
+  @spec irfftn(tensor(), [non_neg_integer()], [integer()]) :: tensor()
+  def irfftn(_a, _n, _axes), do: nif()
+
+  # --- Memory / allocator ------------------------------------------
+
+  @spec get_active_memory() :: non_neg_integer()
+  def get_active_memory, do: nif()
+
+  @spec get_peak_memory() :: non_neg_integer()
+  def get_peak_memory, do: nif()
+
+  @spec reset_peak_memory() :: :ok
+  def reset_peak_memory, do: nif()
+
+  @spec get_cache_memory() :: non_neg_integer()
+  def get_cache_memory, do: nif()
+
+  @spec clear_cache() :: :ok
+  def clear_cache, do: nif()
 end
