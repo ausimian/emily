@@ -146,6 +146,77 @@ defmodule Emily.Backend.LifecycleTest do
     end
   end
 
+  # MLX has no instruction for either. Nx's population_count /
+  # count_leading_zeros apply to small int tensors, and a workaround
+  # would be pure CPU — not worth carrying until a caller needs it.
+  describe "unsupported bitwise ops" do
+    test "count_leading_zeros raises" do
+      t = Nx.tensor([1, 2, 3], type: {:s, 32}, backend: Emily.Backend)
+
+      assert_raise ArgumentError, ~r/count_leading_zeros/, fn ->
+        Nx.count_leading_zeros(t)
+      end
+    end
+
+    test "population_count raises" do
+      t = Nx.tensor([1, 2, 3], type: {:s, 32}, backend: Emily.Backend)
+
+      assert_raise ArgumentError, ~r/population_count/, fn ->
+        Nx.population_count(t)
+      end
+    end
+  end
+
+  describe "pad" do
+    # MLX pad supports low/high padding but no interior dilation. Reject
+    # cleanly rather than silently dropping the interior spec.
+    test "raises on interior padding" do
+      t = Nx.tensor([[1.0, 2.0], [3.0, 4.0]], backend: Emily.Backend)
+      pad_value = Nx.tensor(0.0, backend: Emily.Backend)
+
+      assert_raise ArgumentError, ~r/interior padding/, fn ->
+        Emily.Backend.pad(t, t, pad_value, [{0, 0, 1}, {0, 0, 0}])
+      end
+    end
+  end
+
+  describe "backend_transfer edge cases" do
+    # Transferring to the meta-module `Nx.Tensor` is a no-op —
+    # Nx.BinaryBackend treats it the same way. This keeps code that
+    # calls `backend_transfer(t, Nx.Tensor)` portable across backends.
+    test "to Nx.Tensor is identity" do
+      t = Nx.tensor([1.0, 2.0], backend: Emily.Backend)
+      same = Emily.Backend.backend_transfer(t, Nx.Tensor, [])
+      assert same.data.__struct__ == Emily.Backend
+    end
+  end
+
+  describe "from_binary iodata fallback" do
+    # `Nx.from_binary`'s public API guards for `is_binary(binary)`, but
+    # the backend callback also handles iodata. Call the backend
+    # directly to exercise the iolist branch of `ensure_binary/1`.
+    test "flattens an iolist of binaries" do
+      bin1 = <<1.0::float-32-native, 2.0::float-32-native>>
+      bin2 = <<3.0::float-32-native, 4.0::float-32-native>>
+
+      out_template = %Nx.Tensor{shape: {4}, type: {:f, 32}, names: [nil], data: nil}
+      t = Emily.Backend.from_binary(out_template, [bin1, bin2], [])
+      assert Nx.to_flat_list(t) == [1.0, 2.0, 3.0, 4.0]
+    end
+  end
+
+  describe "inspect/2 limit" do
+    # Nx passes `limit: :infinity` when the caller wants the full
+    # tensor. Exercises the :infinity branch of Emily.Backend.inspect.
+    test "renders full tensor under :infinity" do
+      t = Nx.tensor([1.0, 2.0, 3.0], backend: Emily.Backend)
+      doc = Emily.Backend.inspect(t, %Inspect.Opts{limit: :infinity, custom_options: []})
+      rendered = doc |> Inspect.Algebra.format(80) |> IO.iodata_to_binary()
+      assert rendered =~ "1.0"
+      assert rendered =~ "3.0"
+    end
+  end
+
   describe "bitcast" do
     # MLX exposes `mx::view(array, dtype)` — a zero-copy reinterpret
     # cast between equal-width dtypes. Nx.Random uses this to move

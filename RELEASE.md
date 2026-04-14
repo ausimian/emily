@@ -162,6 +162,36 @@
     to match Bumblebee's current constraint; emily's own API is
     unaffected.
 
+## Fixed
+
+- `Emily.Backend.put_slice/4` — swapped `slice` and `start_indices`
+  parameters. Latent since M2 because the callback routes through
+  the BinaryBackend fallback and had no direct test. Surfaced by
+  the new fallback-coverage suite.
+
+## Tests
+
+- `test/emily/backend_fallbacks_test.exs` — smoke coverage for every
+  `via_binary` branch (`put_slice`, multi-axis `gather`, `conv`,
+  `reduce`, `window_reduce`, `window_sum`/`_product`/`_max`/`_min`,
+  `window_scatter_max`/`_min`, `indexed_add`/`_put`, `lu`,
+  `triangular_solve`, `svd`) plus the forced-fallback branches
+  (integer batched `dot`, interior-axis `cumulative_*`). The
+  fallback dispatches to BinaryBackend, so comparing against
+  BinaryBackend is tautological — these tests verify the transfer /
+  compute / rewrap round-trip runs clean, not numerical correctness.
+- Extended `test/emily/backend_lifecycle_test.exs` with the three
+  raise-only callbacks (`count_leading_zeros`, `population_count`,
+  `pad` with interior padding), the `backend_transfer(t, Nx.Tensor)`
+  identity case, the `from_binary` iodata path, and the
+  `inspect` `:infinity` limit branch.
+- Aggregate coverage with `mix test --cover --include conformance`:
+  74.7% → 81.9% total; `Emily.Backend` 73.5% → 82.3%. Remaining
+  uncovered in `Emily.Backend` is a handful of functional ops not
+  yet in the property suite (`fft`/`ifft`/`fft2`/`ifft2`, `argsort`,
+  `top_k`, `erfc`, `cbrt`, `all_close` with `equal_nan: true`) plus
+  unreachable defensive branches.
+
 ## Notes
 
 - Ops files use anonymous namespaces to prevent NIF function names
