@@ -214,7 +214,47 @@ If MLX gains matmul-adjacent fusion (bias-fused matmul, attention
 fusion outside `fast::scaled_dot_product_attention`), re-run the bench
 and revisit.
 
-### M7 — 1.0 release
+### M7 — Bumblebee conformance breadth: ViT + Whisper
+
+DistilBERT (M3) and Qwen3 (M4) cover encoder-only and decoder-only
+transformers but leave three architectural shapes untested: 2-D
+convolution, encoder-decoder cross-attention, and the Bumblebee
+vision/audio pipelines. M7 closes the first two gaps.
+
+- **ViT** (`google/vit-base-patch16-224`): vision, encoder-only,
+  conv patch embedding, GELU FFN, classifier head. First suite to
+  exercise the `conv` fallback in anger (`lib/emily/backend.ex` still
+  routes `conv` through BinaryBackend as of M7 — correct but slow).
+- **Whisper** (`openai/whisper-tiny`): audio, encoder-decoder, 1-D
+  conv encoder frontend, sinusoidal position encodings, and
+  cross-attention KV-cache in the decoder.
+
+Each suite ships two tiers: a tiny-random tier that mirrors
+Bumblebee's own test (HuggingFace Transformers reference slices) and
+a full-checkpoint tier with deterministic synthetic inputs pinned
+against the real-weight forward pass on Emily. Both gated as in M3
+and M4: `:conformance` for tiny (opt in via `--only conformance`),
+per-model `:*_full` tag for full (opt in separately).
+
+Shared scaffolding (`test/support/conformance_helper.ex`) lifts the
+`setup_all` backend swap and `assert_all_close/3` out of each suite.
+
+**MoE / Mixtral deferred**: the pinned Bumblebee ref ships no
+Mixtral or MoE architecture. Track as a follow-up; revisit when
+upstream lands.
+
+**Exit:** ViT and Whisper each pass both tiers on Apple Silicon;
+`mix test --only conformance` aggregates 14 tiny-random tests across
+all four Bumblebee models.
+
+### M8 — Native conv
+
+Lift `Backend.conv` onto `Native.conv_general` (the NIF already
+exists; only the Backend callback still routes through the
+BinaryBackend fallback). Gated on the M7 ViT and Whisper suites
+staying green through the switchover.
+
+### M9 — 1.0 release
 
 - API docs, HexDocs, README with a worked Bumblebee example
 - Hex release (public), versioned per conventions (`@version` in mix.exs)

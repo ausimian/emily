@@ -957,15 +957,30 @@ defmodule Emily.Backend do
 
   # Run `fun` on BinaryBackend-transferred copies of `tensors` and wrap
   # the single-tensor result into `out`.
+  #
+  # We pin the default backend to `Nx.BinaryBackend` for the duration
+  # of `fun` because some Nx ops build scalar tensors internally
+  # (e.g. `Nx.conv` constructs a zero-pad tensor via `Nx.pad(t, 0,
+  # ...)`; `Nx.indexed_add` wraps the accumulator). Without the pin,
+  # those scalars land on the current global default — which is
+  # `Emily.Backend` during conformance tests — and the resulting
+  # mixed-backend operand list crashes inside BinaryBackend's op.
   defp via_binary(%T{} = out, tensors, fun) when is_list(tensors) do
-    result = tensors |> transfer_all() |> then(&apply(fun, &1))
+    result =
+      Nx.with_default_backend(Nx.BinaryBackend, fn ->
+        tensors |> transfer_all() |> then(&apply(fun, &1))
+      end)
+
     from_binary(out, Nx.to_binary(result), [])
   end
 
   # Same pattern, but the op returns a tuple of tensors. `outs` is a
   # tuple of output templates matching arity; positions are zipped.
   defp via_binary_tuple(outs, tensors, fun) when is_tuple(outs) and is_list(tensors) do
-    result_tuple = tensors |> transfer_all() |> then(&apply(fun, &1))
+    result_tuple =
+      Nx.with_default_backend(Nx.BinaryBackend, fn ->
+        tensors |> transfer_all() |> then(&apply(fun, &1))
+      end)
 
     outs
     |> Tuple.to_list()

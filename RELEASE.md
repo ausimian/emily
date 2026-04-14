@@ -1,5 +1,72 @@
 # Release notes for next release
 
+## Added
+
+- M7 — Bumblebee conformance breadth. Two new models across four
+  new test suites extend M3 (DistilBERT) and M4 (Qwen3) beyond
+  encoder-only/decoder-only text into vision and audio.
+  - **`test/emily/conformance/vit_test.exs`**
+    (`@moduletag :conformance`) — ports `Bumblebee.Vision.VitTest`
+    verbatim: three tiny-random architectures (`:base`,
+    `:for_image_classification`, `:for_masked_image_modeling`)
+    driven with synthetic pixel input `Nx.broadcast(0.5, {1, 30, 30,
+    3})`, asserted against the same PyTorch-produced reference
+    slices Bumblebee's own suite pins. First conformance suite to
+    exercise the `conv` fallback path in anger.
+  - **`test/emily/conformance/vit_full_test.exs`**
+    (`@moduletag :vit_full`, excluded from `--only conformance`
+    because the checkpoint is ~330 MB) — loads
+    `google/vit-base-patch16-224`, runs a forward pass on a
+    deterministic constant-gray pixel tensor, asserts a pinned
+    leading-5 logits slice plus argmax == 763 (ImageNet class
+    "revolver"). Uses synthetic input rather than a checked-in JPEG
+    fixture so the repo stays free of binary assets and the
+    featurizer doesn't enter the assertion surface. Run with
+    `mix test --only vit_full`.
+  - **`test/emily/conformance/whisper_test.exs`**
+    (`@moduletag :conformance`) — ports `Bumblebee.Audio.WhisperTest`
+    verbatim: two tiny-random architectures (`:base`,
+    `:for_conditional_generation`) driven with the same
+    `Nx.sin(Nx.iota({1, 60, 80}))` mel features and decoder ids,
+    asserted against Bumblebee's reference slices. First
+    conformance suite to exercise encoder-decoder cross-attention on
+    Emily, and the first with strided 1-D conv in the encoder
+    frontend.
+  - **`test/emily/conformance/whisper_full_test.exs`**
+    (`@moduletag :whisper_full`, excluded from `--only conformance`
+    because the checkpoint is ~150 MB) — loads
+    `openai/whisper-tiny`, runs a forward pass on a synthetic 30-s
+    mel window (`sin(iota({1, 3000, 80}) * 0.01)`), asserts pinned
+    leading 3×3 logits slice + decoder-last-step argmax. Run with
+    `mix test --only whisper_full`.
+  - **`test/support/conformance_helper.ex`** — shared `use`-able
+    module lifting the `setup_all` backend-swap block and
+    `assert_all_close/3` out of DistilBERT, Qwen3, ViT, and Whisper
+    suites. Net change before the two new suites was ~zero LOC;
+    keeps future conformance additions terse.
+  - **`test_helper.exs`** — exclude list extended with `:vit_full`
+    and `:whisper_full`. Comment rewritten to document each
+    heavyweight tag and its cache footprint.
+  - **`PLAN.md`** — renumbered: M7 = conformance breadth (this),
+    M8 = native conv, M9 = 1.0 release (was M7). MoE / Mixtral
+    tracked as deferred pending upstream Bumblebee support.
+
+## Fixed
+
+- `Emily.Backend.via_binary/via_binary_tuple` — pin the default
+  backend to `Nx.BinaryBackend` for the duration of the fallback
+  `fun` call. Surfaced when ViT tiny-random exercised `conv`: the
+  helpers transferred input tensors correctly, but `Nx.conv`
+  constructs a scalar internally (`Nx.pad(t, 0, ...)` builds a
+  zero-pad tensor) and that scalar landed on whatever the current
+  global default was — `Emily.Backend`, because the conformance
+  `setup_all` installs it. BinaryBackend then saw a mixed-backend
+  operand list and crashed with a FunctionClauseError on `to_binary`.
+  Never surfaced before because `test/emily/backend_fallbacks_test.exs`
+  doesn't install Emily as the global default (tensors built with
+  `backend: Emily.Backend` opt-in) and every prior Bumblebee suite
+  had its hot-path ops off the fallback by M4.
+
 ## Changed
 
 - M6 — `mlx::core::compile` wrapping: **dropped** after Phase-1
