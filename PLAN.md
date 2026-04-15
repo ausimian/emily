@@ -22,8 +22,8 @@ checklist so future-us understands the trade-offs.
 - Ahead-of-time compilation (IREE-style). Complementary, separate effort.
 - Windows or non-Apple-Silicon Linux GPU. CPU-only Linux is a nice-to-have for CI.
 - Training framework features beyond `Nx.Defn.grad`: distributed training,
-  mixed-precision master weights, a native optimizer library. (Autodiff +
-  small-scale training loops: in scope from M9.)
+  a native optimizer library. (Autodiff + small-scale training loops: in
+  scope from M9; mixed-precision master weights: in scope from M16.)
 - Drop-in replacement for EMLX. We borrow where it's clearly right, but
   we're not constrained by its API.
 - `Emily.Stream` as a public API — MLX streams stay internal in v1.
@@ -67,7 +67,10 @@ into BEAM.
    GenServer (bottleneck).
 9. **Unified-memory zero-copy.** On Apple Silicon: `Nx.from_binary` can
    wrap the binary pointer; `to_binary` views the CPU-addressable MTL
-   buffer. Benchmark-verified before claimed.
+   buffer. Benchmark-verified before claimed. *Status: currently
+   unimplemented — the v1 round-trip path memcpys unconditionally
+   (`emily_nif.cpp:57-58, :74-84`). M12 delivers the zero-copy version
+   and the verifying benchmark.*
 10. **No f64.** Hard error at the Backend with a clear message pointing
     to f32. Metal limitation; not worth working around.
 11. **Error discipline.** Every NIF catches C++ exceptions at the
@@ -321,24 +324,383 @@ Axon is added as a **test-only** dependency, used only by the
 **Exit:** oracles (1)–(3) green in default CI; (4) and (5) green in
 opt-in CI job.
 
-### M10 — Conv-pool training
+### Post-M9 priority ordering
+
+The eleven milestones below were derived from a structured review of
+the post-M9 codebase (see PR discussion) and ordered by
+user-visible value, not difficulty. Headline rationale:
+
+1. **Quantization, fast kernels, zero-copy** (M10–M12) move the needle
+   most for the headline use case (Bumblebee Qwen3 on a MacBook).
+2. **Grad oracle, serving, linalg** (M13–M15) close correctness and
+   production-readiness gaps that block real adoption.
+3. **Mixed-precision and conv-pool training** (M16–M17) finish the
+   training story M9 started.
+4. **Observability, errors, interop, doctor** (M18–M21) are the polish
+   that turns a working library into one new users can actually adopt
+   without hand-holding.
+5. **1.0 release** (M22) ships the result.
+
+### M10 — Quantized inference
+
+Quantization is the single largest gap between Emily and "actually run
+Qwen3 on a 16 GB MacBook". MLX ships native int4/int8 affine
+quantization (`mx::quantize`, `mx::dequantize`,
+`mx::quantized_matmul`) and Bumblebee can already load quantized
+checkpoints — Emily just silently can't consume them today. Without
+this, the library's headline value proposition only works for users
+with enough RAM for fp16 weights.
+
+- **Native bindings**: `Native.quantize/3`, `Native.dequantize/4`,
+  `Native.quantized_matmul/6` over the MLX C++ functions. Pass group
+  size and bit-width as integers; default to MLX's `group_size=64,
+  bits=4` but expose overrides.
+- **Backend routing**: detect quantized operand structs at the Nx
+  layer (Bumblebee tags them in the parameter map) and dispatch the
+  matmul callback to `Native.quantized_matmul` rather than
+  `Native.matmul`. Non-matmul ops (norms, residual adds, embeddings)
+  stay on the existing fp16/bf16 fast paths — only the linear
+  projection is quantized.
+- **Memory accounting**: quantized inference is allocator-pattern
+  different from fp16 — packed weights load once and never
+  re-quantize. Add a soak case asserting peak memory matches the
+  expected packed-weight footprint within ~10%.
+
+**Testing**:
+- Native unit tests with hand-computed packed-weight expected values
+  at small group sizes so the bit-packing is checkable.
+- Backend property test: `quantize → dequantize → matmul` against
+  `Nx.BinaryBackend` matmul on the dequantized weights, asserting
+  agreement within the documented quantization-error bound.
+- Conformance: add `Qwen/Qwen3-0.6B-AWQ` (or the MLX-community
+  quantized variant) as `:qwen3_quant_full`. Greedy-decode the same
+  prompt as `qwen3_full` and assert the completion matches a
+  checked-in reference produced by MLX's own Python bindings on the
+  same quantized weights — *not* by the f16 model, because the whole
+  point is to catch quantization-specific drift.
+
+**Exit:** Qwen3-0.6B-AWQ greedy-decodes end-to-end on Emily; Backend
+property tests green; quantized soak harness asserts allocator
+invariants.
+
+### M11 — `mlx::fast::*` fused kernels
+
+Orthogonal to the M6 generic-fusion drop. MLX ships handwritten fused
+kernels that *do* beat composed defn on transformer hot paths:
+
+- `mx::fast::scaled_dot_product_attention` — the QK^T → mask → softmax
+  → V chain as one kernel with attention-mask broadcast handled
+  internally. Replaces ~5 separate Native dispatches per attention
+  layer per token.
+- `mx::fast::rms_norm` — fused RMSNorm with epsilon and gain, replaces
+  the `square → mean → rsqrt → multiply → multiply` chain.
+- `mx::fast::layer_norm` — same story for LayerNorm (DistilBERT, ViT,
+  Whisper encoder).
+- `mx::fast::rope` — fused rotary embeddings with `traditional` /
+  `default` mode flags, replaces the trig + reshape + interleave chain.
+
+**Detection problem**: pattern-matching subgraphs inside `Nx.Defn.Expr`
+to recognize "this is RMSNorm, emit one fused call" is compiler-level
+work. Simpler v1 path: expose them as `Emily.Fast.*` Elixir helpers
+callable from inside `defn`, and ship a thin Bumblebee shim that uses
+them when the active backend is Emily. The pattern-matched compiler
+version is a future follow-on.
+
+**Testing**:
+- Native unit tests against MLX's own test vectors.
+- Backend equivalence: each `Emily.Fast.*` helper matches the
+  composed-defn equivalent within a documented tolerance band (the
+  fused kernels reorder ops slightly, so bit-match isn't expected).
+- Re-run all four Bumblebee `:*_full` conformance suites with the
+  fused-kernel path active; assert the existing logits slices still
+  match.
+- Pin a tokens/sec floor in `bench/qwen3_tokens_per_sec.exs`.
+
+**Exit:** Qwen3, ViT, Whisper, DistilBERT all run with fused kernels
+enabled and pass conformance; benchmark shows a measurable speedup
+over the M9 baseline (target ≥1.5× on M3 hardware).
+
+### M12 — Zero-copy binary round-trip
+
+PLAN design decision #9 claims unified-memory zero-copy for
+`from_binary` / `to_binary`. The current code memcpys unconditionally
+(`emily_nif.cpp:57-58`, `:74-84`). M12 delivers the claim.
+
+- **`to_binary`**: wrap the materialized MLX buffer pointer as a BEAM
+  resource binary via `enif_make_resource_binary`, with the resource
+  retaining a refcount on the MLX array so the buffer survives until
+  the BEAM binary is GC'd. No copy; the BEAM binary aliases MLX
+  storage directly.
+- **`from_binary`**: when the input binary is heap-resident and
+  page-aligned (and the MLX array would otherwise live on the unified
+  arena), construct the array with a deleter that releases the BEAM
+  binary refcount instead of freeing. Fall back to the current memcpy
+  path when alignment doesn't hold or when the source is a sub-binary.
+- **Stride-aware materialize**: `to_binary` currently routes through
+  `mx::contiguous`; for already-contiguous arrays this is a no-op, but
+  the wrap-as-resource path needs an explicit guard since aliasing a
+  non-contiguous buffer would lie about its layout.
+
+**Testing**:
+- Allocate a 256 MB tensor, round-trip through `to_binary` then
+  `from_binary`, assert MLX active memory grew by ~256 MB not ~512 MB.
+- Soak: repeated round-trip with cache-clear, assert peak memory is
+  bounded by the working-set size, not 2× it.
+- Correctness: the M2 property suite must still pass — this is a perf
+  change, not a semantics change.
+- Refcount safety: drop the MLX-side reference, then read the BEAM
+  binary; must not segfault. Use-after-free is the failure mode, so
+  this milestone gates on an AddressSanitizer build in CI.
+
+**Exit:** zero-copy verified by allocator stats; M2 property suite
+green; AddressSanitizer build clean.
+
+### M13 — EXLA gradient conformance
+
+M9's grad oracles are `Nx.BinaryBackend` symbolic grad and f32 finite
+differences. Both can be wrong in the same direction — BinaryBackend's
+symbolic grad is the same `Nx.Defn.grad` lowering Emily uses, so a bug
+in the lowering passes both oracles. Finite differences have their own
+ulp floor and edge-case blind spots (NaN/inf/denormal, near-zero
+saddles).
+
+EXLA-on-Linux+CUDA is the missing third opinion. M3 already
+established the CI pattern: run a model on EXLA, check in golden
+outputs, assert Emily matches. M13 extends it to gradients.
+
+- **CI job**: a Linux+CUDA runner produces a JSON file of
+  `{function_id, input_seed, expected_grad_bytes}` for each function
+  in M9's grad zoo. Checked into the repo; refreshed when the zoo
+  changes.
+- **Test harness**: `test/emily/grad/exla_oracle_test.exs`,
+  `@moduletag :grad_conformance`. Loads the JSON, runs the same
+  function under `Emily.Compiler` with the same seed, asserts grad
+  matches the EXLA-produced bytes within a tolerance tighter than
+  BinaryBackend's (EXLA uses the same hardware-vendor kernels Emily
+  aspires to — the gap should be small).
+- **Coverage**: M9 zoo plus a small transformer-block training step
+  (forward + grad + SGD update of all parameters) so we catch per-op
+  grad bugs that only manifest under composition.
+
+**Testing**: the harness *is* the test. Tolerance calibration: pilot
+3–4 ops first, document the Emily-vs-EXLA gap per dtype, ship per-op
+tolerance tables — not a global epsilon.
+
+**Exit:** `:grad_conformance` green on default CI; tolerance tables
+checked in alongside the goldens.
+
+### M14 — Serving concurrency cookbook + pooled-serving helper
+
+`Emily.Compiler.__partitions_options__/1` raises on
+`max_concurrency > 1` — correct (Metal isn't safe for concurrent
+kernel dispatch from multiple OS threads), but it silently means a
+single Emily-backed `Nx.Serving` cannot scale past one concurrent
+request. Production users will hit this in week one. M14 stops being
+silent about it and ships a tested pattern.
+
+- **`Emily.Serving.start_pool/2`**: helper that starts N
+  `Nx.Serving` instances behind a pool (poolboy or a hand-rolled
+  Registry round-robin; pick the lighter dep). Each Serving runs in
+  its own worker, dispatching requests in parallel across pool
+  members rather than within one member.
+- **Documented pattern**: "for K concurrent inference requests, start
+  K servings". Trade-off: each pool member loads its own weights —
+  fine for small models, painful for Qwen3-7B+.
+- **Alternative for large models**: stream-per-process via MLX's
+  `mx::scheduler::new_stream`. Expose `Native.set_default_stream/1`
+  and `Emily.Stream.with_stream/2`; multi-process serving with one
+  shared model + per-process MLX streams becomes the documented
+  "big model" path. (Promotes streams from internal-only — see
+  Project Decisions — to a narrowly-scoped public surface.)
+- **README + moduledoc updates**: surface the limitation and both
+  patterns prominently. Today neither is mentioned outside a buried
+  comment in `Emily.Compiler`.
+
+**Testing**:
+- Pool helper test: K servings, K parallel requests, assert wall-clock
+  is ~K× faster than serial.
+- Stream test: two processes, two streams, same model loaded once;
+  no SIGSEGV under sustained parallel load
+  (`test/soak/backend_concurrency_test.exs` documents the SIGSEGV
+  story for the unstreamed case — this is the negative control).
+- `:serving_full` opt-in: end-to-end Qwen3 pool plus per-stream
+  large-model pattern.
+
+**Exit:** both patterns documented; pool helper shipped; concurrency
+soak demonstrates the streamed path is stable.
+
+### M15 — Native linalg
+
+`lu`, `svd`, `qr`, `cholesky`, `triangular_solve`, `eigh`,
+`determinant`, and friends route through `via_binary` today. Correct,
+BinaryBackend-slow. MLX exposes most natively under `mx::linalg::*`.
+
+- Bind each available `mx::linalg::*` function as a Native NIF.
+- Replace the `via_binary` Backend callbacks with Native dispatch.
+- Document divergences (MLX's pivot strategy may differ from Nx's
+  reference; numerical conditioning thresholds may differ).
+
+**Testing**:
+- Native unit tests against hand-computed references for small
+  matrices (3×3, 4×4) where the answer is checkable.
+- Backend property tests vs. `Nx.BinaryBackend` with shape generators
+  biased toward well-conditioned inputs (random Gaussian → QR →
+  reconstruct). Document the conditioning-bound failure mode for
+  ill-conditioned cases.
+- Existing `via_binary` fallbacks for any op MLX doesn't implement
+  natively; add a fallback-coverage test for the residual.
+
+**Exit:** all `mx::linalg::*`-backed callbacks pass property suite;
+remaining `via_binary` linalg paths documented with rationale.
+
+### M16 — Mixed-precision training
+
+bf16 activations + f32 master weights + loss scaling is the standard
+recipe for Qwen-scale training. Emily accepts bf16/f16 at the backend
+but ships no policy, no tolerance tables, no loss-scale primitive.
+Promotes "mixed-precision master weights" out of v1 non-goals.
+
+- **`Emily.MixedPrecision`**: thin Elixir module exposing
+  `cast_params/2` (downcast f32 → bf16 for forward),
+  `accumulate_grad/2` (upcast bf16 grad → f32 for the optimizer step),
+  `loss_scale/1` / `unscale/2` (dynamic loss scaling with overflow
+  detection on `isfinite` reductions).
+- **Backend policy**: bf16 ops dispatch to MLX bf16 kernels (already
+  supported); f32 master weights live alongside. No type-promotion
+  surprises — the user explicitly casts at the forward/backward
+  boundary.
+- **Tolerance tables**: per-op, per-dtype tolerances per the M9
+  harness. bf16 has ~3 decimal digits of precision; property tests
+  must use bf16-appropriate epsilons, not f32 ones.
+
+**Testing**:
+- Grad equivalence under bf16 with f32 accumulation: extend M9's zoo
+  with bf16 cases, assert match within bf16 tolerance.
+- Loss scaling: deliberately overflow at bf16, assert the
+  loss-scale dynamic adjustment (halve scale on overflow, double every
+  N successful steps) reaches a stable scale.
+- Convergence canary: extend `:training_full` MNIST with a bf16
+  variant; assert >97% accuracy still reached.
+
+**Exit:** bf16 grad equivalence green; MNIST bf16 convergence within
+0.5% of the f32 baseline; loss-scaling primitives documented with a
+worked example in the moduledoc.
+
+### M17 — Conv-pool training (was M10)
+
+Originally scoped as M10 in the pre-review plan. Re-prioritized below
+the inference, oracle, serving, linalg, and mixed-precision
+milestones because its reach is narrower — small-CNN training is a
+real but limited use case relative to "make Bumblebee inference
+production-ready".
 
 Lift window reductions (`window_sum`, `window_max`, `window_min`,
 `window_product`, `window_scatter_max`, `window_scatter_min`) off
-`via_binary` onto their native MLX counterparts. This closes the
-last gap in the training primitive set and unblocks pool-based conv
-models (small CNNs, ViT classifier heads trained from scratch).
+`via_binary` onto their native MLX counterparts. Closes the last gap
+in the training primitive set and unblocks pool-based conv models
+(small CNNs, ViT classifier heads trained from scratch).
 
-Scope is narrow: the lifts are mechanical per-op changes. Test
+Scope is unchanged: the lifts are mechanical per-op changes. Test
 coverage extends the M9 grad-equivalence and curve-matching zoo to
 cover the new ops, plus a small-CNN MNIST run in `:training_full`.
 
 **Exit:** grad-equivalence on window ops green; small-CNN MNIST
 training converges in `:training_full`.
 
-### M11 — 1.0 release
+### M18 — Observability & fallback telemetry
 
-- API docs, HexDocs, README with a worked Bumblebee example
+Hitting `via_binary` is ~100× slower than native and emits no signal.
+Whisper before M8 spent 90% of forward-pass time in a BinaryBackend
+round-trip with no log. The same shape of bug will keep happening as
+ops rotate on/off `via_binary` — make it observable.
+
+- **`:telemetry` events** at each Native dispatch, fallback entry,
+  and evaluation boundary. Span-style start/stop so consumers can
+  build histograms.
+- **Fallback warning**: configurable via app env
+  (`config :emily, warn_on_fallback: true`), emits a one-shot
+  `Logger.warning` per `{op, input_shape}` so a Bumblebee user sees
+  "indexed_put on shape X fell back to BinaryBackend" once, not every
+  forward pass.
+- **Allocator/peak-memory telemetry** wired so a long-running serving
+  can graph memory drift without manual `get_active_memory` polling.
+
+**Testing**:
+- Attach a test handler, run a known fallback op, assert the event
+  fires.
+- Assert one-shot dedup of the fallback warning over 100 calls.
+
+**Exit:** events documented in `Emily.Telemetry` moduledoc; fallback
+warning behavior covered by tests.
+
+### M19 — Error surfacing
+
+C++ exceptions propagate through `fine` and surface as
+`{:error, "raw MLX message"}` with no Elixir context. "Unable to
+safely factor shape" and "binary size mismatch" are common MLX
+strings but unhelpful as-is.
+
+- Wrap each NIF entry to catch known MLX exception classes
+  (`std::invalid_argument`, `std::runtime_error`, MLX-specific) and
+  re-raise as tagged Elixir exceptions: `Emily.ShapeError`,
+  `Emily.DtypeError`, `Emily.MLXError`.
+- Each exception carries the op name, input shapes/dtypes, and the
+  raw MLX message. The Backend layer optionally annotates with the
+  originating Nx callback name.
+- Migrate existing raises (`f64` rejection, `count_leading_zeros`
+  unsupported, etc.) onto the same exception types for consistency.
+
+**Testing**: deliberate failure for each exception class, assert the
+raised struct's fields.
+
+**Exit:** all NIFs catch and translate; exception hierarchy
+documented.
+
+### M20 — GPU interop pointers
+
+`from_pointer` / `to_pointer` currently raise. Forecloses handing
+Emily tensors to user-owned native code (audio/vision pipelines,
+custom kernels, future DLPack interop). Lowest-priority of the eleven
+gaps — real but narrow.
+
+- `to_pointer`: return the MLX buffer device pointer (Metal for GPU,
+  raw for CPU) plus a refcount handle the caller must release.
+  Document the lifetime contract loudly.
+- `from_pointer`: construct an MLX array from a user-owned pointer
+  with a caller-supplied deleter. Same lifetime contract.
+- DLPack export/import is the natural follow-on — same shape of
+  problem, broader audience. Out of scope for M20.
+
+**Testing**: round-trip via a tiny C harness in `test/c/`; assert
+no leak under valgrind.
+
+**Exit:** pointer ops documented with lifetime warnings; no segfaults
+in CI.
+
+### M21 — `mix emily.doctor`
+
+The MLX prebuilt fetch + checksum + `elixir_make` chain is what
+breaks on fresh macOS machines. A diagnostic Mix task pays back on
+day one of adoption.
+
+- Probes: Xcode CLT version, MLX prebuilt presence + checksum, NIF
+  load, trivial GPU dispatch, MLX version vs. expected, available
+  unified memory.
+- Output: a structured report with green/yellow/red per probe;
+  remediation hints per failure.
+
+**Testing**: snapshot test of the report on a known-good
+configuration; assert each probe surfaces a useful message on a
+deliberately-broken configuration (rename the prebuilt directory,
+revoke read on the cache, etc.).
+
+**Exit:** task documented in the README setup section; surfaces clear
+errors for the three most common breakages.
+
+### M22 — 1.0 release (was M11)
+
+- API docs, HexDocs, README with worked Bumblebee + quantized-Qwen3
+  examples
 - Hex release (public), versioned per conventions (`@version` in mix.exs)
 - `RELEASE.md` accumulated across feature branches
 
@@ -349,7 +711,7 @@ training converges in `:training_full`.
 | Native | Hand-computed expected values | ExUnit unit tests |
 | Backend | `Nx.BinaryBackend` on the same inputs | StreamData property tests + Nx conformance |
 | Compiler | `Emily.Backend` in non-defn mode | Equivalence tests (same function, two modes) |
-| Grad | `Nx.BinaryBackend` grad + finite differences | StreamData property tests + numerical oracle |
+| Grad | `Nx.BinaryBackend` grad + finite differences (+ EXLA goldens from M13) | StreamData property tests + numerical oracle (+ checked-in EXLA-produced goldens) |
 | Training | `Nx.BinaryBackend` loss trajectory | Curve-matching; MNIST convergence (`:training_full`, opt-in) |
 | E2E | EXLA-produced golden outputs | Conformance tests with cached weights |
 
@@ -388,6 +750,10 @@ Additional harnesses:
 
 - **Repo**: GitHub under `ausimian`. Push deferred.
 - **Publishing**: public `hex.pm`. Deferred.
-- **Streams**: internal only in v1.
-- **Training**: out of scope for v1 (inference only).
+- **Streams**: internal in v1 except for the narrow `Emily.Stream`
+  surface M14 introduces for the documented "big model, multi-process
+  serving" pattern.
+- **Training**: in scope from M9 (autodiff + small-scale loops);
+  extended by M16 (mixed precision) and M17 (conv-pool). Out of scope:
+  distributed training and a native optimizer library.
 - **EMLX coordination**: none — quiet ship.
