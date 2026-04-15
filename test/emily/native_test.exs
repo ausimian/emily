@@ -475,6 +475,112 @@ defmodule Emily.NativeTest do
     end
   end
 
+  # ---------- Quantization ----------
+
+  describe "quantization" do
+    # Each test below uses the smallest MLX-legal shapes: `group_size` must
+    # divide the last axis, and for `bits=4` the packed last axis shrinks by
+    # a factor of 8 (32 bits per u32 / 4 bits per value).
+
+    test "quantize returns packed w_q plus per-group scales and biases" do
+      # Single group of 64 elements, all zero: scales and biases collapse.
+      w = f32(List.duplicate(0.0, 64), [1, 64])
+      {q, s, b} = Native.quantize(w, 64, 4)
+
+      # 64 nibbles → 8 u32 values.
+      assert Native.shape(q) == [1, 8]
+      assert Native.dtype(q) == {:u, 32}
+
+      # One group per row.
+      assert Native.shape(s) == [1, 1]
+      assert Native.shape(b) == [1, 1]
+      assert Native.dtype(s) == {:f, 32}
+      assert Native.dtype(b) == {:f, 32}
+
+      # All-zero input → scales/biases collapse to a small epsilon rather
+      # than exactly zero (MLX picks a non-zero scale to avoid divide-by-zero
+      # downstream); both stay within ulp of zero.
+      assert_close(to_f32_list(s), [0.0], 1.0e-6)
+      assert_close(to_f32_list(b), [0.0], 1.0e-6)
+    end
+
+    test "quantize validates last-axis divisibility" do
+      bad = f32(List.duplicate(0.0, 30), [1, 30])
+      assert_raise ArgumentError, fn -> Native.quantize(bad, 64, 4) end
+    end
+
+    test "dequantize recovers the original within int4 tolerance" do
+      # Values spaced across a single group's dynamic range. Max quantization
+      # step for int4 is roughly `(max - min) / 15`; we assert an upper bound
+      # slightly looser than that to avoid ulp noise.
+      values = for i <- 0..63, do: (i - 32) / 32.0
+      w = f32(values, [1, 64])
+
+      {q, s, b} = Native.quantize(w, 64, 4)
+      deq = Native.dequantize(q, s, b, 64, 4)
+
+      assert Native.shape(deq) == [1, 64]
+      step = 2.0 / 15.0
+      assert_close(to_f32_list(deq), values, step)
+    end
+
+    test "quantized_matmul with transpose=true matches matmul(x, deq.T)" do
+      # w: [out=2, in=64]; x: [batch=3, in=64]. With transpose=true, MLX
+      # computes x @ w.T (i.e. w is "rows of output").
+      w_vals = for i <- 0..127, do: (i - 64) / 128.0
+      w = f32(w_vals, [2, 64])
+      x_vals = for i <- 0..(3 * 64 - 1), do: i / 64.0
+      x = f32(x_vals, [3, 64])
+
+      {q, s, b} = Native.quantize(w, 64, 4)
+
+      qmm = Native.quantized_matmul(x, q, s, b, true, 64, 4)
+      deq = Native.dequantize(q, s, b, 64, 4)
+      ref = Native.matmul(x, Native.transpose(deq, [1, 0]))
+
+      assert Native.shape(qmm) == [3, 2]
+      # Fused vs. composed dequant+matmul may reorder ops; allow a small
+      # absolute tolerance. Observed max on this fixture: ~3e-5.
+      assert_close(to_f32_list(qmm), to_f32_list(ref), 1.0e-4)
+    end
+
+    test "quantized_matmul with transpose=false flips the weight layout" do
+      # With transpose=false, MLX treats the packed matrix as already
+      # transposed, so `y = x @ w`. Round-trip against a matching matmul
+      # on the dequantized weight with the same convention.
+      w_vals = for i <- 0..127, do: (i - 64) / 128.0
+      w = f32(w_vals, [2, 64])
+      x = f32(for(i <- 0..(3 * 2 - 1), do: i / 6.0), [3, 2])
+
+      {q, s, b} = Native.quantize(w, 64, 4)
+
+      qmm = Native.quantized_matmul(x, q, s, b, false, 64, 4)
+      deq = Native.dequantize(q, s, b, 64, 4)
+      ref = Native.matmul(x, deq)
+
+      assert Native.shape(qmm) == [3, 64]
+      assert_close(to_f32_list(qmm), to_f32_list(ref), 1.0e-4)
+    end
+
+    test "bits=8 halves the packing density" do
+      values = for i <- 0..63, do: i / 64.0
+      w = f32(values, [1, 64])
+      {q, _s, _b} = Native.quantize(w, 64, 8)
+
+      # 64 bytes → 16 u32 values.
+      assert Native.shape(q) == [1, 16]
+      assert Native.dtype(q) == {:u, 32}
+    end
+
+    test "smaller group_size produces more scale/bias rows" do
+      w = f32(List.duplicate(0.0, 128), [1, 128])
+      {_q, s, _b} = Native.quantize(w, 32, 4)
+
+      # 128 / 32 = 4 groups along the last axis.
+      assert Native.shape(s) == [1, 4]
+    end
+  end
+
   # ---------- Lifecycle ----------
 
   describe "lifecycle under load" do

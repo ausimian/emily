@@ -2,6 +2,86 @@
 
 ## Added
 
+- M10 (partial) — Quantized inference primitives. Exposes MLX's affine
+  int4/int8 group-wise quantization at the Native and Elixir levels, plus
+  a direct-call helper for eager use. Enough to quantize a dense weight,
+  store it packed at rest, and dispatch a fused quantized matmul against
+  it in plain Elixir code.
+  - **Native `Native.quantize/3`, `Native.dequantize/5`,
+    `Native.quantized_matmul/7`** (`c_src/ops/linalg.cpp`) over
+    `mx::quantize`, `mx::dequantize`, `mx::quantized_matmul`. `quantize`
+    returns a 3-tuple `{w_q, scales, biases}` — first NIF in the tree
+    returning a tuple of resources. `quantized_matmul` takes the
+    `transpose` flag as an explicit arg rather than the PLAN-spec'd `/6`
+    signature: AWQ packed layouts need `transpose=false` while
+    fresh-from-dense weights use `transpose=true`, and MLX exposes the
+    flag as a required parameter on its C++ API.
+  - **`Emily.QuantizedWeight`** (`lib/emily/quantized_weight.ex`) —
+    `Nx.Container`-derived struct bundling `{value, scales, biases}`
+    with `{group_size, bits, transpose}` metadata (the latter flagged
+    `keep:` so the scalars survive container traversal — defn trace,
+    `backend_transfer`, parameter-map walks). `from_dense/2` validates
+    rank ≥ 2, last-axis divisibility, dtype ∈ {f16, bf16, f32}, and bits
+    ∈ {2,3,4,6,8} before dispatch. `to_dense/1` inverses via
+    `Native.dequantize`.
+  - **`Emily.Quantization.quantized_matmul/2`**
+    (`lib/emily/quantization.ex`) — direct-call helper over
+    materialized tensors. Extracts refs from the input `%T{}` and the
+    three tensors inside a `%QuantizedWeight{}`, dispatches to the
+    Native NIF, and rewraps the result. Input dtype must match
+    `qw.scales.type` (raises with a targeted error otherwise);
+    BinaryBackend inputs are transferred transparently. Used by the
+    soak and property tests today; the fused-kernel perf win is
+    available here but not yet from defn-traced forward passes (see
+    below).
+  - **`test/emily/native_test.exs`** (+7 cases) — hand-computed
+    quantize-shape checks (`group_size=64, bits=4` → 8 u32/row; bits=8
+    → 16 u32/row; smaller group_size → more scale/bias rows),
+    `dequantize` round-trip within int4 step tolerance, validation of
+    indivisible last axes, and `quantized_matmul` equivalence vs.
+    `matmul(x, dequantize(…))` for both `transpose=true` and
+    `transpose=false` layouts.
+  - **`test/emily/quantization/quantized_weight_test.exs`** (new) —
+    `from_dense/2` metadata/shape/dtype assertions, validation-raise
+    cases (indivisible axis, unsupported bits, unsupported dtype,
+    rank < 2), bits=8-tighter-than-bits=4 property, and an
+    `Nx.Container` traversal test confirming `keep:` preserves
+    `group_size`/`bits`/`transpose` across `backend_transfer`. Property
+    test: random group-shaped weights round-trip `from_dense |>
+    to_dense` within a 0.15 tolerance band.
+  - **`test/emily/quantization/quantized_matmul_test.exs`** (new) —
+    property test for `transpose=true` against a
+    `Nx.dot(x, Nx.transpose(to_dense(qw)))` oracle on BinaryBackend;
+    explicit `transpose=false` case asserting `Nx.dot(x, to_dense(qw))`
+    convention; dtype-mismatch raise test; BinaryBackend-input
+    auto-transfer test.
+  - **`test/soak/quantized_memory_test.exs`** (`@moduletag :soak`,
+    default suite) — 1000-iteration quantized-matmul soak asserting
+    active memory returns within 4 MB of baseline after `clear_cache/0`.
+    Separate from `memory_test.exs` because quantized inference is
+    allocator-pattern different from fp16: packed weights load once
+    (not re-quantized per call), and the per-iter activation/output
+    budget is smaller.
+  - **Scope narrowed from PLAN.md.** PLAN spec'd a `Backend.dot/7`
+    dispatch path that inspects the operand struct, plus an Axon
+    layer-replacement (`Emily.Quantization.Layers.quantized_dense` +
+    `Emily.Quantization.quantize/2`) and a `Qwen/Qwen3-0.6B-AWQ`
+    conformance test. Investigation uncovered that `Nx.dot/2` calls
+    `Nx.LazyContainer.traverse/3` expecting a single `%T{}` — a
+    three-tensor `%QuantizedWeight{}` container raises before reaching
+    `Backend.dot/7`. The alternative — an Axon layer op calling
+    `Native.quantized_matmul` during forward pass — fails for a
+    different reason: Axon layer ops run at `Nx.Defn.jit` trace time
+    with `Nx.Defn.Expr` inputs, and `Nx.Defn.Evaluator` has no public
+    hook to inject a custom op that isn't a `Nx.Backend` callback.
+    Closing the gap requires either (a) a defn-native dequantize built
+    from Nx bit primitives (loses the fused kernel), or (b) an
+    Emily-specific `Nx.Defn.Compiler` variant that recognizes a
+    sentinel `Expr` node and routes to `Native.quantized_matmul`. Both
+    are meaningful scope; tracked as M10.5. The Native + container +
+    direct-call helper surface shipped in M10 is the substrate that
+    either of those approaches will build on.
+
 - M9 — Gradient conformance and training primitives. Makes
   `Nx.Defn.grad` usable on Emily by lifting the three ops that grad
   lands on most heavily off the `via_binary` fallback, and adds the

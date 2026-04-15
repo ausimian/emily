@@ -277,7 +277,7 @@ and back. Lift to native MLX:
 - `gather` → `mlx::core::gather`
 
 Window reductions stay on `via_binary` in M9 — pool-based conv
-training is scoped to M10.
+training is scoped to M17.
 
 **Testing — Layers 4 (Grad) and 5 (Training):**
 
@@ -341,47 +341,116 @@ user-visible value, not difficulty. Headline rationale:
    without hand-holding.
 5. **1.0 release** (M22) ships the result.
 
-### M10 — Quantized inference
+### M10 — Quantized inference primitives (partial)
 
 Quantization is the single largest gap between Emily and "actually run
 Qwen3 on a 16 GB MacBook". MLX ships native int4/int8 affine
 quantization (`mx::quantize`, `mx::dequantize`,
-`mx::quantized_matmul`) and Bumblebee can already load quantized
-checkpoints — Emily just silently can't consume them today. Without
-this, the library's headline value proposition only works for users
-with enough RAM for fp16 weights.
+`mx::quantized_matmul`); M10 binds it at the Native and Elixir levels
+and ships a direct-call helper for eager use. The Bumblebee-integrated
+conformance path is split out to M10.5 — see **Scope note** below.
 
-- **Native bindings**: `Native.quantize/3`, `Native.dequantize/4`,
-  `Native.quantized_matmul/6` over the MLX C++ functions. Pass group
-  size and bit-width as integers; default to MLX's `group_size=64,
-  bits=4` but expose overrides.
-- **Backend routing**: detect quantized operand structs at the Nx
-  layer (Bumblebee tags them in the parameter map) and dispatch the
-  matmul callback to `Native.quantized_matmul` rather than
-  `Native.matmul`. Non-matmul ops (norms, residual adds, embeddings)
-  stay on the existing fp16/bf16 fast paths — only the linear
-  projection is quantized.
-- **Memory accounting**: quantized inference is allocator-pattern
-  different from fp16 — packed weights load once and never
-  re-quantize. Add a soak case asserting peak memory matches the
-  expected packed-weight footprint within ~10%.
+**Shipped**:
 
-**Testing**:
-- Native unit tests with hand-computed packed-weight expected values
-  at small group sizes so the bit-packing is checkable.
-- Backend property test: `quantize → dequantize → matmul` against
-  `Nx.BinaryBackend` matmul on the dequantized weights, asserting
-  agreement within the documented quantization-error bound.
-- Conformance: add `Qwen/Qwen3-0.6B-AWQ` (or the MLX-community
-  quantized variant) as `:qwen3_quant_full`. Greedy-decode the same
-  prompt as `qwen3_full` and assert the completion matches a
-  checked-in reference produced by MLX's own Python bindings on the
-  same quantized weights — *not* by the f16 model, because the whole
-  point is to catch quantization-specific drift.
+- **Native bindings**: `Native.quantize/3`, `Native.dequantize/5`,
+  `Native.quantized_matmul/7` over the MLX C++ functions. `quantize`
+  returns a 3-tuple `{w_q, scales, biases}`. `quantized_matmul/7` takes
+  `transpose` as an explicit boolean rather than PLAN's original `/6`:
+  AWQ packed layouts need `transpose=false` while fresh-from-dense
+  weights use `transpose=true`, and MLX exposes it as a required
+  parameter.
+- **`Emily.QuantizedWeight`** (`lib/emily/quantized_weight.ex`) —
+  `Nx.Container`-derived struct with `{value, scales, biases,
+  group_size, bits, transpose}`. Scalar metadata survives container
+  traversal via `Nx.Container`'s `keep:` option. `from_dense/2`
+  validates rank, last-axis divisibility, dtype, and bit count.
+- **`Emily.Quantization.quantized_matmul/2`** — direct-call helper that
+  extracts refs from an input tensor and a `%QuantizedWeight{}` and
+  dispatches the fused kernel. Intended for eager/benchmark use and as
+  the substrate for M10.5's defn-integration path.
+- **Memory soak** (`test/soak/quantized_memory_test.exs`) — 1000-iter
+  quantized-matmul loop asserts active memory returns within 4 MB of
+  baseline after `Native.clear_cache/0`. Kept separate from the fp16
+  memory soak because quantized inference is allocator-pattern
+  different: packed weights load once and never re-quantize.
+- **Native unit tests + Backend property tests** — see
+  `test/emily/native_test.exs` (+7 cases) and
+  `test/emily/quantization/` (two new files). Round-trip `quantize →
+  dequantize` and `quantized_matmul` vs. `matmul(x, dequantize(…))`
+  oracles for both `transpose=true` and `transpose=false` layouts.
 
-**Exit:** Qwen3-0.6B-AWQ greedy-decodes end-to-end on Emily; Backend
-property tests green; quantized soak harness asserts allocator
-invariants.
+**Scope note — why no Backend routing / Axon integration / conformance
+test in M10**:
+
+- **`Backend.dot/7` dispatch doesn't work.** PLAN'd approach was
+  "detect quantized operand structs at the Nx layer (Bumblebee tags
+  them in the parameter map) and dispatch the matmul callback to
+  `Native.quantized_matmul`". But `Nx.dot/2` calls
+  `Nx.LazyContainer.traverse/3` expecting a single `%T{}`; a
+  three-tensor `%QuantizedWeight{}` container raises before reaching
+  `Backend.dot/7`.
+- **Axon layer-op dispatch doesn't work either.** `Axon.layer` ops run
+  at `Nx.Defn.jit` trace time with `Nx.Defn.Expr` inputs;
+  `Nx.Defn.Evaluator` walks those expressions dispatching `Nx.Backend`
+  callbacks with materialized refs. There is no public hook to inject
+  a custom op like `Native.quantized_matmul` that isn't already a
+  `Nx.Backend` callback, and `deftransform` / `hook` / metadata all
+  run at trace time (no refs available).
+- **Bumblebee has no AWQ loader yet.** The exploration for M10
+  confirmed `deps/bumblebee` has zero quantization-loading code (no
+  AWQ, GPTQ, MLX-format paths). PLAN.md's "Bumblebee can already load
+  quantized checkpoints" is aspirational.
+
+All three of these are meaningful scope. M10 ships the substrate they
+all need; M10.5 picks the defn-integration strategy and ships the
+conformance test.
+
+**Exit**: Native NIFs green under unit + property tests; QuantizedWeight
+container property tests green; direct-call helper green under oracle
+comparison; quantized memory soak clean.
+
+### M10.5 — Bumblebee quantized inference integration
+
+Closes the gap M10 left open: getting `Native.quantized_matmul`
+reachable from `Nx.Defn.jit`-traced Axon forward passes so Bumblebee's
+AWQ-loading (when it lands) routes through the fused kernel.
+
+Approach choices (pick before starting):
+
+1. **Defn-native dequantize** — implement MLX's int4/int8 affine
+   dequantize using Nx bit primitives (right-shift + mask + multiply +
+   add). `Emily.Quantization.Layers.quantized_dense/3` becomes
+   `Nx.dot(x, dequantize_defn(qw))`. Correct and unblocks the full
+   Axon/Bumblebee path, but uses two kernels (dequantize + matmul)
+   instead of MLX's fused one — M11's fast-kernel work subsumes the
+   perf gap.
+2. **Emily.Compiler custom-op intercept** — fork `Nx.Defn.Evaluator`
+   under Emily to recognise a sentinel `Expr` node and route to
+   `Native.quantized_matmul`. Full fused-kernel story but large
+   surface; fragile against upstream Nx evolution.
+3. **Upstream Nx extension** — add a custom-backend-op hook to
+   `Nx.Defn.Compiler` / `Nx.Defn.Evaluator`. Cleanest long-term
+   solution; slowest to land because it needs upstream review/merge.
+
+Also in scope for M10.5:
+
+- **Test-only AWQ loader** (`test/support/awq_loader.ex`) — reads
+  `Qwen/Qwen3-0.6B-AWQ` safetensors, extracts `qweight`, `scales`,
+  `qzeros`, maps to MLX's `(w_q, scales, biases)` layout. The
+  trickiest bit is the AWQ zero-point → MLX bias conversion
+  (`biases = -scales * zero_points`) and the AWQ `[in, out/pack]` vs.
+  MLX `[out, in]` layout difference.
+- **`:qwen3_quant_full` conformance test** — greedy-decode
+  Qwen3-0.6B-AWQ on Emily, assert the completion matches a checked-in
+  reference produced by MLX's Python bindings on the same quantized
+  weights.
+- **Bumblebee upstream contribution (optional, follow-up to M10.5)** —
+  upstream the AWQ loader into `deps/bumblebee` so the test-only path
+  becomes unnecessary.
+
+**Exit**: Qwen3-0.6B-AWQ greedy-decodes end-to-end on Emily under
+`Nx.Defn.jit`; conformance test green; Axon-integrated quantization
+documented.
 
 ### M11 — `mlx::fast::*` fused kernels
 
