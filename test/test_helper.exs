@@ -32,6 +32,14 @@
 # with:
 #
 #     mix test --only qwen3_quant_full
+#
+# `:fast_kernels_full` is the M11 fused-kernel variant of every full
+# conformance model (and one tiny-random DistilBERT smoke). Each test
+# applies `Emily.Bumblebee.FastKernels.apply/1` to the loaded Axon
+# model so that RMSNorm / LayerNorm / RoPE / SDPA dispatch through
+# the MLX `mx::fast::*` kernels via `Emily.Fast`. Run explicitly:
+#
+#     mix test --only fast_kernels_full
 ExUnit.start(
   max_cases: 1,
   exclude: [
@@ -40,6 +48,7 @@ ExUnit.start(
     :qwen3_quant_full,
     :vit_full,
     :whisper_full,
-    :training_full
+    :training_full,
+    :fast_kernels_full
   ]
 )

@@ -25,6 +25,8 @@ defmodule Emily.Conformance.DistilbertTest do
   use ExUnit.Case, async: false
   use Emily.ConformanceHelper
 
+  alias Emily.Bumblebee.FastKernels
+
   @moduletag :conformance
   @moduletag capture_log: true
   @moduletag timeout: 120_000
@@ -165,6 +167,36 @@ defmodule Emily.Conformance.DistilbertTest do
     assert Nx.shape(outputs.logits) == {1, 1}
 
     assert_all_close(outputs.logits, Nx.tensor([[-0.0027]]))
+  end
+
+  @tag :fast_kernels_full
+  test "fused MLX kernels: :base architecture forward matches the dense path" do
+    assert {:ok, %{model: model, params: params, spec: spec}} =
+             Bumblebee.load_model({:hf, "hf-internal-testing/tiny-random-DistilBertModel"})
+
+    assert %Bumblebee.Text.Distilbert{architecture: :base} = spec
+
+    fast_model = FastKernels.apply(model)
+
+    inputs = %{
+      "input_ids" => Nx.tensor([[10, 20, 30, 40, 50, 60, 70, 80, 0, 0]]),
+      "attention_mask" => Nx.tensor([[1, 1, 1, 1, 1, 1, 1, 1, 0, 0]])
+    }
+
+    outputs = Axon.predict(fast_model, params, inputs)
+
+    assert Nx.shape(outputs.hidden_state) == {1, 10, 32}
+
+    # DistilBERT has LayerNorm but no RMSNorm or RoPE; this primarily
+    # exercises the fused LayerNorm + SDPA paths.
+    assert_all_close(
+      outputs.hidden_state[[.., 1..3, 1..3]],
+      Nx.tensor([
+        [[-0.9427, 0.7933, 0.1031], [1.0913, 1.0214, -1.5890], [-2.1149, -0.3367, -0.6268]]
+      ]),
+      atol: 1.0e-3,
+      rtol: 1.0e-3
+    )
   end
 
   describe "Nx.Serving.batched_run" do

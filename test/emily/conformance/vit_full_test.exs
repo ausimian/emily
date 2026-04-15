@@ -24,6 +24,8 @@ defmodule Emily.Conformance.VitFullTest do
   use ExUnit.Case, async: false
   use Emily.ConformanceHelper
 
+  alias Emily.Bumblebee.FastKernels
+
   @moduletag :vit_full
   @moduletag capture_log: true
   @moduletag timeout: 600_000
@@ -63,6 +65,41 @@ defmodule Emily.Conformance.VitFullTest do
     assert_all_close(
       outputs.logits[[.., 0..4]],
       Nx.tensor([[0.0112, -0.5066, -0.7792, -1.0436, -0.1899]])
+    )
+  end
+
+  @tag :fast_kernels_full
+  test "ViT with fused MLX kernels matches the pinned argmax within widened tolerance" do
+    {:ok, %{model: model, params: params}} =
+      Bumblebee.load_model({:hf, "google/vit-base-patch16-224"})
+
+    fast_model = FastKernels.apply(model)
+
+    inputs = %{
+      "pixel_values" => Nx.broadcast(Nx.tensor(0.5, type: :f32), {1, 224, 224, 3})
+    }
+
+    outputs = Axon.predict(fast_model, params, inputs)
+
+    assert Nx.shape(outputs.logits) == {1, 1000}
+
+    argmax =
+      outputs.logits
+      |> Nx.argmax(axis: -1)
+      |> Nx.backend_transfer(Nx.BinaryBackend)
+      |> Nx.to_flat_list()
+      |> hd()
+
+    assert argmax == 763
+
+    # Fused LayerNorm + SDPA reorder ops slightly; loosen tolerance by
+    # ~10× over the pinned-logits assertion above. Empirical gap on
+    # M3 was ~3e-4 across 12 layers; 1e-3 is comfortable.
+    assert_all_close(
+      outputs.logits[[.., 0..4]],
+      Nx.tensor([[0.0112, -0.5066, -0.7792, -1.0436, -0.1899]]),
+      atol: 1.0e-3,
+      rtol: 1.0e-3
     )
   end
 end

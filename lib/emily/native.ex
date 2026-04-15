@@ -274,6 +274,35 @@ defmodule Emily.Native do
       ),
       do: nif()
 
+  # --- Fast / fused transformer kernels ---------------------------
+
+  @spec fast_rms_norm(tensor(), tensor() | nil, float()) :: tensor()
+  def fast_rms_norm(_x, _weight, _eps), do: nif()
+
+  @spec fast_layer_norm(tensor(), tensor() | nil, tensor() | nil, float()) :: tensor()
+  def fast_layer_norm(_x, _weight, _bias, _eps), do: nif()
+
+  @spec fast_rope(
+          tensor(),
+          integer(),
+          boolean(),
+          float() | nil,
+          float(),
+          tensor(),
+          tensor() | nil
+        ) :: tensor()
+  def fast_rope(_x, _dims, _traditional, _base, _scale, _offset, _freqs), do: nif()
+
+  @spec fast_scaled_dot_product_attention(
+          tensor(),
+          tensor(),
+          tensor(),
+          float(),
+          String.t(),
+          [tensor()]
+        ) :: tensor()
+  def fast_scaled_dot_product_attention(_q, _k, _v, _scale, _mask_mode, _mask_arrs), do: nif()
+
   # --- Sort --------------------------------------------------------
 
   @spec sort(tensor(), integer()) :: tensor()

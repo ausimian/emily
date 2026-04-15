@@ -20,6 +20,7 @@ defmodule Emily.Conformance.Qwen3QuantFullTest do
 
   use ExUnit.Case, async: false
 
+  alias Emily.Bumblebee.FastKernels
   alias Emily.Quantization.Transform
 
   @moduletag :qwen3_quant_full
@@ -79,5 +80,50 @@ defmodule Emily.Conformance.Qwen3QuantFullTest do
 
     assert summary.output == 32
     assert text == @reference_text
+  end
+
+  @tag :fast_kernels_full
+  test "Qwen/Qwen3-0.6B quantized + fused MLX kernels still decodes 32 tokens" do
+    {:ok, %{model: model, params: params, spec: spec}} =
+      Bumblebee.load_model({:hf, "Qwen/Qwen3-0.6B"})
+
+    {:ok, tokenizer} = Bumblebee.load_tokenizer({:hf, "Qwen/Qwen3-0.6B"})
+    {:ok, generation_config} = Bumblebee.load_generation_config({:hf, "Qwen/Qwen3-0.6B"})
+
+    # Compose the two rewrites: quantize first (rewrites dense → quantized_dense
+    # by name; doesn't touch RMSNorm / RoPE / attention nodes) then fuse
+    # (rewrites the still-stock norm/rope/attention nodes). Order matters
+    # only when the two rewrites would compete on the same nodes — they
+    # don't here.
+    {qmodel, qparams} =
+      Transform.quantize(model, params,
+        bits: 4,
+        group_size: 128,
+        transpose: true
+      )
+
+    fast_qmodel = FastKernels.apply(qmodel)
+
+    model_info = %{model: fast_qmodel, params: qparams, spec: spec}
+
+    config =
+      Bumblebee.configure(generation_config,
+        max_new_tokens: 32,
+        strategy: %{type: :greedy_search}
+      )
+
+    serving =
+      Bumblebee.Text.generation(model_info, tokenizer, config,
+        defn_options: [compiler: Nx.Defn.Evaluator]
+      )
+
+    %{results: [%{token_summary: summary}]} =
+      Nx.Serving.run(serving, @prompt)
+
+    # Both quantization noise *and* fused-kernel reordering operate on
+    # the logits — combined drift makes a pinned-text assertion brittle.
+    # The structural assertion (32 tokens out, no crash) is the
+    # informative one for this milestone.
+    assert summary.output == 32
   end
 end

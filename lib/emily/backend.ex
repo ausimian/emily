@@ -1186,4 +1186,88 @@ defmodule Emily.Backend do
 
   @impl true
   def svd(outs, t, opts), do: via_binary_tuple(outs, [t], &Nx.LinAlg.svd(&1, opts))
+
+  # =================================================================
+  # Custom fused-kernel callbacks for Emily.Fast
+  # =================================================================
+  #
+  # These aren't part of the `Nx.Backend` behaviour — they're the
+  # dispatch target for `Nx.Defn.Expr.optional/3` nodes emitted by
+  # `Emily.Fast.*`. The Evaluator's `:optional` case looks up
+  # `function_exported?(backend, op, arity)` and calls it with
+  # `(out, args...)`. Non-Emily backends don't export these, so the
+  # Evaluator runs the composed-defn fallback instead.
+  #
+  # Arities: one more than the `in_args` the `Emily.Fast.*` caller
+  # passes (the leading `out` is the template tensor).
+
+  @doc false
+  def fast_rms_norm(%T{} = out, x, weight, opts) do
+    Native.fast_rms_norm(ref(x), ref(weight), opts[:eps] * 1.0) |> wrap(out)
+  end
+
+  @doc false
+  def fast_layer_norm(%T{} = out, x, weight, bias, opts) do
+    Native.fast_layer_norm(ref(x), ref(weight), ref(bias), opts[:eps] * 1.0) |> wrap(out)
+  end
+
+  @doc false
+  def fast_rope(%T{} = out, x, offset, opts) do
+    ref =
+      Native.fast_rope(
+        ref(x),
+        opts[:dims],
+        opts[:traditional],
+        opts[:base] * 1.0,
+        opts[:scale] * 1.0,
+        ref(offset),
+        nil
+      )
+
+    wrap(ref, out)
+  end
+
+  @doc false
+  def fast_rope_with_freqs(%T{} = out, x, offset, freqs, opts) do
+    ref =
+      Native.fast_rope(
+        ref(x),
+        opts[:dims],
+        opts[:traditional],
+        nil,
+        opts[:scale] * 1.0,
+        ref(offset),
+        ref(freqs)
+      )
+
+    wrap(ref, out)
+  end
+
+  @doc false
+  def fast_scaled_dot_product_attention(%T{} = out, q, k, v, opts) do
+    mask_mode = if opts[:causal], do: "causal", else: ""
+
+    Native.fast_scaled_dot_product_attention(
+      ref(q),
+      ref(k),
+      ref(v),
+      opts[:scale] * 1.0,
+      mask_mode,
+      []
+    )
+    |> wrap(out)
+  end
+
+  @doc false
+  def fast_scaled_dot_product_attention_with_mask(%T{} = out, q, k, v, mask, opts) do
+    Native.fast_scaled_dot_product_attention(
+      ref(q),
+      ref(k),
+      ref(v),
+      opts[:scale] * 1.0,
+      "array",
+      [ref(mask)]
+    )
+    |> wrap(out)
+  end
 end
