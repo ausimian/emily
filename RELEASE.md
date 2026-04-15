@@ -2,6 +2,54 @@
 
 ## Added
 
+- M11 — MLX fused transformer kernels. Wires MLX's handwritten
+  `mx::fast::*` fused kernels (RMSNorm, LayerNorm, RoPE, scaled-dot-
+  product attention) into Emily as `defn`-callable helpers, and ships
+  a Bumblebee shim that swaps these in for the stock composed-defn
+  implementations when the Axon graph is rewritten with
+  `Emily.Bumblebee.FastKernels.apply/1`.
+  - **Native NIFs** (`c_src/ops/fast.cpp`) over `mx::fast::rms_norm`,
+    `mx::fast::layer_norm`, `mx::fast::rope`, and
+    `mx::fast::scaled_dot_product_attention`. Nullable weight / bias
+    / freqs arguments marshal via `std::optional`; the SDPA mask
+    argument list marshals via `std::vector<fine::ResourcePtr<Tensor>>`.
+  - **`Emily.Fast`** (`lib/emily/fast.ex`) — `rms_norm/3`,
+    `layer_norm/4`, `rope/3`, `rope_with_freqs/4`,
+    `scaled_dot_product_attention/4`,
+    `scaled_dot_product_attention_with_mask/5`. Each helper emits a
+    `Nx.Defn.Expr.optional/3` node whose op name matches a custom
+    callback on `Emily.Backend`; the Evaluator dispatches to the
+    fused kernel under Emily and falls back to a defn composition on
+    any other backend. This makes the helpers safe to drop into
+    Bumblebee inference paths without breaking BinaryBackend
+    conformance runs.
+  - **`Emily.Backend.fast_*`** — six custom callbacks (not part of the
+    `Nx.Backend` behaviour) that Evaluator picks up when the input
+    tensors carry Emily data. They unwrap refs and call the Native
+    NIF directly.
+  - **`Emily.Bumblebee.FastKernels`** (`test/support/`) — Axon graph
+    rewriter, mirroring the M10.5 `Emily.Quantization.Transform`
+    pattern. Rewrites `:rms_norm` and `:layer_norm` nodes via
+    `Axon.map_nodes`, `Bumblebee.Layers.apply_rotary_embedding/5` by
+    function-reference match, and coalesces
+    `attention_weights_impl + attention_output_impl` into one fused
+    SDPA layer via `Axon.rewrite_nodes`. RoPE handles all four
+    Bumblebee scaling strategies (`:linear`, `:dynamic`, `:longrope`,
+    `:llama3`) by precomputing the inverse-frequency table Elixir-
+    side and passing it to MLX via the `freqs`-override overload.
+  - **Tests**: per-kernel Native/defn/equivalence suites at
+    `test/emily/fast/`; shim unit tests at
+    `test/emily/bumblebee/fast_kernels_test.exs`; fused-kernel
+    variants of every `*_full` conformance suite tagged
+    `:fast_kernels_full` (excluded by default like the other
+    `*_full` tags). Run explicitly:
+    `mix test --only fast_kernels_full`.
+  - **Bench**: `bench/qwen3_tokens_per_sec.exs` gains an
+    `EMILY_BENCH_FAST_KERNELS=1` mode that benchmarks baseline vs
+    fused side-by-side, plus an `EMILY_BENCH_PIN=<multiplier>` flag
+    that fails with a non-zero exit when the fused mean throughput
+    doesn't clear the multiplier × baseline threshold.
+
 - M10 (partial) — Quantized inference primitives. Exposes MLX's affine
   int4/int8 group-wise quantization at the Native and Elixir levels, plus
   a direct-call helper for eager use. Enough to quantize a dense weight,
