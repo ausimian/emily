@@ -2,6 +2,91 @@
 
 ## Added
 
+- M9 — Gradient conformance and training primitives. Makes
+  `Nx.Defn.grad` usable on Emily by lifting the three ops that grad
+  lands on most heavily off the `via_binary` fallback, and adds the
+  test scaffolding to trust a gradient. Training on Emily has been
+  technically possible since M2 (grad is symbolic in Elixir and
+  lowers to forward ops), but every embedding-style backward was
+  round-tripping to `Nx.BinaryBackend`.
+  - **Native `Native.gather/4`, `Native.scatter/4`, `Native.scatter_add/4`**
+    backing `mx::gather`, `mx::scatter`, `mx::scatter_add`. List-of-
+    per-axis-indices form (MLX's native shape) rather than the
+    `{N, rank}` tensor Nx passes around — the Backend layer does the
+    translation.
+  - **`Emily.Backend.gather/4`, `indexed_add/5`, `indexed_put/5`**
+    rewired. `gather` retains the single-axis `Native.take` fast path
+    (now with an explicit output reshape — fixes a latent shape lie
+    exposed when downstream MLX ops inspect the ref shape directly,
+    e.g. `Nx.gather` followed by `Nx.dot` in a grad); the multi-axis
+    path is native. Shared `apply_scatter/6` helper handles index
+    splitting (`split_indices_per_axis/3`) and MLX's updates-shape
+    rewrap — Nx ships `{batch ++ non_indexed_dims}` but MLX requires
+    `{batch ++ per_axis_slot}` with a length-1 dim at every indexed-
+    axis position (`updates_shape_for_scatter/3`). Fallback to
+    `via_binary` on shapes outside the covered contract.
+  - **Duplicate-index divergence.** MLX `scatter` is parallel and
+    unordered on duplicate indices; `Nx.indexed_put` is deterministic
+    last-write. Documented in the NIF and Backend; grad property
+    generators dedupe. `scatter_add` is commutative so duplicates
+    accumulate correctly either way.
+  - **`test/emily/native_test.exs`** (+5 cases) — scalar-write,
+    partial-axis slice write, and the load-bearing `{B, L, D}` target
+    with `axes: [0, 1]` rewrap case.
+  - **`test/emily/backend_test.exs`** (+8 tests) — targeted cases for
+    all three ops exercising the Backend translation paths end-to-end
+    via Nx.
+  - **`test/emily/grad/grad_equivalence_test.exs`** — property zoo
+    covering sum, dot, reshape∘transpose, broadcast, gather,
+    indexed_add, plus two composition cases (gather→dot→softmax and
+    a mini-attention block). Each case runs under `compiler:
+    Emily.Compiler` on Emily.Backend and `compiler:
+    Nx.Defn.Evaluator` on `Nx.BinaryBackend`, asserting the
+    grad matches within a grad-scaled tolerance. Also covers the
+    M9 PRNG-key-threading risk called out in `PLAN.md`: grad through
+    a `Nx.Random.uniform_split`-driven dropout with fixed keys
+    produces bit-identical results across repeat runs.
+  - **`test/emily/grad/finite_diff_test.exs`** +
+    **`test/support/grad_helper.ex`** — finite-difference numerical-
+    gradient oracle. Pilot of four ops (`sum`, `dot`, `logsumexp`,
+    `sigmoid`) with per-op tolerance tables; the harness catches the
+    class of bug where symbolic-grad-on-Emily and symbolic-grad-on-
+    BinaryBackend *agree* but are both wrong.
+  - **`test/emily/training/mlp_curve_test.exs`** +
+    **`test/emily/training/transformer_block_curve_test.exs`** +
+    **`test/support/training_helper.ex`** — handwritten MLP and
+    single transformer block (attention + FFN + residuals) trained
+    with vanilla SGD for 50 steps on a fixed synthetic batch. Two
+    tolerance bands asserted in each: per-step loss `rtol = 1e-3`
+    (silent-drift canary — MLX parallel reductions diverge from
+    BinaryBackend sequential reductions, so strict bit-match would
+    be flaky) and final-loss `rtol = 1e-4` (convergence
+    correctness). No Axon dep at this tier; the training loop is
+    handwritten so a red test points at backend/grad numerics.
+  - **`test/soak/training_test.exs`** — 1k-iteration training-loop
+    memory soak, `@moduletag :soak` (default suite). Reuses the
+    handwritten MLP; asserts active memory returns within 2 MB of
+    baseline after `Native.clear_cache/0`. Training exercises a
+    different allocator pattern than inference (param–grad pairs,
+    activations), hence a dedicated soak alongside
+    `memory_test.exs`.
+  - **`test/emily/training/mnist_full_test.exs`** — opt-in MNIST
+    convergence canary, `@moduletag :training_full` (excluded by
+    default; run via `mix test --only training_full`). Loads MNIST
+    through `scidata`, trains an Axon MLP on `Emily.Compiler` for 5
+    epochs, asserts >97% test accuracy. Catches systemic grad drift
+    that curve-matching misses because curve-matching uses
+    BinaryBackend as its own oracle — MNIST convergence is an
+    independent cross-check against real-world training dynamics.
+    Typical wall time ~10 s on Apple Silicon.
+  - **`{:scidata, "~> 0.1", only: :test}`** added for MNIST loading.
+    Kept test-only; Emily itself has no dataset-loading dep.
+  - **`test/test_helper.exs`** — `:training_full` added to the
+    default-exclude list, documented alongside the other heavyweight
+    tags.
+  - **`PLAN.md`** — M9 scope formalized; M10 (conv-pool training)
+    and M11 (1.0 release) renumbered.
+
 - M8 — Native `conv`. `Emily.Backend.conv/4` now dispatches directly
   to `Native.conv_general` (already bound to `mlx::core::conv_general`
   since M1) instead of round-tripping through `Nx.BinaryBackend`.

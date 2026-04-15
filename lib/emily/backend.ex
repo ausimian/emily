@@ -621,17 +621,37 @@ defmodule Emily.Backend do
   end
 
   # gather: Nx's gather takes a multi-dimensional index tensor whose
-  # last dim selects across multiple axes. MLX's take_along_axis works
-  # on a single axis. The single-axis case (embedding lookups) uses
-  # Native.take; the general case falls back to BinaryBackend.
+  # last dim selects across multiple axes. The single-axis case
+  # (embedding lookups) uses Native.take; the multi-axis case uses
+  # Native.gather (see `native_scatter_gather/0` docs).
   @impl true
   def gather(out, input, indices, opts) do
-    case opts[:axes] do
-      [axis] ->
-        idx_ref = ref(indices) |> Native.astype({:s, 32})
-        Native.take(ref(input), idx_ref, axis) |> wrap(out)
+    axes = opts[:axes]
+    indices_shape = Tuple.to_list(indices.shape)
 
-      _ ->
+    cond do
+      match?([_], axes) ->
+        [axis] = axes
+        idx_ref = ref(indices) |> Native.astype({:s, 32})
+        # Reshape to `out.shape`: Nx gather with axes=[a] passes indices
+        # of shape `{..., 1}`, so MLX take produces the Nx batch shape
+        # with an extra trailing 1 (e.g. `{3, 1, D}` not `{3, D}`). Nx
+        # metadata wants the squeezed form, and so do downstream MLX ops
+        # that read the ref shape (e.g. tensordot).
+        Native.take(ref(input), idx_ref, axis)
+        |> Native.reshape(Tuple.to_list(out.shape))
+        |> wrap(out)
+
+      scatter_gather_compatible?(indices_shape, axes) ->
+        idx_refs = split_indices_per_axis(ref(indices), indices_shape, length(axes))
+        slice_sizes = slice_sizes_for_gather(input.shape, axes)
+
+        ref(input)
+        |> Native.gather(idx_refs, axes, slice_sizes)
+        |> Native.reshape(Tuple.to_list(out.shape))
+        |> wrap(out)
+
+      true ->
         via_binary(out, [input, indices], &Nx.gather(&1, &2, opts))
     end
   end
@@ -1077,13 +1097,85 @@ defmodule Emily.Backend do
     end
   end
 
+  # indexed_add / indexed_put: Nx passes indices of shape {..., rank_of_axes}
+  # and updates of shape {batch ++ non_indexed_dims}. MLX's scatter/scatter_add
+  # take a list of per-axis index arrays and require updates to have rank
+  # `indices[0].ndim() + target.ndim()`, with a length-1 dim inserted at
+  # every indexed-axis position. We split the indices and rewrap updates
+  # in Elixir (both operations are graph-construction — no data copied).
+  #
+  # Duplicate-index semantics differ: Nx.indexed_put is deterministic
+  # last-write, MLX scatter is unordered. The grad test generators dedupe
+  # indices; correctness on duplicates with indexed_put is best-effort.
   @impl true
-  def indexed_add(out, t, indices, updates, opts),
-    do: via_binary(out, [t, indices, updates], &Nx.indexed_add(&1, &2, &3, opts))
+  def indexed_add(out, t, indices, updates, opts) do
+    apply_scatter(out, t, indices, updates, opts, :scatter_add, &Nx.indexed_add(&1, &2, &3, opts))
+  end
 
   @impl true
-  def indexed_put(out, t, indices, updates, opts),
-    do: via_binary(out, [t, indices, updates], &Nx.indexed_put(&1, &2, &3, opts))
+  def indexed_put(out, t, indices, updates, opts) do
+    apply_scatter(out, t, indices, updates, opts, :scatter, &Nx.indexed_put(&1, &2, &3, opts))
+  end
+
+  defp apply_scatter(out, t, indices, updates, opts, native_fun, fallback) do
+    axes = opts[:axes] || Enum.to_list(0..(tuple_size(t.shape) - 1))
+    indices_shape = Tuple.to_list(indices.shape)
+
+    if scatter_gather_compatible?(indices_shape, axes) do
+      idx_refs = split_indices_per_axis(ref(indices), indices_shape, length(axes))
+      updates_shape = updates_shape_for_scatter(indices_shape, t.shape, axes)
+      updates_ref = ref(updates) |> Native.reshape(updates_shape)
+
+      apply(Native, native_fun, [ref(t), idx_refs, updates_ref, axes])
+      |> wrap(out)
+    else
+      via_binary(out, [t, indices, updates], fallback)
+    end
+  end
+
+  # Valid for native gather/scatter/scatter_add: indices tensor has a
+  # trailing "rank of axes" dim, plus at least one batch dim, and axes
+  # is a proper list.
+  defp scatter_gather_compatible?(indices_shape, axes) do
+    is_list(axes) and axes != [] and length(indices_shape) >= 2 and
+      List.last(indices_shape) == length(axes)
+  end
+
+  # Split an {..., R} index tensor into R per-axis index tensors, each
+  # of shape equal to the leading batch (last axis dropped).
+  defp split_indices_per_axis(indices_ref, indices_shape, n_axes) do
+    rank = length(indices_shape)
+    last_axis = rank - 1
+    batch_shape = Enum.take(indices_shape, last_axis)
+    strides = List.duplicate(1, rank)
+    batch_zeros = List.duplicate(0, last_axis)
+
+    for i <- 0..(n_axes - 1) do
+      indices_ref
+      |> Native.slice(batch_zeros ++ [i], batch_shape ++ [i + 1], strides)
+      |> Native.squeeze([last_axis])
+      |> Native.astype({:s, 32})
+    end
+  end
+
+  # slice_sizes for MLX gather: length equal to rank(input); 1 on
+  # indexed axes, full axis dim elsewhere.
+  defp slice_sizes_for_gather(input_shape, axes) do
+    axes_set = MapSet.new(axes)
+    rank = tuple_size(input_shape)
+    for i <- 0..(rank - 1), do: if(i in axes_set, do: 1, else: elem(input_shape, i))
+  end
+
+  # Rewrap Nx updates shape {batch ++ non_indexed_dims} to MLX's
+  # required {batch ++ per_axis_slot}, where per_axis_slot has length
+  # rank(target) with 1 on indexed axes and target_shape[i] on others.
+  defp updates_shape_for_scatter(indices_shape, target_shape, axes) do
+    batch = Enum.take(indices_shape, length(indices_shape) - 1)
+    axes_set = MapSet.new(axes)
+    rank = tuple_size(target_shape)
+    trailing = for i <- 0..(rank - 1), do: if(i in axes_set, do: 1, else: elem(target_shape, i))
+    batch ++ trailing
+  end
 
   @impl true
   def lu(outs, t, opts), do: via_binary_tuple(outs, [t], &Nx.LinAlg.lu(&1, opts))

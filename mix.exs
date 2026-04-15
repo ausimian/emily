@@ -64,6 +64,10 @@ defmodule Emily.MixProject do
       # reaches for it directly — pin it explicitly so the test isn't
       # hostage to a Bumblebee dep change.
       {:axon, "~> 0.7", only: :test},
+      # `scidata` loads MNIST / CIFAR / etc. for the `:training_full`
+      # opt-in convergence canary (M9). Kept test-only — Emily itself
+      # doesn't depend on dataset loading.
+      {:scidata, "~> 0.1", only: :test},
       {:stream_data, "~> 1.1", only: [:dev, :test]},
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
       {:ex_doc, "~> 0.34", only: :docs, runtime: false}

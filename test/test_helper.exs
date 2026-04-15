@@ -18,7 +18,14 @@
 #
 # (Soak tests deliberately stay in the default suite; see
 # `test/soak/memory_test.exs` for the rationale.)
+#
+# `:training_full` is the M9 MNIST convergence canary — downloads
+# MNIST (~11 MB) via `scidata`, trains an Axon MLP to >97% test
+# accuracy. Excluded by default because it's multi-minute wall time;
+# run explicitly:
+#
+#     mix test --only training_full
 ExUnit.start(
   max_cases: 1,
-  exclude: [:conformance, :qwen3_full, :vit_full, :whisper_full]
+  exclude: [:conformance, :qwen3_full, :vit_full, :whisper_full, :training_full]
 )
