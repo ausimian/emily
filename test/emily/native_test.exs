@@ -589,6 +589,88 @@ defmodule Emily.NativeTest do
     end
   end
 
+  # ---------- Multi-axis gather/scatter ----------
+
+  describe "multi-axis gather/scatter" do
+    # Multi-axis gather: pick scalars at (i, j) positions out of a 3x4
+    # matrix. indices is a list of two length-N arrays (one per axis);
+    # slice_sizes is all-1 so each gather is a scalar.
+    test "gather/4 scalar picks across two axes" do
+      # [[1, 2, 3, 4], [5, 6, 7, 8], [9, 10, 11, 12]]
+      a = f32(Enum.map(1..12, &(&1 * 1.0)), [3, 4])
+      idx0 = s32([0, 2, 1], [3])
+      idx1 = s32([1, 3, 0], [3])
+      # Expected: a[0,1]=2, a[2,3]=12, a[1,0]=5.
+      r = Native.gather(a, [idx0, idx1], [0, 1], [1, 1])
+      # Result shape is batch ++ slice_sizes = [3, 1, 1].
+      assert Native.shape(r) == [3, 1, 1]
+      assert to_f32_list(r) == [2.0, 12.0, 5.0]
+    end
+
+    # Partial-axis gather: gather along axis 0 only, keeping full axis
+    # 1. slice_sizes = [1, 4] and result shape = batch ++ [1, 4].
+    test "gather/4 partial-axis keeps slice dims" do
+      a = f32(Enum.map(1..12, &(&1 * 1.0)), [3, 4])
+      idx0 = s32([2, 0], [2])
+      r = Native.gather(a, [idx0], [0], [1, 4])
+      # Row 2: [9,10,11,12]; Row 0: [1,2,3,4].
+      assert Native.shape(r) == [2, 1, 4]
+      assert to_f32_list(r) == [9.0, 10.0, 11.0, 12.0, 1.0, 2.0, 3.0, 4.0]
+    end
+
+    # scatter (overwrite) across all axes — scalar writes.
+    test "scatter/4 scalar writes across all axes" do
+      a = f32(List.duplicate(0.0, 6), [2, 3])
+      idx0 = s32([0, 1, 0], [3])
+      idx1 = s32([1, 2, 0], [3])
+      # Updates must have rank = indices[0].ndim() + a.ndim() = 1 + 2 = 3.
+      # Shape: batch ++ [1, 1] = [3, 1, 1].
+      upd = f32([7.0, 8.0, 9.0], [3, 1, 1])
+      r = Native.scatter(a, [idx0, idx1], upd, [0, 1])
+      # a[0,1]=7, a[1,2]=8, a[0,0]=9.
+      assert to_f32_list(r) == [9.0, 7.0, 0.0, 0.0, 0.0, 8.0]
+    end
+
+    # scatter_add across all axes — duplicate indices accumulate.
+    test "scatter_add/4 accumulates at duplicate indices" do
+      a = f32([10.0, 20.0, 30.0], [3])
+      idx0 = s32([0, 0, 2], [3])
+      upd = f32([1.0, 1.0, 5.0], [3, 1])
+      r = Native.scatter_add(a, [idx0], upd, [0])
+      assert to_f32_list(r) == [12.0, 20.0, 35.0]
+    end
+
+    # The critical partial-axis case from the design critique: target
+    # shape {B, L, D} = {2, 3, 4}, axes = [0, 1], N = 2 writes of a
+    # whole D-slice. updates_shape (Nx-view) = {2, 4}, MLX-view =
+    # {2, 1, 1, 4}. Exercises the updates-shape rewrap contract.
+    test "scatter_add/4 partial-axis slice writes (B, L, D) target" do
+      # {2, 3, 4} of zeros.
+      a = f32(List.duplicate(0.0, 24), [2, 3, 4])
+      # Two writes: (b=0, l=1) += [1,2,3,4]; (b=1, l=2) += [5,6,7,8].
+      idx_b = s32([0, 1], [2])
+      idx_l = s32([1, 2], [2])
+      # MLX updates: {2, 1, 1, 4} — one leading "1" per indexed axis.
+      upd = f32([1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0], [2, 1, 1, 4])
+      r = Native.scatter_add(a, [idx_b, idx_l], upd, [0, 1])
+      assert Native.shape(r) == [2, 3, 4]
+
+      # Build expected: zeros with the two slice writes.
+      expected =
+        Enum.flat_map(0..1, fn b ->
+          Enum.flat_map(0..2, fn l ->
+            case {b, l} do
+              {0, 1} -> [1.0, 2.0, 3.0, 4.0]
+              {1, 2} -> [5.0, 6.0, 7.0, 8.0]
+              _ -> [0.0, 0.0, 0.0, 0.0]
+            end
+          end)
+        end)
+
+      assert to_f32_list(r) == expected
+    end
+  end
+
   # ---------- Convolution ----------
 
   describe "conv_general" do

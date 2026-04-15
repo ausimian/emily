@@ -289,6 +289,24 @@ defmodule Emily.Native do
   @spec scatter_add_axis(tensor(), tensor(), tensor(), integer()) :: tensor()
   def scatter_add_axis(_a, _indices, _values, _axis), do: nif()
 
+  # Multi-axis fancy-indexing gather. `indices` is a list of integer
+  # index tensors, one per entry in `axes`; all share a common leading
+  # batch shape. `slice_sizes` has length rank(a), with 1 on indexed
+  # axes and the full axis size on the remaining axes.
+  @spec gather(tensor(), [tensor()], [integer()], [non_neg_integer()]) :: tensor()
+  def gather(_a, _indices, _axes, _slice_sizes), do: nif()
+
+  # Multi-axis fancy-indexing scatter (overwrite). `updates` must have
+  # rank `indices[0].ndim() + a.ndim()` — leading batch dims match the
+  # indices, trailing dims hold the written slice.
+  @spec scatter(tensor(), [tensor()], tensor(), [integer()]) :: tensor()
+  def scatter(_a, _indices, _updates, _axes), do: nif()
+
+  # Multi-axis scatter-accumulate. Same shape contract as `scatter`;
+  # duplicate indices accumulate (commutative).
+  @spec scatter_add(tensor(), [tensor()], tensor(), [integer()]) :: tensor()
+  def scatter_add(_a, _indices, _updates, _axes), do: nif()
+
   # --- Convolution -------------------------------------------------
 
   @spec conv_general(

@@ -543,7 +543,105 @@ defmodule Emily.BackendTest do
     end
   end
 
+  # ---------------- Indexing: gather / indexed_add / indexed_put ----------------
+  #
+  # Targeted tests rather than properties: valid gather/scatter inputs
+  # need coordinated construction (indices bounded per axis, updates
+  # shape derived from target + axes) that StreamData makes awkward.
+  # Each case exercises a distinct native-translation path.
+
+  describe "gather" do
+    test "multi-axis scalar picks (axes = [0, 1])" do
+      a = Nx.iota({3, 4}, type: {:f, 32}, backend: Emily.Backend) |> Nx.add(1.0)
+      idx = Nx.tensor([[0, 1], [2, 3], [1, 0]], backend: Emily.Backend)
+
+      emily = Nx.gather(a, idx, axes: [0, 1])
+      ref = Nx.gather(bin(a), bin(idx), axes: [0, 1])
+      assert_nx_eq(emily, ref)
+    end
+
+    test "partial-axis gather keeps remaining dim (axes = [0])" do
+      a = Nx.iota({3, 4}, type: {:f, 32}, backend: Emily.Backend) |> Nx.add(1.0)
+      idx = Nx.tensor([[2], [0]], backend: Emily.Backend)
+
+      emily = Nx.gather(a, idx, axes: [0])
+      ref = Nx.gather(bin(a), bin(idx), axes: [0])
+      assert_nx_eq(emily, ref)
+    end
+
+    test "multi-dim batch in indices" do
+      a = Nx.iota({3, 4}, type: {:f, 32}, backend: Emily.Backend) |> Nx.add(1.0)
+      idx = Nx.tensor([[[0, 1], [2, 3]], [[1, 0], [2, 2]]], backend: Emily.Backend)
+
+      emily = Nx.gather(a, idx, axes: [0, 1])
+      ref = Nx.gather(bin(a), bin(idx), axes: [0, 1])
+      assert_nx_eq(emily, ref)
+    end
+  end
+
+  describe "indexed_add" do
+    test "scalar writes across all axes" do
+      a = Nx.broadcast(0.0, {2, 3}) |> Nx.backend_transfer(Emily.Backend)
+      idx = Nx.tensor([[0, 1], [1, 2], [0, 0]], backend: Emily.Backend)
+      upd = Nx.tensor([1.0, 2.0, 3.0], backend: Emily.Backend)
+
+      emily = Nx.indexed_add(a, idx, upd)
+      ref = Nx.indexed_add(bin(a), bin(idx), bin(upd))
+      assert_nx_eq(emily, ref)
+    end
+
+    test "partial-axis slice writes on a {B, L, D} target" do
+      a = Nx.broadcast(0.0, {2, 3, 4}) |> Nx.backend_transfer(Emily.Backend)
+      idx = Nx.tensor([[0, 1], [1, 2]], backend: Emily.Backend)
+      # updates shape: {2, 4} — one D-vector per write.
+      upd =
+        Nx.tensor([[1.0, 2.0, 3.0, 4.0], [5.0, 6.0, 7.0, 8.0]], backend: Emily.Backend)
+
+      emily = Nx.indexed_add(a, idx, upd, axes: [0, 1])
+      ref = Nx.indexed_add(bin(a), bin(idx), bin(upd), axes: [0, 1])
+      assert_nx_eq(emily, ref)
+    end
+
+    test "duplicate indices accumulate (commutative)" do
+      a = Nx.tensor([10.0, 20.0, 30.0], backend: Emily.Backend)
+      idx = Nx.tensor([[0], [0], [2]], backend: Emily.Backend)
+      upd = Nx.tensor([1.0, 1.0, 5.0], backend: Emily.Backend)
+
+      emily = Nx.indexed_add(a, idx, upd)
+      ref = Nx.indexed_add(bin(a), bin(idx), bin(upd))
+      assert_nx_eq(emily, ref)
+    end
+  end
+
+  describe "indexed_put" do
+    test "scalar writes across all axes (unique indices)" do
+      a = Nx.broadcast(0.0, {2, 3}) |> Nx.backend_transfer(Emily.Backend)
+      idx = Nx.tensor([[0, 1], [1, 2], [1, 0]], backend: Emily.Backend)
+      upd = Nx.tensor([7.0, 8.0, 9.0], backend: Emily.Backend)
+
+      emily = Nx.indexed_put(a, idx, upd)
+      ref = Nx.indexed_put(bin(a), bin(idx), bin(upd))
+      assert_nx_eq(emily, ref)
+    end
+
+    test "partial-axis slice writes (unique indices)" do
+      a = Nx.broadcast(0.0, {2, 3, 4}) |> Nx.backend_transfer(Emily.Backend)
+      idx = Nx.tensor([[0, 1], [1, 2]], backend: Emily.Backend)
+
+      upd =
+        Nx.tensor([[1.0, 2.0, 3.0, 4.0], [5.0, 6.0, 7.0, 8.0]], backend: Emily.Backend)
+
+      emily = Nx.indexed_put(a, idx, upd, axes: [0, 1])
+      ref = Nx.indexed_put(bin(a), bin(idx), bin(upd), axes: [0, 1])
+      assert_nx_eq(emily, ref)
+    end
+  end
+
   # ---------------- Helpers ----------------
+
+  # Short alias for backend-transferring to BinaryBackend inside inline
+  # oracle expressions.
+  defp bin(t), do: Nx.backend_transfer(t, Nx.BinaryBackend)
 
   defp axis_of(shape) do
     StreamData.integer(0..(tuple_size(shape) - 1))

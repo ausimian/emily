@@ -21,7 +21,9 @@ checklist so future-us understands the trade-offs.
 
 - Ahead-of-time compilation (IREE-style). Complementary, separate effort.
 - Windows or non-Apple-Silicon Linux GPU. CPU-only Linux is a nice-to-have for CI.
-- Training / gradients beyond what `Nx.Defn` gives for free. Inference is the priority.
+- Training framework features beyond `Nx.Defn.grad`: distributed training,
+  mixed-precision master weights, a native optimizer library. (Autodiff +
+  small-scale training loops: in scope from M9.)
 - Drop-in replacement for EMLX. We borrow where it's clearly right, but
   we're not constrained by its API.
 - `Emily.Stream` as a public API — MLX streams stay internal in v1.
@@ -174,7 +176,7 @@ throughput number.
 
 **Exit:** Axon MLPs forward with `compiler: Emily.Compiler`; results
 match `Nx.Defn.Evaluator` running on the same backend within float
-tolerance. (Training is out of scope for v1.)
+tolerance. (Training via `Nx.Defn.grad` lands in M9.)
 
 ### M6 — `mlx::core::compile` wrapping — **dropped**
 
@@ -254,7 +256,87 @@ exists; only the Backend callback still routes through the
 BinaryBackend fallback). Gated on the M7 ViT and Whisper suites
 staying green through the switchover.
 
-### M9 — 1.0 release
+### M9 — Gradient conformance and training primitives
+
+Training on Emily has been technically possible since M2 —
+`Nx.Defn.grad` is pure symbolic differentiation in Elixir and lowers
+to the same ops the forward pass uses. M9 turns "possible" into
+"usable" by (a) lifting the training-hot indexing ops off the
+`via_binary` fallback and (b) building the test scaffolding needed
+to trust a gradient.
+
+**Primitives.** `Nx.Defn.grad` of indexing-shaped ops lands on
+`indexed_add`; every such backward currently ships to BinaryBackend
+and back. Lift to native MLX:
+
+- `indexed_add` → `mlx::core::scatter_add`
+- `indexed_put` → `mlx::core::scatter`
+- `gather` → `mlx::core::gather`
+
+Window reductions stay on `via_binary` in M9 — pool-based conv
+training is scoped to M10.
+
+**Testing — Layers 4 (Grad) and 5 (Training):**
+
+1. **Grad-equivalence property tests** — for a zoo of `defn`-expressible
+   functions f, assert `Nx.Defn.grad(f)` on `Emily.Backend` matches the
+   same grad on `Nx.BinaryBackend` within dtype-appropriate tolerance.
+   Reuses M2's StreamData harness; the zoo excludes non-differentiable
+   ops (`argmax`, `argmin`, `floor`, `sign`, comparisons).
+2. **Numerical finite-difference oracle** — for the differentiable
+   subset, assert `(f(x+ε) - f(x-ε)) / 2ε ≈ grad(f)(x)`. Tolerance is
+   per-op and documented; f32 central differences bottom out around
+   1e-3 relative, so symbolic-grad tolerance must be relaxed
+   accordingly where this is the oracle. Pilot on 3–4 ops before
+   scaling the harness.
+3. **Training curve-matching** — handwritten MLP and handwritten
+   transformer-block training step, fixed seed, 50–200 steps; assert
+   per-step loss trajectory matches `Nx.BinaryBackend` within
+   tolerance. No Axon dependency in this tier — fewer moving parts
+   when a test goes red.
+4. **Training memory soak** (`test/soak/training_test.exs`,
+   `@tag :soak`) — 1k training steps; MLX memory returns to baseline
+   after `clear_cache/0`. Training exercises a different allocator
+   pattern than inference (param-grad pairs, optimizer state,
+   long-lived activation caches).
+5. **`:training_full`** (opt-in via `--only training_full`, **not**
+   on default CI) — Axon MLP on MNIST → >97% test accuracy. Catches
+   systemic numerical drift that curve-matching misses because both
+   sides use `Nx.BinaryBackend` as the oracle.
+
+Axon is added as a **test-only** dependency, used only by the
+`:training_full` tier.
+
+**Risks specific to this milestone:**
+
+- f32 tolerance calibration for oracle (2) is per-op; the harness
+  must support per-op tolerance tables, not a single global epsilon.
+- Random-key flow through `Emily.Compiler` needs an explicit test:
+  grad through `dropout` with threaded keys, two invocations of the
+  same compiled function must advance the RNG correctly.
+- MLX scatter semantics (out-of-bounds handling, tie-breaking) may
+  differ from Nx expectations. Document divergence; encode property
+  exclusions if needed.
+
+**Exit:** oracles (1)–(3) green in default CI; (4) and (5) green in
+opt-in CI job.
+
+### M10 — Conv-pool training
+
+Lift window reductions (`window_sum`, `window_max`, `window_min`,
+`window_product`, `window_scatter_max`, `window_scatter_min`) off
+`via_binary` onto their native MLX counterparts. This closes the
+last gap in the training primitive set and unblocks pool-based conv
+models (small CNNs, ViT classifier heads trained from scratch).
+
+Scope is narrow: the lifts are mechanical per-op changes. Test
+coverage extends the M9 grad-equivalence and curve-matching zoo to
+cover the new ops, plus a small-CNN MNIST run in `:training_full`.
+
+**Exit:** grad-equivalence on window ops green; small-CNN MNIST
+training converges in `:training_full`.
+
+### M11 — 1.0 release
 
 - API docs, HexDocs, README with a worked Bumblebee example
 - Hex release (public), versioned per conventions (`@version` in mix.exs)
@@ -267,6 +349,8 @@ staying green through the switchover.
 | Native | Hand-computed expected values | ExUnit unit tests |
 | Backend | `Nx.BinaryBackend` on the same inputs | StreamData property tests + Nx conformance |
 | Compiler | `Emily.Backend` in non-defn mode | Equivalence tests (same function, two modes) |
+| Grad | `Nx.BinaryBackend` grad + finite differences | StreamData property tests + numerical oracle |
+| Training | `Nx.BinaryBackend` loss trajectory | Curve-matching; MNIST convergence (`:training_full`, opt-in) |
 | E2E | EXLA-produced golden outputs | Conformance tests with cached weights |
 
 A bug can only be introduced in the layer where its test fails — no
@@ -275,6 +359,9 @@ cross-layer mystery bugs.
 Additional harnesses:
 - **Memory soak** (`test/soak/memory_test.exs`, `@tag :soak`): 10k
   iterations; MLX memory stats asserted to return to baseline.
+- **Training memory soak** (`test/soak/training_test.exs`,
+  `@tag :soak`, from M9): 1k training steps; baseline restored after
+  `clear_cache/0`.
 - **Concurrency** (`test/soak/concurrency_test.exs`, `@tag :soak`):
   parallel inference; determinism + no crashes.
 - **Benchmarks** (`bench/`): Benchee scripts; results logged in
@@ -282,6 +369,9 @@ Additional harnesses:
 - **Conformance vs EXLA** (CI matrix, Mac for Emily + Linux+CUDA for
   EXLA oracle): same model, same input; runs on every PR touching
   Backend.
+- **Convergence** (`:training_full`, from M9; opt-in CI job): Axon
+  training loop on MNIST; catches numerical drift the curve-matching
+  oracle can't see.
 
 ## Risks and mitigations
 
