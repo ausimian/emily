@@ -25,7 +25,21 @@
 # run explicitly:
 #
 #     mix test --only training_full
+#
+# `:qwen3_quant_full` is the M10.5 quantized end-to-end conformance —
+# runs the full Qwen3-0.6B through Transform.quantize/3 and greedy
+# decodes 32 tokens. Same 1.5 GB checkpoint as `:qwen3_full`; opt in
+# with:
+#
+#     mix test --only qwen3_quant_full
 ExUnit.start(
   max_cases: 1,
-  exclude: [:conformance, :qwen3_full, :vit_full, :whisper_full, :training_full]
+  exclude: [
+    :conformance,
+    :qwen3_full,
+    :qwen3_quant_full,
+    :vit_full,
+    :whisper_full,
+    :training_full
+  ]
 )

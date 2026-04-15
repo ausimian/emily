@@ -411,46 +411,74 @@ comparison; quantized memory soak clean.
 
 ### M10.5 — Bumblebee quantized inference integration
 
-Closes the gap M10 left open: getting `Native.quantized_matmul`
-reachable from `Nx.Defn.jit`-traced Axon forward passes so Bumblebee's
-AWQ-loading (when it lands) routes through the fused kernel.
+Closes the gap M10 left open: `Native.quantized_matmul` is now
+reachable from `Nx.Defn.jit`-traced Axon forward passes, and a
+quantized Qwen3-0.6B greedy-decodes end-to-end under Bumblebee's
+standard `Bumblebee.Text.generation/4` serving.
 
-Approach choices (pick before starting):
+**Shipped**:
 
-1. **Defn-native dequantize** — implement MLX's int4/int8 affine
-   dequantize using Nx bit primitives (right-shift + mask + multiply +
-   add). `Emily.Quantization.Layers.quantized_dense/3` becomes
-   `Nx.dot(x, dequantize_defn(qw))`. Correct and unblocks the full
-   Axon/Bumblebee path, but uses two kernels (dequantize + matmul)
-   instead of MLX's fused one — M11's fast-kernel work subsumes the
-   perf gap.
-2. **Emily.Compiler custom-op intercept** — fork `Nx.Defn.Evaluator`
-   under Emily to recognise a sentinel `Expr` node and route to
-   `Native.quantized_matmul`. Full fused-kernel story but large
-   surface; fragile against upstream Nx evolution.
-3. **Upstream Nx extension** — add a custom-backend-op hook to
-   `Nx.Defn.Compiler` / `Nx.Defn.Evaluator`. Cleanest long-term
-   solution; slowest to land because it needs upstream review/merge.
+- **`Emily.Quantization.dequantize_defn/1`** (`lib/emily/quantization.ex`)
+  — defn-native analogue of `QuantizedWeight.to_dense/1`, built from
+  `Nx.right_shift` / `Nx.bitwise_and` / multiply / add. Supports
+  `bits ∈ {2, 4, 8}` (lanes-per-u32 is integral). `bits ∈ {3, 6}`
+  (cross-u32 packing) is out of scope — the Native path remains for
+  those.
+- **`Emily.Quantization.Layers.quantized_dense/4`**
+  (`lib/emily/quantization/layers.ex`) — Axon-compatible layer op
+  (`deftransform` → `defnp`). Pattern-matches on `%QuantizedWeight{}`,
+  dispatches `Nx.dot(x, dequantize_defn(qw))` (`transpose=false`) or
+  `Nx.dot(x, Nx.transpose(dequantize_defn(qw)))` (`transpose=true`).
+  Two kernel dispatches per matmul instead of MLX's fused one —
+  accepted trade-off for integration without forking
+  `Nx.Defn.Evaluator`. M11's fast-kernel work closes the gap.
+- **`Emily.Quantization.Transform`** (`test/support/quantization_transform.ex`)
+  — graph rewriter + model-state quantizer, modeled on
+  `Axon.Quantization`. `quantize/3` takes a dense Axon model + dense
+  `Axon.ModelState` and returns the pair with every `:dense` node
+  rewritten to `:quantized_dense` and every dense kernel replaced
+  with `%QuantizedWeight{}`. Lives in `test/support/` because Axon is
+  an `only: :test` dep of Emily; graduates to `lib/` when an upstream
+  Bumblebee AWQ-loading path lands.
+- **`:qwen3_quant_full` conformance test** (`test/emily/conformance/qwen3_quant_full_test.exs`)
+  — loads dense Qwen3-0.6B via Bumblebee, quantizes via `Transform.quantize/3`
+  (`bits=4, group_size=128, transpose=true`), runs
+  `Bumblebee.Text.generation/4` greedy decode for 32 tokens. Pins the
+  continuation string as a regression gate. Opt-in via `mix test --only
+  qwen3_quant_full` (mirrors `:qwen3_full`'s model-size discipline).
 
-Also in scope for M10.5:
+**Approach chosen**: Option 1 (defn-native dequantize). Option 2
+(`Emily.Compiler` custom-op intercept) and Option 3 (upstream Nx
+extension) remain available if the two-kernel-vs-fused gap materially
+hurts a real workload after M11.
 
-- **Test-only AWQ loader** (`test/support/awq_loader.ex`) — reads
-  `Qwen/Qwen3-0.6B-AWQ` safetensors, extracts `qweight`, `scales`,
-  `qzeros`, maps to MLX's `(w_q, scales, biases)` layout. The
-  trickiest bit is the AWQ zero-point → MLX bias conversion
-  (`biases = -scales * zero_points`) and the AWQ `[in, out/pack]` vs.
-  MLX `[out, in]` layout difference.
-- **`:qwen3_quant_full` conformance test** — greedy-decode
-  Qwen3-0.6B-AWQ on Emily, assert the completion matches a checked-in
-  reference produced by MLX's Python bindings on the same quantized
-  weights.
-- **Bumblebee upstream contribution (optional, follow-up to M10.5)** —
-  upstream the AWQ loader into `deps/bumblebee` so the test-only path
-  becomes unnecessary.
+**Scope reductions from original PLAN.md M10.5**:
 
-**Exit**: Qwen3-0.6B-AWQ greedy-decodes end-to-end on Emily under
-`Nx.Defn.jit`; conformance test green; Axon-integrated quantization
-documented.
+- **AWQ safetensors loader deferred.** The original plan called for a
+  test-only loader that reads `Qwen/Qwen3-0.6B-AWQ` and maps to
+  `%QuantizedWeight{}`. On closer inspection the AWQ→MLX conversion is
+  meaningfully more involved than first thought: AWQ groups along the
+  `in` axis while MLX's `transpose=false` path expects groups along the
+  stored last axis, so correct conversion requires transposing the
+  packed tensor, unpacking `qzeros` into per-group zero-points,
+  computing `biases = -scales * zero_points`, and mapping HF param
+  names to Bumblebee's internal naming. All tractable but substantial.
+  The from-dense path above exercises the same defn-integration
+  pipeline (graph rewrite + QW params + defn-native dequantize + JIT'd
+  forward) and produces a useful regression gate; AWQ-specific loading
+  is now a proper follow-up milestone rather than M10.5-scope.
+- **Conformance oracle adjusted.** PLAN.md originally envisioned
+  asserting against MLX Python's output on the same quantized
+  weights. Since we're now quantizing Qwen3-0.6B ourselves (not
+  loading AWQ), the reference is what this pipeline produces on a
+  clean checkout — same discipline as `qwen3_full_test.exs`.
+
+**Follow-ups** (out of M10.5 scope):
+
+- AWQ safetensors loader + Bumblebee param-name mapping. When it
+  lands, adds a second conformance test that loads real
+  `Qwen/Qwen3-0.6B-AWQ` weights end-to-end.
+- Optional upstream contribution to `deps/bumblebee` for AWQ loading.
 
 ### M11 — `mlx::fast::*` fused kernels
 

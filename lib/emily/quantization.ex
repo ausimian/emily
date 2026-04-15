@@ -2,36 +2,46 @@ defmodule Emily.Quantization do
   @moduledoc """
   Quantized inference primitives.
 
-  M10 ships the Native bindings (`Emily.Native.quantize/3`,
-  `Emily.Native.dequantize/5`, `Emily.Native.quantized_matmul/7`), the
-  `Emily.QuantizedWeight` container, and this direct-call helper. This is
-  enough to:
+  Two entry points:
 
-    * quantize a dense weight, store it packed at rest, and later dispatch a
-      fused quantized matmul against it;
-    * benchmark the quantized path against an `Nx.dot`-on-dequantized oracle;
-    * run quantized inference in *eager* code (plain Elixir, outside `defn`).
+    * `quantized_matmul/2` — eager-mode fused kernel (materialized
+      tensors only). Extracts refs from a `%QuantizedWeight{}` and
+      calls `Native.quantized_matmul/7`.
+    * `dequantize_defn/1` — defn-native analogue of
+      `QuantizedWeight.to_dense/1`, composed from `Nx.right_shift` /
+      `Nx.bitwise_and` / multiply / add. Use inside `Nx.Defn.jit`-traced
+      Axon forward passes; `Nx.dot(x, dequantize_defn(qw))` replaces
+      the fused `quantized_matmul` kernel with two dispatches — M11's
+      fast-kernel work closes that gap.
 
-  ## What M10 does NOT ship
+  `dequantize_defn/1` supports `bits ∈ #{inspect([2, 4, 8])}`;
+  `bits ∈ {3, 6}` use cross-u32 lane packing (out of scope here — use
+  `QuantizedWeight.to_dense/1`).
 
-  Integration with `Nx.Defn`-traced Axon forward passes (and therefore
-  `Bumblebee` serving with AWQ checkpoints) is deferred to a follow-up.
-  `Nx.Defn.Evaluator` walks `Nx.Defn.Expr` and dispatches via the
-  `Nx.Backend` behaviour; there is no public hook to inject a custom op like
-  `Native.quantized_matmul`, and none of `deftransform`, `hook`, or
-  `metadata` can call NIFs on tensors that are still `Expr` nodes at trace
-  time. Closing that gap requires either (a) a defn-native dequantize built
-  from Nx bit primitives (skips the fused kernel), or (b) an Emily-specific
-  compiler variant that recognizes a sentinel `Expr` node. Both are
-  meaningful scope; M10.5 will tackle one of them.
-
-  Use `quantized_matmul/2` below for any eager quantized inference today.
+  See `Emily.Quantization.Layers.quantized_dense/4` for the
+  Axon-compatible layer op built on `dequantize_defn/1`.
   """
+
+  import Nx.Defn
 
   alias Emily.Backend, as: B
   alias Emily.Native
   alias Emily.QuantizedWeight
   alias Nx.Tensor, as: T
+
+  @defn_supported_bits [2, 4, 8]
+
+  @doc """
+  Bit widths supported by `dequantize_defn/1` (and therefore by
+  `Emily.Quantization.Layers.quantized_dense/4` /
+  `Emily.Quantization.Transform`).
+
+  `bits ∈ {3, 6}` use cross-u32 lane packing and aren't supported by
+  the defn-native path; `QuantizedWeight.to_dense/1` (the Native path)
+  still handles them.
+  """
+  @spec defn_supported_bits() :: [pos_integer()]
+  def defn_supported_bits, do: @defn_supported_bits
 
   @doc """
   Compute `x @ W^T` where `W` is represented as a `QuantizedWeight`.
@@ -95,5 +105,106 @@ defmodule Emily.Quantization do
           "Emily.Quantization.quantized_matmul/2: input dtype #{inspect(x_type)} must " <>
             "match scales dtype #{inspect(s_type)}. Cast the input with " <>
             "`Nx.as_type/2` before calling."
+  end
+
+  # ================================================================
+  # Defn-native dequantize
+  # ================================================================
+
+  @doc """
+  Reconstruct a dense tensor from a `QuantizedWeight`, built entirely
+  from Nx primitives so it composes inside `defn` traces.
+
+  This is the defn-compatible analogue of `QuantizedWeight.to_dense/1`.
+  The math is identical to MLX's `dequantize`:
+
+      w[i] = (w_q_packed >> ((i mod lpu) * bits)) & mask * scales[g] + biases[g]
+
+  where `lpu = div(32, bits)` (lanes per u32), `mask = (1 <<< bits) - 1`,
+  and `g = div(i, group_size)` is the group index along the last axis.
+
+  Supported: `bits ∈ #{inspect(@defn_supported_bits)}`. `bits ∈ {3, 6}`
+  pack across u32 boundaries and are out of scope here.
+
+  ## Example
+
+      qw = Emily.QuantizedWeight.from_dense(w, group_size: 64, bits: 4)
+      dense_defn = Emily.Quantization.dequantize_defn(qw)
+      dense_native = Emily.QuantizedWeight.to_dense(qw)
+      # element-wise identical
+  """
+  @spec dequantize_defn(QuantizedWeight.t()) :: Nx.Tensor.t()
+  deftransform dequantize_defn(qw) do
+    %QuantizedWeight{
+      value: q,
+      scales: s,
+      biases: b,
+      group_size: group_size,
+      bits: bits
+    } = qw
+
+    validate_defn_bits!(bits)
+
+    dequantize_impl(q, s, b, group_size: group_size, bits: bits)
+  end
+
+  defp validate_defn_bits!(bits) when bits in @defn_supported_bits, do: :ok
+
+  defp validate_defn_bits!(bits) do
+    raise ArgumentError,
+          "Emily.Quantization.dequantize_defn/1: bits=#{bits} uses cross-u32 " <>
+            "lane packing, which is out of scope for the defn-native path. " <>
+            "Supported: #{inspect(@defn_supported_bits)}. Use " <>
+            "`Emily.QuantizedWeight.to_dense/1` (the Native path) for unsupported " <>
+            "bit widths."
+  end
+
+  # Expects `opts` to carry compile-time `:group_size` and `:bits`. Both
+  # are used for shape arithmetic (lanes-per-u32, per-group reshape) so
+  # they must be trace-time constants.
+  defnp dequantize_impl(w_q, scales, biases, opts \\ []) do
+    opts = keyword!(opts, [:group_size, :bits])
+    group_size = opts[:group_size]
+    bits = opts[:bits]
+
+    # Unpack: (..., packed) → (..., packed, lpu) via broadcast-shift
+    # with a length-lpu shift vector, then mask to `bits`-width nibbles.
+    shifts = build_shifts(bits)
+    mask = build_mask(bits)
+
+    # new_axis appends a length-1 axis; right_shift broadcasts against shifts.
+    shifted = Nx.right_shift(Nx.new_axis(w_q, -1), shifts)
+    masked = Nx.bitwise_and(shifted, mask)
+
+    # Flatten (packed, lpu) → orig_last, then regroup to (..., groups,
+    # group_size) so per-group scale/bias broadcast trivially.
+    grouped = masked |> Nx.flatten(axes: [-2, -1]) |> group_last_axis(group_size)
+
+    # Cast u32 → scales dtype, then per-group affine recombine; flatten
+    # back to (..., orig_last).
+    grouped_f = Nx.as_type(grouped, Nx.type(scales))
+    dequantized = grouped_f * Nx.new_axis(scales, -1) + Nx.new_axis(biases, -1)
+
+    Nx.flatten(dequantized, axes: [-2, -1])
+  end
+
+  deftransformp build_shifts(bits) do
+    lpu = div(32, bits)
+    shifts = for i <- 0..(lpu - 1), do: i * bits
+    Nx.tensor(shifts, type: :u32)
+  end
+
+  deftransformp build_mask(bits) do
+    import Bitwise
+    Nx.tensor((1 <<< bits) - 1, type: :u32)
+  end
+
+  # Reshape `(..., n)` → `(..., n / group_size, group_size)`. Uses
+  # `:auto` so we don't recompute the quotient.
+  deftransformp group_last_axis(t, group_size) do
+    shape = Nx.shape(t)
+    rank = tuple_size(shape)
+    new_shape = shape |> put_elem(rank - 1, :auto) |> Tuple.insert_at(rank, group_size)
+    Nx.reshape(t, new_shape)
   end
 end

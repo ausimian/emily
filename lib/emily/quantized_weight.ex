@@ -30,12 +30,14 @@ defmodule Emily.QuantizedWeight do
   tensor — so the direct-call helper is the supported path.
 
   > #### Defn-traced Axon forward passes {: .info}
-  > Routing through `Nx.Defn.jit`-traced Axon models (and therefore
-  > Bumblebee AWQ checkpoints) is not yet shipped; the layer-op dispatch
-  > path requires either a defn-native dequantize or an
-  > `Nx.Defn.Evaluator`-level custom-op hook. Tracked as M10.5 in
-  > `PLAN.md`. Use `quantized_matmul/2` directly on materialized tensors
-  > today.
+  > `Emily.Quantization.dequantize_defn/1` (M10.5) is the defn-native
+  > analogue of `to_dense/1`; pair it with
+  > `Emily.Quantization.Layers.quantized_dense/4` to splice a quantized
+  > linear into any `Nx.Defn.jit`-traced Axon forward pass. The layer
+  > performs `Nx.dot(x, dequantize_defn(qw))` instead of MLX's single
+  > fused `quantized_matmul` — two kernels vs. one, but fully
+  > integrated with the rest of Bumblebee's defn graph. M11's fast-kernel
+  > work will close the perf gap.
   """
 
   @derive {Nx.Container,
