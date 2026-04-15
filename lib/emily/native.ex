@@ -244,6 +244,36 @@ defmodule Emily.Native do
   @spec inner(tensor(), tensor()) :: tensor()
   def inner(_a, _b), do: nif()
 
+  # --- Quantization ------------------------------------------------
+
+  @spec quantize(tensor(), integer(), integer()) ::
+          {tensor(), tensor(), tensor()}
+  def quantize(_w, _group_size, _bits), do: nif()
+
+  @spec dequantize(tensor(), tensor(), tensor(), integer(), integer()) ::
+          tensor()
+  def dequantize(_w_q, _scales, _biases, _group_size, _bits), do: nif()
+
+  @spec quantized_matmul(
+          tensor(),
+          tensor(),
+          tensor(),
+          tensor(),
+          boolean(),
+          integer(),
+          integer()
+        ) :: tensor()
+  def quantized_matmul(
+        _x,
+        _w_q,
+        _scales,
+        _biases,
+        _transpose,
+        _group_size,
+        _bits
+      ),
+      do: nif()
+
   # --- Sort --------------------------------------------------------
 
   @spec sort(tensor(), integer()) :: tensor()
