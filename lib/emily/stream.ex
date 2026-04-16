@@ -23,10 +23,9 @@ defmodule Emily.Stream do
   `with_stream/2` stores the stream index in the process dictionary.
   `Emily.Backend` reads it via `Process.get(:emily_stream, -1)` and
   passes it as an explicit argument to every NIF call. Each NIF
-  resolves the index to an `mx::Stream` (or falls back to the
-  thread-local default when the index is -1). This avoids the
-  thread-local race that would occur if we relied solely on
-  `set_default_stream` — BEAM processes can migrate between OS
+  resolves the index to an `mx::Stream` (or falls back to the default
+  GPU stream when the index is -1). This is process-dictionary based,
+  not thread-local, because BEAM processes migrate between OS
   scheduler threads between NIF calls.
 
   ## Concurrent serving patterns
@@ -73,18 +72,13 @@ defmodule Emily.Stream do
   Execute `fun` with the given stream as the default for MLX ops.
 
   Stores the stream index in the process dictionary so that
-  `Emily.Backend` passes it to every NIF call. Also sets the
-  thread-local default stream as a belt-and-suspenders measure for
-  code that calls `Emily.Native` directly.
-
-  The previous stream (if any) is restored in an `after` block, so
-  nesting is safe.
+  `Emily.Backend` passes it to every NIF call. The previous stream
+  (if any) is restored in an `after` block, so nesting is safe.
   """
   @spec with_stream(t(), (-> result)) :: result when result: var
   def with_stream(%__MODULE__{index: index}, fun) when is_function(fun, 0) do
     prev = Process.get(:emily_stream)
     Process.put(:emily_stream, index)
-    Emily.Native.set_default_stream(index)
 
     try do
       fun.()
@@ -93,8 +87,6 @@ defmodule Emily.Stream do
         nil -> Process.delete(:emily_stream)
         idx -> Process.put(:emily_stream, idx)
       end
-
-      if prev, do: Emily.Native.set_default_stream(prev)
     end
   end
 

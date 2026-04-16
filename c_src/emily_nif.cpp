@@ -79,7 +79,7 @@ FINE_NIF(from_binary, 0);
 fine::Term to_binary(ErlNifEnv *env, fine::ResourcePtr<Tensor> tensor, int64_t s) {
   auto stream = emily::resolve_stream(s);
   auto materialized = mx::contiguous(tensor->array, false, stream);
-  mx::eval(materialized);
+  emily::safe_eval(materialized);
 
   // Defensive: mx::contiguous is supposed to give a row-contiguous
   // layout. If it ever doesn't, we'd be aliasing a strided buffer and
@@ -113,7 +113,7 @@ FINE_NIF(dtype, 0);
 // eval/1 — force evaluation of the lazy graph rooted at this tensor.
 // Dirty CPU: waits for MLX to finish.
 fine::Ok<> eval(ErlNifEnv *, fine::ResourcePtr<Tensor> tensor) {
-  mx::eval(tensor->array);
+  emily::safe_eval(tensor->array);
   return fine::Ok<>{};
 }
 FINE_NIF(eval, ERL_NIF_DIRTY_JOB_CPU_BOUND);

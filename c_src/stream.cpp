@@ -31,8 +31,11 @@ int64_t new_stream(ErlNifEnv *, fine::Atom device_atom) {
 FINE_NIF(new_stream, 0);
 
 // set_default_stream/1 — set the thread-local default stream.
-// Belt-and-suspenders for Emily.Stream.with_stream/2; every op NIF
-// also receives the stream index explicitly.
+//
+// WARNING: BEAM processes migrate between OS threads, so thread-local
+// state is unreliable. with_stream/2 no longer calls this — it routes
+// streams via the process dictionary instead. This NIF is retained for
+// advanced use cases but should be avoided in normal code.
 fine::Ok<> set_default_stream(ErlNifEnv *, int64_t stream_index) {
   mx::set_default_stream(mx::get_stream(static_cast<int>(stream_index)));
   return fine::Ok<>{};
