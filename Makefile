@@ -28,6 +28,17 @@ else
     JOBS    := $(shell nproc)
 endif
 
+# Optional: AddressSanitizer build. Set EMILY_ASAN=1 to instrument the
+# NIF. Requires an OTP built with --enable-sanitizers=address so that
+# beam.smp links the ASan runtime at startup (interceptors must install
+# before any allocation). macOS SIP strips DYLD_INSERT_LIBRARIES from
+# processes launched through /bin/sh, and loading libasan late via
+# dlopen fails, so preloading is not an option on stock macOS+OTP.
+ifeq ($(EMILY_ASAN),1)
+    CXXFLAGS += -fsanitize=address -fno-omit-frame-pointer -g -O1
+    LDFLAGS  += -fsanitize=address
+endif
+
 MAKE_JOBS ?= $(JOBS)
 
 .PHONY: all clean bench-native

@@ -517,40 +517,82 @@ version is a future follow-on.
 enabled and pass conformance; benchmark shows a measurable speedup
 over the M9 baseline (target ≥1.5× on M3 hardware).
 
-### M12 — Zero-copy binary round-trip
+### M12 — Zero-copy binary round-trip (`to_binary`)
 
 PLAN design decision #9 claims unified-memory zero-copy for
 `from_binary` / `to_binary`. The current code memcpys unconditionally
-(`emily_nif.cpp:57-58`, `:74-84`). M12 delivers the claim.
+(`emily_nif.cpp:57-58`, `:74-84`). M12 delivers the claim for
+`to_binary`; `from_binary` is deferred to M12.5 because MLX's Metal
+`allocator::Buffer` stores an `MTL::Buffer*`, not a raw CPU pointer,
+so wrapping a BEAM heap pointer is unsound without routing through
+`MTL::Device::newBufferWithBytesNoCopy`.
 
 - **`to_binary`**: wrap the materialized MLX buffer pointer as a BEAM
   resource binary via `enif_make_resource_binary`, with the resource
   retaining a refcount on the MLX array so the buffer survives until
   the BEAM binary is GC'd. No copy; the BEAM binary aliases MLX
   storage directly.
-- **`from_binary`**: when the input binary is heap-resident and
-  page-aligned (and the MLX array would otherwise live on the unified
-  arena), construct the array with a deleter that releases the BEAM
-  binary refcount instead of freeing. Fall back to the current memcpy
-  path when alignment doesn't hold or when the source is a sub-binary.
+- **`from_binary`**: deferred. See M12.5.
 - **Stride-aware materialize**: `to_binary` currently routes through
   `mx::contiguous`; for already-contiguous arrays this is a no-op, but
   the wrap-as-resource path needs an explicit guard since aliasing a
   non-contiguous buffer would lie about its layout.
 
 **Testing**:
-- Allocate a 256 MB tensor, round-trip through `to_binary` then
-  `from_binary`, assert MLX active memory grew by ~256 MB not ~512 MB.
-- Soak: repeated round-trip with cache-clear, assert peak memory is
-  bounded by the working-set size, not 2× it.
+- Allocate a tensor, call `to_binary`, assert MLX active memory did
+  not grow (aliasing, not copying).
+- Soak: repeated `to_binary` with cache-clear, assert peak memory is
+  bounded by the working-set size.
 - Correctness: the M2 property suite must still pass — this is a perf
   change, not a semantics change.
-- Refcount safety: drop the MLX-side reference, then read the BEAM
-  binary; must not segfault. Use-after-free is the failure mode, so
-  this milestone gates on an AddressSanitizer build in CI.
+- Refcount safety: drop the original tensor reference, then read the
+  BEAM binary returned by `to_binary`; must not segfault. Use-after-
+  free is the failure mode, so this milestone gates on an
+  AddressSanitizer build in CI.
 
-**Exit:** zero-copy verified by allocator stats; M2 property suite
-green; AddressSanitizer build clean.
+**Exit:** `to_binary` zero-copy verified by allocator stats; M2
+property suite green; lifecycle and soak tests verify refcount
+safety. AddressSanitizer CI deferred (macOS SIP prevents
+`DYLD_INSERT_LIBRARIES` propagation through `/bin/sh`-launched BEAM;
+requires a custom `--enable-sanitizers=address` OTP build).
+`EMILY_ASAN=1` Makefile flag ships for users with sanitizer-enabled
+OTP.
+
+### M12.5 — `from_binary` zero-copy via MTL no-copy buffer
+
+Deferred half of M12. The BEAM → MLX direction can't be done by
+wrapping a BEAM pointer as an `mx::allocator::Buffer` — Metal's
+allocator stores `MTL::Buffer*`, not a raw CPU pointer, so a wrapped
+heap pointer would be dereferenced as an `MTL::Buffer*` and crash on
+GPU dispatch. True zero-copy requires registering the BEAM memory
+with Metal.
+
+- **NIF changes**: accept `fine::Term` instead of `ErlNifBinary` so
+  we can `enif_make_copy` the term into a persistent `ErlNifEnv` and
+  keep the refc binary alive. Call
+  `MTL::Device::newBufferWithBytesNoCopy:length:options:deallocator:`
+  to hand the BEAM pointer to Metal; the deallocator block calls
+  `enif_free_env`. Wrap the resulting `MTL::Buffer*` as an
+  `allocator::Buffer` and pass to the 4-arg `mx::array` constructor.
+- **MLX integration**: register the MTL::Buffer with MLX's
+  residency set so command buffers keep it resident. The residency
+  API is not in public headers — either upstream a public entry
+  point or bypass via implementation-detail APIs.
+- **Build**: link the Metal framework from the NIF; add metal-cpp
+  headers to the build.
+- **Pre-conditions**: heap-resident refc binary, page-aligned,
+  page-sized. Fall back to the M12 memcpy path otherwise.
+
+**Testing**:
+- Allocate a 256 MB page-aligned binary, `from_binary` →
+  `to_binary`, assert MLX active memory grew by ~256 MB not ~512 MB.
+- Weight-loading soak: simulate Bumblebee's mmap'd-weights path with
+  realistic tensor counts, assert peak memory matches the
+  theoretical working-set lower bound.
+- Refcount safety under ASan, same pattern as M12.
+
+**Exit:** `from_binary` zero-copy verified by allocator stats for
+page-aligned inputs; PLAN decision #9 claim fully delivered.
 
 ### M13 — EXLA gradient conformance
 

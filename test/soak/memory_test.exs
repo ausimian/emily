@@ -18,6 +18,12 @@ defmodule Emily.Soak.MemoryTest do
       passes, but the test fails once the cumulative leak exceeds
       ~2 retained tensors total — i.e. a leak rate above ~0.1 %.
 
+  `Native.to_binary/1` returns a resource binary aliasing MLX memory.
+  The ProcBin is tiny (~64 B) so BEAM's binary-vheap GC doesn't fire
+  based on the external data size; resource binaries can accumulate
+  and pin MLX buffers. We GC every @gc_every iterations so the test
+  reflects steady-state usage, not transient accumulation.
+
   A tight tolerance matters — a generous one makes the test pass even
   when refcounts are broken.
   """
@@ -33,6 +39,11 @@ defmodule Emily.Soak.MemoryTest do
   @tensor_elems 256 * 1024
   @iters 2_000
   @warmup 20
+
+  # See moduledoc: periodic GC keeps to_binary's aliased resource
+  # binaries from accumulating. Every 10 iters ≈ 10 MB of MLX-pinned
+  # memory at the peak, well within the tolerance window.
+  @gc_every 10
 
   # Measured drift under the full suite is ~2 MB (Metal pool keeps
   # ~2 tensors live past clear_cache). 4 MB tolerance absorbs that
@@ -59,7 +70,10 @@ defmodule Emily.Soak.MemoryTest do
     baseline = Native.get_active_memory()
     Native.reset_peak_memory()
 
-    for _ <- 1..@iters, do: workload(data)
+    for i <- 1..@iters do
+      workload(data)
+      if rem(i, @gc_every) == 0, do: :erlang.garbage_collect()
+    end
 
     :erlang.garbage_collect()
     Native.clear_cache()
