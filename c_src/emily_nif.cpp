@@ -29,6 +29,10 @@ FINE_RESOURCE(Tensor);
 // from_binary/3 — build a lazy MLX array from a BEAM binary.
 // Regular scheduler: MLX copies the buffer into its own storage during
 // construction, so this is cheap and bounded.
+//
+// BEAM→MLX zero-copy is not possible with the current allocator API:
+// on Metal, allocator::Buffer stores an MTL::Buffer*, so wrapping a
+// BEAM heap pointer would crash on GPU dispatch.
 fine::ResourcePtr<Tensor> from_binary(
     ErlNifEnv *,
     ErlNifBinary data,
@@ -50,9 +54,9 @@ fine::ResourcePtr<Tensor> from_binary(
         " got " + std::to_string(data.size));
   }
 
-  // MLX has no void*-accepting array constructor. The canonical path
-  // is: allocate an MLX-owned buffer, memcpy into it, hand ownership
-  // to the array with a matching deleter.
+  // Allocate an MLX-owned buffer, memcpy into it, hand ownership to
+  // the array with a matching deleter. See comment above for why we
+  // don't alias the BEAM binary directly.
   auto buf = mx::allocator::malloc(expected);
   std::memcpy(buf.raw_ptr(), data.data, expected);
   auto deleter = [](mx::allocator::Buffer b) { mx::allocator::free(b); };
@@ -62,26 +66,33 @@ fine::ResourcePtr<Tensor> from_binary(
 }
 FINE_NIF(from_binary, 0);
 
-// to_binary/1 — materialize the array and return its bytes as a binary.
-// Dirty CPU: eval() triggers kernel launch and waits for completion.
+// to_binary/1 — materialize the array and return its bytes as a BEAM
+// resource binary aliasing MLX storage (no memcpy). The binary pins a
+// Tensor resource → mx::array → MLX buffer; the buffer survives until
+// the BEAM binary is GC'd.
 //
-// We route through mx::contiguous() first so views with non-standard
-// strides (transpose, slice, swapaxes, broadcast_to) produce the
-// correct in-memory layout. For already-contiguous arrays MLX elides
-// the copy. A handful of MLX ops (notably cumulative reductions on
-// interior axes of some 4-D shapes) raise "Unable to safely factor
-// shape" here; the Backend layer routes the known cases around us.
-std::string to_binary(ErlNifEnv *, fine::ResourcePtr<Tensor> tensor) {
+// We route through mx::contiguous() so views with non-standard strides
+// produce the correct in-memory layout. A handful of MLX ops (notably
+// cumulative reductions on interior axes of some 4-D shapes) raise
+// "Unable to safely factor shape" here; the Backend layer routes the
+// known cases around us.
+fine::Term to_binary(ErlNifEnv *env, fine::ResourcePtr<Tensor> tensor) {
   auto materialized = mx::contiguous(tensor->array);
   mx::eval(materialized);
 
-  const void *src = materialized.data<void>();
-  size_t nbytes = materialized.nbytes();
+  // Defensive: mx::contiguous is supposed to give a row-contiguous
+  // layout. If it ever doesn't, we'd be aliasing a strided buffer and
+  // lying about its layout. Throw rather than silently corrupt.
+  if (!materialized.flags().row_contiguous) {
+    throw std::runtime_error(
+        "to_binary: array is not row-contiguous after mx::contiguous");
+  }
 
-  std::string out;
-  out.resize(nbytes);
-  std::memcpy(out.data(), src, nbytes);
-  return out;
+  auto nbytes = materialized.nbytes();
+  auto data = reinterpret_cast<const char *>(materialized.data<void>());
+
+  auto pin = wrap(std::move(materialized));
+  return fine::make_resource_binary(env, std::move(pin), data, nbytes);
 }
 FINE_NIF(to_binary, ERL_NIF_DIRTY_JOB_CPU_BOUND);
 

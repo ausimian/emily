@@ -71,3 +71,7 @@ jobs:
       # DistilBERT forward pass is the canonical integration signal
       # that no Nx op on the transformer critical path has regressed.
       - run: mix test --only conformance
+
+  # ASan CI deferred: requires OTP built with --enable-sanitizers=address
+  # (macOS SIP blocks DYLD_INSERT_LIBRARIES, and late-loaded libasan
+  # fails). See Makefile and RELEASE.md for details.

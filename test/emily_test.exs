@@ -97,5 +97,24 @@ defmodule EmilyTest do
 
       assert Emily.to_binary(t) == bin
     end
+
+    test "to_binary aliased binary survives after tensor goes out of scope" do
+      # to_binary returns a resource binary that aliases MLX storage.
+      # If the refcount wiring is wrong, reading after the tensor is
+      # dropped would segfault or return garbage.
+      bin =
+        for x <- 1..1024, into: <<>>, do: <<x * 1.0::float-32-native>>
+
+      out =
+        (fn ->
+           t = Emily.from_binary(bin, [1024], {:f, 32})
+           Emily.to_binary(t)
+         end).()
+
+      :erlang.garbage_collect()
+      :erlang.garbage_collect(self())
+
+      assert out == bin
+    end
   end
 end

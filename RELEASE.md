@@ -2,6 +2,56 @@
 
 ## Added
 
+- M12 — Zero-copy `to_binary`. `Emily.to_binary/1` (and everything
+  that routes through `Nx.to_binary` on the Emily backend) now
+  returns a BEAM resource binary that aliases the MLX buffer
+  directly, instead of memcpying the bytes into a fresh BEAM binary.
+  The resource binary's lifetime pins a fresh `Tensor` resource so
+  the underlying MLX storage survives until the binary is GC'd.
+  Savings are most visible when handing large tensors back to Nx
+  (logits from inference, weight exports): one memcpy eliminated
+  per call.
+  - **NIF change** (`c_src/emily_nif.cpp`): `to_binary` now returns
+    `fine::Term` via `fine::make_resource_binary`. Defensive assert
+    on `row_contiguous` after `mx::contiguous` guards against
+    aliasing a strided buffer.
+  - **`from_binary` unchanged.** BEAM → MLX zero-copy on Metal
+    requires `MTL::Device::newBufferWithBytesNoCopy` (MLX's
+    `allocator::Buffer` stores an `MTL::Buffer*`, not a raw CPU
+    pointer — wrapping a BEAM heap pointer is unsound). Deferred
+    to M12.5; see `PLAN.md`.
+  - **Tests**: round-trip lifetime test at `test/emily_test.exs`
+    (`"to_binary aliased binary survives after tensor goes out of
+    scope"`); zero-copy memory soak at
+    `test/soak/zero_copy_roundtrip_test.exs` (asserts MLX active
+    memory and BEAM binary heap both stay flat across 200 round
+    trips). M2 property suite still green — semantics unchanged.
+  - **Build**: `EMILY_ASAN=1` env var enables an AddressSanitizer
+    build of the NIF (`Makefile`). Requires an OTP built with
+    `--enable-sanitizers=address` so beam.smp links the ASan runtime
+    at startup — macOS SIP strips `DYLD_INSERT_LIBRARIES` from
+    processes launched through `/bin/sh` (which `erl`/`elixir` use),
+    and loading libasan late (via dlopen of the NIF) fails because
+    the malloc/free interceptors must be installed before any
+    allocation. With a sanitizer-enabled OTP:
+    ```
+    EMILY_ASAN=1 mix compile --force
+    ASAN_OPTIONS=detect_leaks=0:abort_on_error=1 mix test
+    ```
+    No `DYLD_INSERT_LIBRARIES` or `ERL_FLAGS` needed; beam.smp
+    already has the runtime linked. A CI job for this is deferred
+    until the custom OTP build cost is justified; the lifecycle
+    and soak tests provide empirical refcount-safety coverage.
+  - **Behavioral change**: `to_binary` returns a resource binary
+    aliasing MLX storage. BEAM's binary-vheap GC heuristics don't
+    account for the aliased external data (the ProcBin is ~64 bytes
+    regardless of the underlying MLX buffer size). In tight loops
+    calling `to_binary`, resource binaries can accumulate without
+    triggering collection, holding MLX memory longer than expected.
+    Callers in hot paths should trigger
+    `:erlang.garbage_collect/0` periodically or ensure the binary
+    escapes to a short-lived process where GC runs naturally.
+
 - M11 — MLX fused transformer kernels. Wires MLX's handwritten
   `mx::fast::*` fused kernels (RMSNorm, LayerNorm, RoPE, scaled-dot-
   product attention) into Emily as `defn`-callable helpers, and ships
