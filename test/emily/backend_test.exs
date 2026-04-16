@@ -674,6 +674,7 @@ defmodule Emily.BackendTest do
   # ---------------- Linalg ----------------
 
   describe "linalg" do
+    @describetag :linalg
     property "lu: P * L * U ≈ A for random well-conditioned matrices" do
       check all(a <- square_matrix(), max_runs: @max_runs) do
         a_safe = make_well_conditioned(a)

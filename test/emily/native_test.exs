@@ -453,6 +453,7 @@ defmodule Emily.NativeTest do
   # ---------- Linalg ----------
 
   describe "linalg" do
+    @describetag :linalg
     test "matmul: 2x3 @ 3x2" do
       a = f32([1.0, 2.0, 3.0, 4.0, 5.0, 6.0], [2, 3])
       b = f32([7.0, 8.0, 9.0, 10.0, 11.0, 12.0], [3, 2])

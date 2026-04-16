@@ -130,6 +130,7 @@ defmodule Emily.CompilerTest do
   end
 
   describe "linalg" do
+    @describetag :linalg
     test "dot product (matmul)" do
       a = Nx.iota({3, 4}, type: :f32)
       b = Nx.iota({4, 2}, type: :f32)

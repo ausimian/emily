@@ -145,6 +145,7 @@ defmodule Emily.Backend.FallbacksTest do
   end
 
   describe "native linalg" do
+    @describetag :linalg
     test "lu returns (p, l, u) and reconstructs input" do
       t = emily([[2.0, 1.0], [1.0, 3.0]])
       {p, l, u} = Nx.LinAlg.lu(t)
