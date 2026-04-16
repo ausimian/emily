@@ -608,6 +608,39 @@ tolerance tables — not a global epsilon.
 **Exit:** `:grad_conformance` green on default CI; tolerance tables
 checked in alongside the goldens.
 
+**Shipped**:
+
+- **Scope change**: EXLA CPU backend on macOS instead of Linux+CUDA.
+  XLA-CPU is still a fully independent oracle (different compiler,
+  different kernels from both BinaryBackend and MLX). CUDA conformance
+  deferred to post-1.0.
+- **`Emily.GradZoo`** (`test/support/grad_zoo.ex`) — extracted the 8
+  `defn` grad functions and `softmax_last/1` from
+  `grad_equivalence_test.exs` into a shared module. Added `fixed_inputs/1`
+  (deterministic BinaryBackend tensors per function) and
+  `grad_function/1` (function captures). Both existing grad test files
+  updated to import from GradZoo.
+- **`Emily.ExlaGoldenData`** (`test/support/exla_golden_data.ex`) —
+  EXLA 0.11.0 CPU-generated golden gradient values for all 8 zoo
+  functions plus a 1-step transformer-block training step (forward +
+  grad + SGD update of all 8 parameters). Inline Elixir float lists,
+  consistent with the existing conformance golden pattern.
+- **`Emily.Grad.ExlaOracleTest`** (`test/emily/grad/exla_oracle_test.exs`)
+  — `@moduletag :grad_conformance`. Per-function tolerance table
+  (tighter than BinaryBackend's 1e-3: linear ops at 1e-6/1e-5,
+  compositions at 1e-4/1e-3). Runs in the default test suite.
+  `grad_dropout` excluded (PRNG divergence across backends).
+- **Golden generator** (`bench/exla_golden_gen.exs`) — standalone
+  Elixir script using `Mix.install` for `{:exla, "~> 0.10"}`. Runs on
+  macOS (CPU) or Linux+CUDA. Emits a complete `ExlaGoldenData` module:
+  `elixir bench/exla_golden_gen.exs`.
+
+**Known issue (pre-existing, not M13):**
+`test/emily/quantization/transform_test.exs:105` ("round-trip quantized
+2-layer MLP predicts close to dense") is seed-dependent flaky — the
+relative-error threshold (15 %) sits right at the boundary for some
+random inputs. Needs either a wider tolerance or a fixed seed.
+
 ### M14 — Serving concurrency cookbook + pooled-serving helper
 
 `Emily.Compiler.__partitions_options__/1` raises on

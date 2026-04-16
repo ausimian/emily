@@ -30,6 +30,7 @@ defmodule Emily.Grad.EquivalenceTest do
   use ExUnitProperties
 
   import Emily.BackendGenerators
+  import Emily.GradZoo
   import Nx.Defn
 
   @max_runs 10
@@ -52,8 +53,8 @@ defmodule Emily.Grad.EquivalenceTest do
   end
 
   # ---------------- Zoo ----------------
-
-  defn(grad_sum_op(x), do: grad(x, fn z -> Nx.sum(z) end))
+  # defn functions live in Emily.GradZoo (shared with the M13 EXLA
+  # oracle test and the golden generator).
 
   describe "sum" do
     property "grad is ones-shaped like input" do
@@ -67,8 +68,6 @@ defmodule Emily.Grad.EquivalenceTest do
       end
     end
   end
-
-  defn(grad_dot_left(x, b), do: grad(x, fn z -> z |> Nx.dot(b) |> Nx.sum() end))
 
   describe "dot" do
     property "grad w.r.t. left operand matches" do
@@ -86,12 +85,6 @@ defmodule Emily.Grad.EquivalenceTest do
     end
   end
 
-  defn grad_reshape_transpose(x) do
-    grad(x, fn z ->
-      z |> Nx.transpose(axes: [1, 0]) |> Nx.reshape({12}) |> Nx.sum()
-    end)
-  end
-
   describe "reshape ∘ transpose" do
     property "grad passes through shape ops" do
       check all(x <- tensor({3, 4}, {:f, 32}), max_runs: @max_runs) do
@@ -101,10 +94,6 @@ defmodule Emily.Grad.EquivalenceTest do
     end
   end
 
-  defn grad_broadcast(x) do
-    grad(x, fn z -> z |> Nx.broadcast({4, 3}) |> Nx.sum() end)
-  end
-
   describe "broadcast" do
     property "grad sums over broadcasted dims" do
       check all(x <- tensor({3}, {:f, 32}), max_runs: @max_runs) do
@@ -112,10 +101,6 @@ defmodule Emily.Grad.EquivalenceTest do
         assert_close(emily, ref, tol: grad_tol({:f, 32}))
       end
     end
-  end
-
-  defn grad_gather(x, idx) do
-    grad(x, fn z -> z |> Nx.gather(idx, axes: [0, 1]) |> Nx.sum() end)
   end
 
   describe "gather" do
@@ -131,10 +116,6 @@ defmodule Emily.Grad.EquivalenceTest do
         assert_close(emily, ref, tol: grad_tol({:f, 32}))
       end
     end
-  end
-
-  defn grad_indexed_add(x, idx, upd) do
-    grad(x, fn z -> z |> Nx.indexed_add(idx, upd) |> Nx.sum() end)
   end
 
   describe "indexed_add" do
@@ -158,27 +139,6 @@ defmodule Emily.Grad.EquivalenceTest do
 
   # ---------------- Composition ----------------
 
-  # Numerically stable softmax along the last axis — used only in the
-  # composition cases. Nx has no built-in softmax and we want to avoid
-  # dragging Axon into the grad tests.
-  defn softmax_last(t) do
-    m = Nx.reduce_max(t, axes: [-1], keep_axes: true)
-    e = Nx.exp(t - m)
-    e / Nx.sum(e, axes: [-1], keep_axes: true)
-  end
-
-  defn grad_gather_dot_softmax(x, idx, w) do
-    grad(x, fn z ->
-      z
-      # {4, 6} with axes=[0] and idx {3, 1} → {3, 1, 6}
-      |> Nx.gather(idx, axes: [0])
-      |> Nx.reshape({3, 6})
-      |> Nx.dot(w)
-      |> softmax_last()
-      |> Nx.sum()
-    end)
-  end
-
   describe "composition: gather → dot → softmax → sum" do
     property "stacked grad matches" do
       check all(x <- tensor({4, 6}, {:f, 32}), max_runs: @max_runs) do
@@ -192,17 +152,6 @@ defmodule Emily.Grad.EquivalenceTest do
         assert_close(emily, ref, tol: grad_tol({:f, 32}))
       end
     end
-  end
-
-  defn grad_attention(x, wq, wk, wv, scale) do
-    grad(x, fn z ->
-      q = Nx.dot(z, wq)
-      k = Nx.dot(z, wk)
-      v = Nx.dot(z, wv)
-      logits = Nx.dot(q, Nx.transpose(k)) * scale
-      attn = softmax_last(logits)
-      attn |> Nx.dot(v) |> Nx.sum()
-    end)
   end
 
   describe "composition: attention-shaped block" do
