@@ -26,7 +26,9 @@ checklist so future-us understands the trade-offs.
   scope from M9; mixed-precision master weights: in scope from M16.)
 - Drop-in replacement for EMLX. We borrow where it's clearly right, but
   we're not constrained by its API.
-- `Emily.Stream` as a public API — MLX streams stay internal in v1.
+- `Emily.Stream` beyond the narrow `with_stream/2` + `new/1` +
+  `synchronize/1` surface M14 introduces for the documented
+  "big model, multi-process serving" pattern.
 
 ## Architecture
 

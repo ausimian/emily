@@ -15,8 +15,8 @@ namespace {
 
 #define EMILY_UNARY(nif_name, mlx_fn)                                          \
   fine::ResourcePtr<Tensor> nif_name(                                          \
-      ErlNifEnv *, fine::ResourcePtr<Tensor> a) {                              \
-    return wrap(mlx_fn(a->array));                                             \
+      ErlNifEnv *, fine::ResourcePtr<Tensor> a, int64_t s) {                   \
+    return wrap(mlx_fn(a->array, emily::resolve_stream(s)));                   \
   }                                                                            \
   FINE_NIF(nif_name, 0);
 
@@ -64,8 +64,9 @@ EMILY_UNARY(stop_gradient,   mx::stop_gradient)
 
 // round/2 takes an extra decimals arg; handled separately.
 fine::ResourcePtr<Tensor> round(
-    ErlNifEnv *, fine::ResourcePtr<Tensor> a, int64_t decimals) {
-  return wrap(mx::round(a->array, static_cast<int>(decimals)));
+    ErlNifEnv *, fine::ResourcePtr<Tensor> a, int64_t decimals, int64_t s) {
+  return wrap(mx::round(a->array, static_cast<int>(decimals),
+                        emily::resolve_stream(s)));
 }
 FINE_NIF(round, 0);
 

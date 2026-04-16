@@ -19,28 +19,29 @@ using emily::wrap;
 
 namespace {
 
-// `padding` bundles low/high padding into a single tuple so the NIF
-// arity stays manageable; both have length == spatial rank.
+// `padding` bundles low/high into a tuple; `dilation` bundles
+// kernel/input dilation — both keep the NIF arity manageable.
 fine::ResourcePtr<Tensor> conv_general(
     ErlNifEnv *,
     fine::ResourcePtr<Tensor> input,
     fine::ResourcePtr<Tensor> weight,
     std::vector<int64_t> stride,
     std::tuple<std::vector<int64_t>, std::vector<int64_t>> padding,
-    std::vector<int64_t> kernel_dilation,
-    std::vector<int64_t> input_dilation,
+    std::tuple<std::vector<int64_t>, std::vector<int64_t>> dilation,
     int64_t groups,
-    bool flip) {
+    bool flip,
+    int64_t s) {
   return wrap(mx::conv_general(
       input->array,
       weight->array,
       to_int_vec(stride),
       to_int_vec(std::get<0>(padding)),
       to_int_vec(std::get<1>(padding)),
-      to_int_vec(kernel_dilation),
-      to_int_vec(input_dilation),
+      to_int_vec(std::get<0>(dilation)),
+      to_int_vec(std::get<1>(dilation)),
       static_cast<int>(groups),
-      flip));
+      flip,
+      emily::resolve_stream(s)));
 }
 FINE_NIF(conv_general, 0);
 

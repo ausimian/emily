@@ -76,8 +76,9 @@ FINE_NIF(from_binary, 0);
 // cumulative reductions on interior axes of some 4-D shapes) raise
 // "Unable to safely factor shape" here; the Backend layer routes the
 // known cases around us.
-fine::Term to_binary(ErlNifEnv *env, fine::ResourcePtr<Tensor> tensor) {
-  auto materialized = mx::contiguous(tensor->array);
+fine::Term to_binary(ErlNifEnv *env, fine::ResourcePtr<Tensor> tensor, int64_t s) {
+  auto stream = emily::resolve_stream(s);
+  auto materialized = mx::contiguous(tensor->array, false, stream);
   mx::eval(materialized);
 
   // Defensive: mx::contiguous is supposed to give a row-contiguous

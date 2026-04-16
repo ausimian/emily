@@ -45,7 +45,7 @@ defmodule Emily do
   is ready.
   """
   @spec to_binary(t()) :: binary()
-  defdelegate to_binary(tensor), to: Native
+  def to_binary(tensor), do: Native.to_binary(tensor, Process.get(:emily_stream, -1))
 
   @doc "Return the tensor's shape as a list of non-negative ints."
   @spec shape(t()) :: [non_neg_integer()]

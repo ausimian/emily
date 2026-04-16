@@ -21,8 +21,11 @@ namespace {
       ErlNifEnv *,                                                             \
       fine::ResourcePtr<Tensor> a,                                             \
       std::vector<int64_t> axes,                                               \
-      bool keepdims) {                                                         \
-    return wrap(mlx_fn(a->array, to_int_vec(axes), keepdims));                 \
+      bool keepdims,                                                           \
+      int64_t s) {                                                             \
+    return wrap(                                                               \
+        mlx_fn(a->array, to_int_vec(axes), keepdims,                           \
+               emily::resolve_stream(s)));                                     \
   }                                                                            \
   FINE_NIF(nif_name, 0);
 
@@ -44,9 +47,11 @@ EMILY_REDUCE(logsumexp, mx::logsumexp)
       fine::ResourcePtr<Tensor> a,                                             \
       std::vector<int64_t> axes,                                               \
       bool keepdims,                                                           \
-      int64_t ddof) {                                                          \
-    return wrap(                                                               \
-        mlx_fn(a->array, to_int_vec(axes), keepdims, static_cast<int>(ddof))); \
+      int64_t ddof,                                                            \
+      int64_t s) {                                                             \
+    return wrap(mlx_fn(a->array, to_int_vec(axes), keepdims,                   \
+                       static_cast<int>(ddof),                                 \
+                       emily::resolve_stream(s)));                             \
   }                                                                            \
   FINE_NIF(nif_name, 0);
 
@@ -60,8 +65,10 @@ fine::ResourcePtr<Tensor> argmax(
     ErlNifEnv *,
     fine::ResourcePtr<Tensor> a,
     int64_t axis,
-    bool keepdims) {
-  return wrap(mx::argmax(a->array, static_cast<int>(axis), keepdims));
+    bool keepdims,
+    int64_t s) {
+  return wrap(mx::argmax(a->array, static_cast<int>(axis), keepdims,
+                         emily::resolve_stream(s)));
 }
 FINE_NIF(argmax, 0);
 
@@ -69,8 +76,10 @@ fine::ResourcePtr<Tensor> argmin(
     ErlNifEnv *,
     fine::ResourcePtr<Tensor> a,
     int64_t axis,
-    bool keepdims) {
-  return wrap(mx::argmin(a->array, static_cast<int>(axis), keepdims));
+    bool keepdims,
+    int64_t s) {
+  return wrap(mx::argmin(a->array, static_cast<int>(axis), keepdims,
+                         emily::resolve_stream(s)));
 }
 FINE_NIF(argmin, 0);
 
@@ -81,9 +90,10 @@ FINE_NIF(argmin, 0);
       fine::ResourcePtr<Tensor> a,                                             \
       int64_t axis,                                                            \
       bool reverse,                                                            \
-      bool inclusive) {                                                        \
-    return wrap(mlx_fn(                                                        \
-        a->array, static_cast<int>(axis), reverse, inclusive));                \
+      bool inclusive,                                                          \
+      int64_t s) {                                                             \
+    return wrap(mlx_fn(a->array, static_cast<int>(axis), reverse, inclusive,   \
+                       emily::resolve_stream(s)));                             \
   }                                                                            \
   FINE_NIF(nif_name, 0);
 

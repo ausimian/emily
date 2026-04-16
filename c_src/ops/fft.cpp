@@ -24,8 +24,9 @@ fine::ResourcePtr<Tensor> fftn(
     ErlNifEnv *,
     fine::ResourcePtr<Tensor> a,
     std::vector<int64_t> n,
-    std::vector<int64_t> axes) {
-  return wrap(fft::fftn(a->array, to_mlx_shape(n), to_int_vec(axes)));
+    std::vector<int64_t> axes,
+    int64_t s) {
+  return wrap(fft::fftn(a->array, to_mlx_shape(n), to_int_vec(axes), emily::resolve_stream(s)));
 }
 FINE_NIF(fftn, 0);
 
@@ -33,8 +34,9 @@ fine::ResourcePtr<Tensor> ifftn(
     ErlNifEnv *,
     fine::ResourcePtr<Tensor> a,
     std::vector<int64_t> n,
-    std::vector<int64_t> axes) {
-  return wrap(fft::ifftn(a->array, to_mlx_shape(n), to_int_vec(axes)));
+    std::vector<int64_t> axes,
+    int64_t s) {
+  return wrap(fft::ifftn(a->array, to_mlx_shape(n), to_int_vec(axes), emily::resolve_stream(s)));
 }
 FINE_NIF(ifftn, 0);
 
@@ -42,8 +44,9 @@ fine::ResourcePtr<Tensor> rfftn(
     ErlNifEnv *,
     fine::ResourcePtr<Tensor> a,
     std::vector<int64_t> n,
-    std::vector<int64_t> axes) {
-  return wrap(fft::rfftn(a->array, to_mlx_shape(n), to_int_vec(axes)));
+    std::vector<int64_t> axes,
+    int64_t s) {
+  return wrap(fft::rfftn(a->array, to_mlx_shape(n), to_int_vec(axes), emily::resolve_stream(s)));
 }
 FINE_NIF(rfftn, 0);
 
@@ -51,8 +54,9 @@ fine::ResourcePtr<Tensor> irfftn(
     ErlNifEnv *,
     fine::ResourcePtr<Tensor> a,
     std::vector<int64_t> n,
-    std::vector<int64_t> axes) {
-  return wrap(fft::irfftn(a->array, to_mlx_shape(n), to_int_vec(axes)));
+    std::vector<int64_t> axes,
+    int64_t s) {
+  return wrap(fft::irfftn(a->array, to_mlx_shape(n), to_int_vec(axes), emily::resolve_stream(s)));
 }
 FINE_NIF(irfftn, 0);
 

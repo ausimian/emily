@@ -59,4 +59,13 @@ unwrap_all(const std::vector<fine::ResourcePtr<Tensor>> &tensors) {
   return out;
 }
 
+// Resolve a stream index from Elixir into an mx::Stream.
+// -1 (the sentinel for "no explicit stream") falls through to the
+// thread-local default — backwards-compatible with pre-M14 code paths.
+inline mx::Stream resolve_stream(int64_t stream_index) {
+  if (stream_index < 0)
+    return mx::default_stream(mx::default_device());
+  return mx::get_stream(static_cast<int>(stream_index));
+}
+
 } // namespace emily

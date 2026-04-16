@@ -80,8 +80,10 @@ defmodule Emily.Quantization do
       transpose: transpose
     } = qw
 
+    s = Process.get(:emily_stream, -1)
+
     out_ref =
-      Native.quantized_matmul(x_ref, q_ref, s_ref, b_ref, transpose, group_size, bits)
+      Native.quantized_matmul(x_ref, q_ref, s_ref, b_ref, transpose, group_size, bits, s)
 
     shape = out_ref |> Native.shape() |> List.to_tuple()
     type = Native.dtype(out_ref)

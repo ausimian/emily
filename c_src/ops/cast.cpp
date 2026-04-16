@@ -18,8 +18,10 @@ namespace {
 fine::ResourcePtr<Tensor> astype(
     ErlNifEnv *,
     fine::ResourcePtr<Tensor> a,
-    std::tuple<fine::Atom, int64_t> dtype) {
-  return wrap(mx::astype(a->array, to_mlx_dtype(dtype)));
+    std::tuple<fine::Atom, int64_t> dtype,
+    int64_t s) {
+  return wrap(mx::astype(a->array, to_mlx_dtype(dtype),
+                         emily::resolve_stream(s)));
 }
 FINE_NIF(astype, 0);
 
@@ -28,8 +30,10 @@ FINE_NIF(astype, 0);
 fine::ResourcePtr<Tensor> bitcast(
     ErlNifEnv *,
     fine::ResourcePtr<Tensor> a,
-    std::tuple<fine::Atom, int64_t> dtype) {
-  return wrap(mx::view(a->array, to_mlx_dtype(dtype)));
+    std::tuple<fine::Atom, int64_t> dtype,
+    int64_t s) {
+  return wrap(mx::view(a->array, to_mlx_dtype(dtype),
+                       emily::resolve_stream(s)));
 }
 FINE_NIF(bitcast, 0);
 
