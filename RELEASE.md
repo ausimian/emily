@@ -15,11 +15,11 @@
     `fine::Term` via `fine::make_resource_binary`. Defensive assert
     on `row_contiguous` after `mx::contiguous` guards against
     aliasing a strided buffer.
-  - **`from_binary` unchanged.** BEAM → MLX zero-copy on Metal
-    requires `MTL::Device::newBufferWithBytesNoCopy` (MLX's
-    `allocator::Buffer` stores an `MTL::Buffer*`, not a raw CPU
-    pointer — wrapping a BEAM heap pointer is unsound). Deferred
-    to M12.5; see `PLAN.md`.
+  - **`from_binary` unchanged.** The memcpy is a one-time cost at
+    model load. BEAM → MLX zero-copy via
+    `MTL::Device::newBufferWithBytesNoCopy` was investigated and
+    dropped (M12.5) — real-world binaries from safetensors never
+    meet the page-alignment preconditions.
   - **Tests**: round-trip lifetime test at `test/emily_test.exs`
     (`"to_binary aliased binary survives after tensor goes out of
     scope"`); zero-copy memory soak at

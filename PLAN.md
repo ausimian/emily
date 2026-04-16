@@ -522,17 +522,18 @@ over the M9 baseline (target ≥1.5× on M3 hardware).
 PLAN design decision #9 claims unified-memory zero-copy for
 `from_binary` / `to_binary`. The current code memcpys unconditionally
 (`emily_nif.cpp:57-58`, `:74-84`). M12 delivers the claim for
-`to_binary`; `from_binary` is deferred to M12.5 because MLX's Metal
-`allocator::Buffer` stores an `MTL::Buffer*`, not a raw CPU pointer,
-so wrapping a BEAM heap pointer is unsound without routing through
-`MTL::Device::newBufferWithBytesNoCopy`.
+`to_binary`. `from_binary` retains its memcpy — the one-time cost at
+model load is negligible relative to the file I/O that precedes it,
+and Metal's `newBufferWithBytesNoCopy` requires page-aligned,
+page-sized memory that real-world binaries (Bumblebee/safetensors)
+never provide. See dropped M12.5 below.
 
 - **`to_binary`**: wrap the materialized MLX buffer pointer as a BEAM
   resource binary via `enif_make_resource_binary`, with the resource
   retaining a refcount on the MLX array so the buffer survives until
   the BEAM binary is GC'd. No copy; the BEAM binary aliases MLX
   storage directly.
-- **`from_binary`**: deferred. See M12.5.
+- **`from_binary`**: memcpy retained. Acceptable cost — see M12.5.
 - **Stride-aware materialize**: `to_binary` currently routes through
   `mx::contiguous`; for already-contiguous arrays this is a no-op, but
   the wrap-as-resource path needs an explicit guard since aliasing a
@@ -558,41 +559,20 @@ requires a custom `--enable-sanitizers=address` OTP build).
 `EMILY_ASAN=1` Makefile flag ships for users with sanitizer-enabled
 OTP.
 
-### M12.5 — `from_binary` zero-copy via MTL no-copy buffer
+### M12.5 — `from_binary` zero-copy via MTL no-copy buffer *(dropped)*
 
-Deferred half of M12. The BEAM → MLX direction can't be done by
-wrapping a BEAM pointer as an `mx::allocator::Buffer` — Metal's
-allocator stores `MTL::Buffer*`, not a raw CPU pointer, so a wrapped
-heap pointer would be dereferenced as an `MTL::Buffer*` and crash on
-GPU dispatch. True zero-copy requires registering the BEAM memory
-with Metal.
+Dropped. The approach required `MTL::Device::newBufferWithBytesNoCopy`
+which needs page-aligned (4096 B), page-sized memory. Real-world
+binaries from Bumblebee/safetensors never meet these preconditions:
+`:file.pread` allocates at 8–16 byte alignment, tensor sizes are
+determined by model dimensions (not page multiples), and the
+safetensors format packs tensors contiguously with no inter-tensor
+padding. ~99 %+ of calls would fall back to memcpy regardless.
 
-- **NIF changes**: accept `fine::Term` instead of `ErlNifBinary` so
-  we can `enif_make_copy` the term into a persistent `ErlNifEnv` and
-  keep the refc binary alive. Call
-  `MTL::Device::newBufferWithBytesNoCopy:length:options:deallocator:`
-  to hand the BEAM pointer to Metal; the deallocator block calls
-  `enif_free_env`. Wrap the resulting `MTL::Buffer*` as an
-  `allocator::Buffer` and pass to the 4-arg `mx::array` constructor.
-- **MLX integration**: register the MTL::Buffer with MLX's
-  residency set so command buffers keep it resident. The residency
-  API is not in public headers — either upstream a public entry
-  point or bypass via implementation-detail APIs.
-- **Build**: link the Metal framework from the NIF; add metal-cpp
-  headers to the build.
-- **Pre-conditions**: heap-resident refc binary, page-aligned,
-  page-sized. Fall back to the M12 memcpy path otherwise.
-
-**Testing**:
-- Allocate a 256 MB page-aligned binary, `from_binary` →
-  `to_binary`, assert MLX active memory grew by ~256 MB not ~512 MB.
-- Weight-loading soak: simulate Bumblebee's mmap'd-weights path with
-  realistic tensor counts, assert peak memory matches the
-  theoretical working-set lower bound.
-- Refcount safety under ASan, same pattern as M12.
-
-**Exit:** `from_binary` zero-copy verified by allocator stats for
-page-aligned inputs; PLAN decision #9 claim fully delivered.
+Additional complexity — MLX's private residency API, Metal framework
+linking, persistent `ErlNifEnv` lifecycle — was disproportionate to
+the benefit, which is a one-time cost at model load (not in the
+inference hot path).
 
 ### M13 — EXLA gradient conformance
 
