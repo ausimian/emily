@@ -635,7 +635,7 @@ checked in alongside the goldens.
   macOS (CPU) or Linux+CUDA. Emits a complete `ExlaGoldenData` module:
   `elixir bench/exla_golden_gen.exs`.
 
-### M14 — Serving concurrency cookbook + pooled-serving helper
+### M14 — Serving concurrency: stream-per-process + cookbook
 
 `Emily.Compiler.__partitions_options__/1` raises on
 `max_concurrency > 1` — correct (Metal isn't safe for concurrent
@@ -644,36 +644,33 @@ single Emily-backed `Nx.Serving` cannot scale past one concurrent
 request. Production users will hit this in week one. M14 stops being
 silent about it and ships a tested pattern.
 
-- **`Emily.Serving.start_pool/2`**: helper that starts N
-  `Nx.Serving` instances behind a pool (poolboy or a hand-rolled
-  Registry round-robin; pick the lighter dep). Each Serving runs in
-  its own worker, dispatching requests in parallel across pool
-  members rather than within one member.
-- **Documented pattern**: "for K concurrent inference requests, start
-  K servings". Trade-off: each pool member loads its own weights —
-  fine for small models, painful for Qwen3-7B+.
-- **Alternative for large models**: stream-per-process via MLX's
-  `mx::scheduler::new_stream`. Expose `Native.set_default_stream/1`
-  and `Emily.Stream.with_stream/2`; multi-process serving with one
-  shared model + per-process MLX streams becomes the documented
-  "big model" path. (Promotes streams from internal-only — see
+- **Stream-per-process**: the primary deliverable. Expose
+  `Native.set_default_stream/1` and `Emily.Stream.with_stream/2`
+  via MLX's `mx::scheduler::new_stream`. Each process gets its own
+  Metal command queue; one shared model, per-process streams, no
+  weight duplication. (Promotes streams from internal-only — see
   Project Decisions — to a narrowly-scoped public surface.)
+- **Cookbook: pooled servings**: documented pattern — "for K
+  concurrent inference requests, start K `Nx.Serving` instances
+  behind your own pool (poolboy, Registry round-robin, etc.)".
+  No library code; clients bring their own pool since Emily already
+  behaves correctly under that model. Trade-off: each pool member
+  loads its own weights — fine for small models, painful for
+  Qwen3-7B+.
 - **README + moduledoc updates**: surface the limitation and both
   patterns prominently. Today neither is mentioned outside a buried
   comment in `Emily.Compiler`.
 
 **Testing**:
-- Pool helper test: K servings, K parallel requests, assert wall-clock
-  is ~K× faster than serial.
 - Stream test: two processes, two streams, same model loaded once;
   no SIGSEGV under sustained parallel load
   (`test/soak/backend_concurrency_test.exs` documents the SIGSEGV
   story for the unstreamed case — this is the negative control).
-- `:serving_full` opt-in: end-to-end Qwen3 pool plus per-stream
-  large-model pattern.
+- `:serving_full` opt-in: end-to-end per-stream large-model
+  pattern.
 
-**Exit:** both patterns documented; pool helper shipped; concurrency
-soak demonstrates the streamed path is stable.
+**Exit:** both patterns documented; concurrency soak demonstrates
+the streamed path is stable.
 
 ### M15 — Native linalg
 
