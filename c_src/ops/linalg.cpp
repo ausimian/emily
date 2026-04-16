@@ -1,5 +1,7 @@
-// Linear algebra: matmul, tensordot, outer, inner, and affine int4/int8
-// quantization primitives (quantize / dequantize / quantized_matmul).
+// Linear algebra: matmul, tensordot, outer, inner, decompositions
+// (lu, svd, qr, cholesky, eigh), solvers (solve, solve_triangular),
+// and affine int4/int8 quantization primitives
+// (quantize / dequantize / quantized_matmul).
 
 #include "../emily/tensor.hpp"
 #include "../emily/worker.hpp"
@@ -121,5 +123,104 @@ fine::ResourcePtr<Tensor> quantized_matmul(
   });
 }
 FINE_NIF(quantized_matmul, 0);
+
+// ---- Decompositions / solvers (mx::linalg::*) ------------------
+//
+// MLX's linalg primitives are CPU-only (no GPU kernels as of 0.25).
+// We ignore the caller's stream index and force the CPU default
+// stream so these ops work regardless of the process-level stream.
+
+inline mx::Stream cpu_stream() {
+  return mx::default_stream(mx::Device(mx::Device::DeviceType::cpu));
+}
+
+// LU decomposition. Returns {P, L, U}.
+std::tuple<fine::ResourcePtr<Tensor>,
+           fine::ResourcePtr<Tensor>,
+           fine::ResourcePtr<Tensor>>
+linalg_lu(
+    ErlNifEnv *,
+    fine::ResourcePtr<Tensor> a,
+    int64_t /*s*/) {
+  auto result = mx::linalg::lu(a->array, cpu_stream());
+  return std::make_tuple(
+      wrap(std::move(result[0])),
+      wrap(std::move(result[1])),
+      wrap(std::move(result[2])));
+}
+FINE_NIF(linalg_lu, 0);
+
+// Singular value decomposition. Returns {U, S, Vt}.
+std::tuple<fine::ResourcePtr<Tensor>,
+           fine::ResourcePtr<Tensor>,
+           fine::ResourcePtr<Tensor>>
+linalg_svd(
+    ErlNifEnv *,
+    fine::ResourcePtr<Tensor> a,
+    int64_t /*s*/) {
+  auto result = mx::linalg::svd(a->array, true, cpu_stream());
+  return std::make_tuple(
+      wrap(std::move(result[0])),
+      wrap(std::move(result[1])),
+      wrap(std::move(result[2])));
+}
+FINE_NIF(linalg_svd, 0);
+
+// QR decomposition (reduced). Returns {Q, R}.
+std::tuple<fine::ResourcePtr<Tensor>,
+           fine::ResourcePtr<Tensor>>
+linalg_qr(
+    ErlNifEnv *,
+    fine::ResourcePtr<Tensor> a,
+    int64_t /*s*/) {
+  auto [q, r] = mx::linalg::qr(a->array, cpu_stream());
+  return std::make_tuple(wrap(std::move(q)), wrap(std::move(r)));
+}
+FINE_NIF(linalg_qr, 0);
+
+// Cholesky decomposition. `upper` selects upper- vs lower-triangular.
+fine::ResourcePtr<Tensor> linalg_cholesky(
+    ErlNifEnv *,
+    fine::ResourcePtr<Tensor> a,
+    bool upper,
+    int64_t /*s*/) {
+  return wrap(mx::linalg::cholesky(a->array, upper, cpu_stream()));
+}
+FINE_NIF(linalg_cholesky, 0);
+
+// Symmetric eigendecomposition. Returns {eigenvalues, eigenvectors}.
+std::tuple<fine::ResourcePtr<Tensor>,
+           fine::ResourcePtr<Tensor>>
+linalg_eigh(
+    ErlNifEnv *,
+    fine::ResourcePtr<Tensor> a,
+    std::string uplo,
+    int64_t /*s*/) {
+  auto [vals, vecs] = mx::linalg::eigh(a->array, uplo, cpu_stream());
+  return std::make_tuple(wrap(std::move(vals)), wrap(std::move(vecs)));
+}
+FINE_NIF(linalg_eigh, 0);
+
+// General linear solve: A X = B.
+fine::ResourcePtr<Tensor> linalg_solve(
+    ErlNifEnv *,
+    fine::ResourcePtr<Tensor> a,
+    fine::ResourcePtr<Tensor> b,
+    int64_t /*s*/) {
+  return wrap(mx::linalg::solve(a->array, b->array, cpu_stream()));
+}
+FINE_NIF(linalg_solve, 0);
+
+// Triangular solve: A X = B where A is upper- or lower-triangular.
+fine::ResourcePtr<Tensor> linalg_solve_triangular(
+    ErlNifEnv *,
+    fine::ResourcePtr<Tensor> a,
+    fine::ResourcePtr<Tensor> b,
+    bool upper,
+    int64_t /*s*/) {
+  return wrap(mx::linalg::solve_triangular(
+      a->array, b->array, upper, cpu_stream()));
+}
+FINE_NIF(linalg_solve_triangular, 0);
 
 } // namespace

@@ -484,6 +484,122 @@ defmodule Emily.NativeTest do
       r = Native.inner(worker(), a, b)
       assert to_f32_list(r) == [32.0]
     end
+
+    # --- Decompositions / solvers (mx::linalg::*) ---
+
+    test "linalg_lu: P * L * U ≈ A for a 3×3 matrix" do
+      # A = [[2, 1, 1], [4, 3, 3], [8, 7, 9]]
+      a = f32([2.0, 1.0, 1.0, 4.0, 3.0, 3.0, 8.0, 7.0, 9.0], [3, 3])
+      {perm, l, u} = Native.linalg_lu(a, -1)
+
+      # MLX returns P as a 1-D permutation index vector.
+      assert Native.shape(perm) == [3]
+      assert Native.shape(l) == [3, 3]
+      assert Native.shape(u) == [3, 3]
+
+      # Build the permutation matrix from the index vector and verify
+      # P * L * U ≈ A.
+      eye = Native.eye(3, 3, 0, {:f, 32}, -1)
+      p = Native.take(eye, perm, 0, -1)
+      pl = Native.matmul(p, l, -1)
+      plu = Native.matmul(pl, u, -1)
+
+      assert_close(
+        to_f32_list(plu),
+        [2.0, 1.0, 1.0, 4.0, 3.0, 3.0, 8.0, 7.0, 9.0],
+        1.0e-4
+      )
+    end
+
+    test "linalg_svd: U * diag(S) * Vt ≈ A for a diagonal matrix" do
+      # Diagonal matrix — singular values are the diagonal entries, sorted.
+      a = f32([3.0, 0.0, 0.0, 4.0], [2, 2])
+      {u, s, vt} = Native.linalg_svd(a, -1)
+
+      assert Native.shape(u) == [2, 2]
+      assert Native.shape(s) == [2]
+      assert Native.shape(vt) == [2, 2]
+
+      # Singular values of a positive diagonal, sorted descending.
+      s_list = to_f32_list(s)
+      assert_close(Enum.max(s_list), 4.0, 1.0e-4)
+      assert_close(Enum.min(s_list), 3.0, 1.0e-4)
+    end
+
+    test "linalg_qr: Q * R ≈ A and Q^T * Q ≈ I" do
+      # A = [[1, 2], [3, 4], [5, 6]]  (3×2 — tall)
+      a = f32([1.0, 2.0, 3.0, 4.0, 5.0, 6.0], [3, 2])
+      {q, r} = Native.linalg_qr(a, -1)
+
+      # Reduced QR: Q is 3×2, R is 2×2
+      assert Native.shape(q) == [3, 2]
+      assert Native.shape(r) == [2, 2]
+
+      # Q * R ≈ A
+      qr = Native.matmul(q, r, -1)
+      assert_close(to_f32_list(qr), [1.0, 2.0, 3.0, 4.0, 5.0, 6.0], 1.0e-4)
+
+      # Q^T * Q ≈ I(2×2)
+      qt = Native.transpose(q, [1, 0], -1)
+      qtq = Native.matmul(qt, q, -1)
+      assert_close(to_f32_list(qtq), [1.0, 0.0, 0.0, 1.0], 1.0e-4)
+    end
+
+    test "linalg_cholesky: L * L^T ≈ A for an SPD matrix" do
+      # A = [[4, 2], [2, 3]] — symmetric positive definite
+      a = f32([4.0, 2.0, 2.0, 3.0], [2, 2])
+      l = Native.linalg_cholesky(a, false, -1)
+
+      assert Native.shape(l) == [2, 2]
+
+      # L * L^T ≈ A
+      lt = Native.transpose(l, [1, 0], -1)
+      llt = Native.matmul(l, lt, -1)
+      assert_close(to_f32_list(llt), [4.0, 2.0, 2.0, 3.0], 1.0e-4)
+    end
+
+    test "linalg_eigh: eigendecomposition of a symmetric matrix" do
+      # A = [[2, 1], [1, 3]] — eigenvalues: (5 ± √5)/2 ≈ 1.382, 3.618
+      a = f32([2.0, 1.0, 1.0, 3.0], [2, 2])
+      {vals, vecs} = Native.linalg_eigh(a, "L", -1)
+
+      assert Native.shape(vals) == [2]
+      assert Native.shape(vecs) == [2, 2]
+
+      vals_list = to_f32_list(vals) |> Enum.sort()
+      assert_close(Enum.at(vals_list, 0), (5.0 - :math.sqrt(5)) / 2, 1.0e-4)
+      assert_close(Enum.at(vals_list, 1), (5.0 + :math.sqrt(5)) / 2, 1.0e-4)
+    end
+
+    test "linalg_solve: Ax = b with known solution" do
+      # A = [[1, 2], [3, 4]], b = [5, 11] → x = [1, 2]
+      a = f32([1.0, 2.0, 3.0, 4.0], [2, 2])
+      b = f32([5.0, 11.0], [2])
+      x = Native.linalg_solve(a, b, -1)
+
+      assert Native.shape(x) == [2]
+      assert_close(to_f32_list(x), [1.0, 2.0], 1.0e-4)
+    end
+
+    test "linalg_solve_triangular: lower-triangular Lx = b" do
+      # L = [[2, 0], [1, 3]], b = [2, 4] → x = [1, 1]
+      l = f32([2.0, 0.0, 1.0, 3.0], [2, 2])
+      b = f32([2.0, 4.0], [2])
+      x = Native.linalg_solve_triangular(l, b, false, -1)
+
+      assert Native.shape(x) == [2]
+      assert_close(to_f32_list(x), [1.0, 1.0], 1.0e-4)
+    end
+
+    test "linalg_solve_triangular: upper-triangular Ux = b" do
+      # U = [[2, 1], [0, 3]], b = [5, 3] → x = [1, 1]
+      u = f32([2.0, 1.0, 0.0, 3.0], [2, 2])
+      b = f32([5.0, 3.0], [2])
+      x = Native.linalg_solve_triangular(u, b, true, -1)
+
+      assert Native.shape(x) == [2]
+      assert_close(to_f32_list(x), [2.0, 1.0], 1.0e-4)
+    end
   end
 
   # ---------- Quantization ----------

@@ -14,10 +14,11 @@ defmodule Emily.Backend do
       message pointing to f32.
     * `from_pointer`, `to_pointer`, `population_count`, and
       `count_leading_zeros` raise `ArgumentError` — MLX has no primitive.
-    * Window operations (`window_sum`, `window_scatter_max`, etc.) and
-      advanced linalg (`lu`, `svd`, `qr`, `cholesky`, `eigh`, `solve`,
-      `determinant`, `triangular_solve`) fall back to Nx's default
-      `optional/3` implementation — correct but slow.
+    * Window operations (`window_sum`, `window_scatter_max`, etc.) fall
+      back to Nx's default `optional/3` implementation — correct but slow.
+      `qr` with `mode: :complete` also falls back (MLX only supports
+      reduced QR). `determinant` uses Nx's default implementation, which
+      calls `lu` (native via MLX) for matrices larger than 3×3.
     * `quotient` uses MLX `floor_divide` semantics (floor toward -inf
       rather than Nx's truncate-toward-zero). For non-negative integer
       operands the results agree; mixed-sign inputs diverge by one. We
@@ -1194,15 +1195,129 @@ defmodule Emily.Backend do
     batch ++ trailing
   end
 
-  @impl true
-  def lu(outs, t, opts), do: via_binary_tuple(outs, [t], &Nx.LinAlg.lu(&1, opts))
+  # =================================================================
+  # Native linalg — decompositions & solvers via mx::linalg::*
+  # =================================================================
 
   @impl true
-  def triangular_solve(out, a, b, opts),
-    do: via_binary(out, [a, b], &Nx.LinAlg.triangular_solve(&1, &2, opts))
+  def lu({p_out, l_out, u_out}, t, _opts) do
+    s = stream_index()
+    {perm_ref, l_ref, u_ref} = Native.linalg_lu(ref(t), s)
+    # MLX returns P as a 1-D permutation index vector; Nx expects a
+    # full permutation matrix. Build it by indexing an identity matrix.
+    n = elem(t.shape, tuple_size(t.shape) - 1)
+    eye_ref = Native.eye(n, n, 0, p_out.type, s)
+    p_ref = Native.take(eye_ref, perm_ref, 0, s)
+    {wrap(p_ref, p_out, s), wrap(l_ref, l_out, s), wrap(u_ref, u_out, s)}
+  end
 
   @impl true
-  def svd(outs, t, opts), do: via_binary_tuple(outs, [t], &Nx.LinAlg.svd(&1, opts))
+  def svd({u_out, s_out, v_out}, t, _opts) do
+    s = stream_index()
+    {u_ref, s_ref, v_ref} = Native.linalg_svd(ref(t), s)
+    # MLX always returns full matrices. Slice to match out shapes when
+    # Nx requests reduced SVD (full_matrices?: false).
+    u_ref = maybe_slice_for_reduced(u_ref, u_out, s)
+    v_ref = maybe_slice_for_reduced(v_ref, v_out, s)
+    {wrap(u_ref, u_out, s), wrap(s_ref, s_out, s), wrap(v_ref, v_out, s)}
+  end
+
+  defp maybe_slice_for_reduced(ref, %T{shape: out_shape}, s) do
+    mlx_shape = Native.shape(ref)
+    out_list = Tuple.to_list(out_shape)
+
+    if mlx_shape == out_list do
+      ref
+    else
+      rank = length(mlx_shape)
+      starts = List.duplicate(0, rank)
+      strides = List.duplicate(1, rank)
+      Native.slice(ref, starts, out_list, strides, s)
+    end
+  end
+
+  @impl true
+  def triangular_solve(%T{} = out, a, b, opts) do
+    s = stream_index()
+    lower = opts[:lower]
+    left_side = opts[:left_side]
+    transform_a = opts[:transform_a]
+
+    a_ref = ref(a)
+    b_ref = ref(b)
+
+    # MLX's solve_triangular only supports AX = B with an upper/lower
+    # toggle. Handle transform_a and left_side in Elixir using native
+    # transpose + the triangular solver.
+    {a_ref, upper} =
+      case transform_a do
+        :none ->
+          {a_ref, not lower}
+
+        :transpose ->
+          # A^T X = B: transpose A; lower ↔ upper flips.
+          {Native.transpose(a_ref, mat_transpose_axes(a.shape), s), lower}
+      end
+
+    if left_side do
+      Native.linalg_solve_triangular(a_ref, b_ref, upper, s)
+      |> wrap(out, s)
+    else
+      # XA = B  →  A^T X^T = B^T
+      at_ref = Native.transpose(a_ref, mat_transpose_axes(a.shape), s)
+      bt_ref = Native.transpose(b_ref, mat_transpose_axes(b.shape), s)
+      flipped_upper = not upper
+
+      xt_ref = Native.linalg_solve_triangular(at_ref, bt_ref, flipped_upper, s)
+
+      Native.transpose(xt_ref, mat_transpose_axes(out.shape), s)
+      |> wrap(out, s)
+    end
+  end
+
+  # Axes list that swaps the last two dimensions (matrix transpose),
+  # preserving any leading batch dimensions.
+  defp mat_transpose_axes(shape) do
+    rank = tuple_size(shape)
+
+    case rank do
+      1 -> [0]
+      _ -> Enum.to_list(0..(rank - 3)//1) ++ [rank - 1, rank - 2]
+    end
+  end
+
+  @impl true
+  def qr({q_out, r_out}, t, opts) do
+    case opts[:mode] do
+      :reduced ->
+        s = stream_index()
+        {q_ref, r_ref} = Native.linalg_qr(ref(t), s)
+        {wrap(q_ref, q_out, s), wrap(r_ref, r_out, s)}
+
+      :complete ->
+        # MLX only supports reduced QR; fall back for complete mode.
+        via_binary_tuple({q_out, r_out}, [t], &Nx.LinAlg.qr(&1, opts))
+    end
+  end
+
+  @impl true
+  def cholesky(%T{} = out, t) do
+    s = stream_index()
+    Native.linalg_cholesky(ref(t), false, s) |> wrap(out, s)
+  end
+
+  @impl true
+  def eigh({vals_out, vecs_out}, t, _opts) do
+    s = stream_index()
+    {vals_ref, vecs_ref} = Native.linalg_eigh(ref(t), "L", s)
+    {wrap(vals_ref, vals_out, s), wrap(vecs_ref, vecs_out, s)}
+  end
+
+  @impl true
+  def solve(%T{} = out, a, b) do
+    s = stream_index()
+    Native.linalg_solve(ref(a), ref(b), s) |> wrap(out, s)
+  end
 
   # =================================================================
   # Custom fused-kernel callbacks for Emily.Fast

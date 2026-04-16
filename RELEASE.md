@@ -8,6 +8,25 @@
 
 ## Added
 
+- M15 — Native linalg. `lu`, `svd`, `qr` (reduced), `cholesky`, `eigh`,
+  `solve`, and `triangular_solve` now dispatch directly to
+  `mx::linalg::*` instead of round-tripping through `Nx.BinaryBackend`.
+  MLX's linalg primitives are CPU-only; the NIFs use a CPU stream
+  inside the worker's `run_sync` callback.
+  - **`qr` with `mode: :complete`** falls back to `via_binary` (MLX only
+    supports reduced QR). **`determinant`** uses Nx's default
+    implementation, which calls the now-native `lu`.
+  - `triangular_solve` handles `left_side: false` and
+    `transform_a: :transpose` by composing native transpose + native
+    solve (no BinaryBackend fallback).
+  - SVD reduced mode (`full_matrices?: false`) slices the full MLX
+    result to the target shape.
+  - **New NIF stubs** in `Emily.Native`: `linalg_lu/2`, `linalg_svd/2`,
+    `linalg_qr/2`, `linalg_cholesky/3`, `linalg_eigh/3`,
+    `linalg_solve/3`, `linalg_solve_triangular/4`.
+  - Property tests compare all native linalg ops against
+    `Nx.BinaryBackend` with well-conditioned random inputs.
+
 - M14.5 — Worker-thread dispatch for vendored MLX. Replaces the
   stream-index NIF convention (M14) and the `safe_eval` mutex with a
   proper per-stream dedicated OS thread. Each `WorkerThread` (C++ class

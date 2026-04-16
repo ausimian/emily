@@ -128,4 +128,52 @@ defmodule Emily.BackendGenerators do
 
   defp abs_diff(a, b) when is_number(a) and is_number(b), do: abs(a - b)
   defp abs_diff(_, _), do: :na
+
+  # --- Linalg generators ---
+
+  @doc "Generate a random n×n square matrix (n in 2..5)."
+  def square_matrix do
+    bind(integer(2..5), fn n ->
+      tensor({n, n}, {:f, 32})
+    end)
+  end
+
+  @doc """
+  Generate a symmetric positive-definite matrix by constructing A^T A + nI.
+  The identity diagonal ensures positive eigenvalues even if A is rank-deficient.
+  """
+  def spd_matrix do
+    bind(integer(2..5), fn n ->
+      tensor({n, n}, {:f, 32})
+      |> map(fn a ->
+        ata = Nx.dot(Nx.transpose(a), a)
+        Nx.add(ata, Nx.multiply(Nx.eye(n, backend: Nx.BinaryBackend), n))
+      end)
+    end)
+  end
+
+  @doc "Generate a symmetric matrix (A + A^T) / 2."
+  def symmetric_matrix do
+    bind(integer(2..5), fn n ->
+      tensor({n, n}, {:f, 32})
+      |> map(fn a -> Nx.divide(Nx.add(a, Nx.transpose(a)), 2) end)
+    end)
+  end
+
+  @doc "Generate a lower-triangular matrix with positive diagonal (non-singular)."
+  def lower_triangular_matrix do
+    bind(integer(2..5), fn n ->
+      tensor({n, n}, {:f, 32}) |> map(&make_lower_triangular(&1, n))
+    end)
+  end
+
+  defp make_lower_triangular(a, n) do
+    flat = Nx.to_flat_list(a)
+    values = for i <- 0..(n - 1), j <- 0..(n - 1), do: lower_elem(flat, n, i, j)
+    Nx.tensor(values, type: {:f, 32}, backend: Nx.BinaryBackend) |> Nx.reshape({n, n})
+  end
+
+  defp lower_elem(flat, n, i, j) when i == j, do: abs(Enum.at(flat, i * n + j)) + 1.0
+  defp lower_elem(flat, n, i, j) when i > j, do: Enum.at(flat, i * n + j)
+  defp lower_elem(_flat, _n, _i, _j), do: 0.0
 end
