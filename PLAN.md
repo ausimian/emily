@@ -635,12 +635,6 @@ checked in alongside the goldens.
   macOS (CPU) or Linux+CUDA. Emits a complete `ExlaGoldenData` module:
   `elixir bench/exla_golden_gen.exs`.
 
-**Known issue (pre-existing, not M13):**
-`test/emily/quantization/transform_test.exs:105` ("round-trip quantized
-2-layer MLP predicts close to dense") is seed-dependent flaky — the
-relative-error threshold (15 %) sits right at the boundary for some
-random inputs. Needs either a wider tolerance or a fixed seed.
-
 ### M14 — Serving concurrency cookbook + pooled-serving helper
 
 `Emily.Compiler.__partitions_options__/1` raises on

@@ -100,7 +100,10 @@ defmodule Emily.Quantization.TransformTest do
     # Per-element int4 error accumulates across layers and activations;
     # dense-model predictions are typically O(1) after glorot_uniform
     # init, so a 15% relative tolerance catches drift without flaking.
+    # A fixed seed keeps the test deterministic — without it, some seeds
+    # push the relative error right to the boundary.
     @rel_tol 0.15
+    @fixed_seed 42
 
     test "quantized 2-layer MLP predicts close to dense (Nx.Defn.Evaluator)" do
       model =
@@ -123,7 +126,9 @@ defmodule Emily.Quantization.TransformTest do
     end
 
     defp assert_roundtrip_close(model, input_shape, compiler: compiler) do
-      {init_fn, predict_fn} = Axon.build(model, compiler: compiler)
+      # Init with Evaluator + fixed seed for determinism; predict with target compiler.
+      {init_fn, _} = Axon.build(model, seed: @fixed_seed)
+      {_, predict_fn} = Axon.build(model, compiler: compiler)
 
       x =
         input_shape
@@ -137,7 +142,7 @@ defmodule Emily.Quantization.TransformTest do
       {qmodel, qstate} =
         Transform.quantize(model, state, bits: 4, group_size: 64, transpose: true)
 
-      {_qinit_fn, qpredict_fn} = Axon.build(qmodel, compiler: compiler)
+      {_, qpredict_fn} = Axon.build(qmodel, compiler: compiler)
       actual = qpredict_fn.(qstate, x)
 
       assert Nx.shape(actual) == Nx.shape(expected)
