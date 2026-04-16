@@ -53,7 +53,8 @@ defmodule Emily.Compiler do
       `Nx.Defn.Evaluator` unchanged. See its moduledoc.
     * `:max_concurrency` — accepted for `Nx.Serving` compatibility, but
       multi-partition serving is rejected because MLX kernel dispatch
-      isn't thread-safe. Pass `1` (the default) to silence.
+      isn't thread-safe. Pass `1` (the default) to silence. For
+      concurrent inference see `Emily.Stream`.
   """
 
   @behaviour Nx.Defn.Compiler
@@ -84,9 +85,11 @@ defmodule Emily.Compiler do
 
       n when is_integer(n) and n > 1 ->
         raise ArgumentError,
-              "Emily.Compiler does not support :max_concurrency > 1 — MLX's Metal " <>
-                "runtime isn't safe for concurrent kernel dispatch from multiple OS " <>
-                "threads. Got: #{n}"
+              "Emily.Compiler does not support :max_concurrency > 1 directly. " <>
+                "Use Emily.Stream.with_stream/2 for per-process streams (one " <>
+                "shared model, concurrent Metal command queues), or start " <>
+                "multiple Nx.Serving instances behind a pool. " <>
+                "See Emily.Stream moduledoc for details. Got: #{n}"
     end
   end
 

@@ -2,11 +2,10 @@
 
 Elixir bindings and Nx backend for Apple's [MLX](https://github.com/ml-explore/mlx).
 
-**Status: M7 — Bumblebee conformance breadth.** Backend (M2), Defn
-compiler (M5), and four Bumblebee models (DistilBERT, Qwen3, ViT,
-Whisper) run end-to-end. M8 (native `conv`) and M9 (1.0 release) are
-next. See [`PLAN.md`](PLAN.md) for the full roadmap and
-[`RELEASE.md`](RELEASE.md) for unreleased-version notes.
+**Status: M14 — Serving concurrency.** Stream-per-process
+concurrent inference via `Emily.Stream`. See [`PLAN.md`](PLAN.md) for
+the full roadmap and [`RELEASE.md`](RELEASE.md) for unreleased-version
+notes.
 
 ## Why
 
@@ -62,6 +61,36 @@ Whisper pipelines.
 The low-level tensor API (`Emily.from_binary/3`, `to_binary/1`,
 `shape/1`, `dtype/1`, `eval/1`) remains available for diagnostics and
 direct MLX round-trips, but most users should go through Nx.
+
+## Concurrency
+
+MLX dispatches GPU work through Metal command queues. By default all
+ops share one queue (the default stream), which is not safe for
+concurrent dispatch from multiple OS threads.
+
+**Stream-per-process** — for concurrent inference on a shared model:
+
+```elixir
+stream = Emily.Stream.new(:gpu)
+
+Emily.Stream.with_stream(stream, fn ->
+  # All Emily ops here dispatch on this stream's command queue.
+  model.(input)
+end)
+```
+
+Each stream maps to its own Metal command queue. Multiple processes
+can run inference concurrently — one shared model, no weight
+duplication. Create streams at init time (one per serving process),
+not per-request.
+
+**Pooled servings** — for simpler setups with small models, start K
+`Nx.Serving` instances behind a pool (poolboy, Registry, etc.). Each
+instance loads its own weights and runs on the default stream. No
+`Emily.Stream` needed. Trade-off: each pool member holds its own
+weight copy.
+
+See `Emily.Stream` moduledoc for details.
 
 ## Milestones shipped
 

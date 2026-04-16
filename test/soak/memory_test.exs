@@ -53,8 +53,8 @@ defmodule Emily.Soak.MemoryTest do
 
   defp workload(data) do
     a = Native.from_binary(data, [@tensor_elems], {:f, 32})
-    b = Native.multiply(a, a)
-    _ = Native.to_binary(b)
+    b = Native.multiply(a, a, -1)
+    _ = Native.to_binary(b, -1)
     :ok
   end
 

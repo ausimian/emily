@@ -17,7 +17,7 @@ defmodule Emily.TensorHelpers do
 
   @doc "Read an f32 tensor back as a flat list of floats."
   def to_f32_list(tensor) do
-    bin = Native.to_binary(tensor)
+    bin = Native.to_binary(tensor, -1)
     for <<f::float-32-native <- bin>>, do: f
   end
 
@@ -29,7 +29,7 @@ defmodule Emily.TensorHelpers do
 
   @doc "Read an s32 tensor back as a flat list of ints."
   def to_s32_list(tensor) do
-    bin = Native.to_binary(tensor)
+    bin = Native.to_binary(tensor, -1)
     for <<i::signed-integer-32-native <- bin>>, do: i
   end
 
@@ -41,7 +41,7 @@ defmodule Emily.TensorHelpers do
 
   @doc "Read a pred tensor back as a flat list of booleans."
   def to_pred_list(tensor) do
-    bin = Native.to_binary(tensor)
+    bin = Native.to_binary(tensor, -1)
     for <<b::unsigned-integer-8 <- bin>>, do: b == 1
   end
 

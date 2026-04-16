@@ -52,9 +52,11 @@ fine::ResourcePtr<Tensor> fast_rms_norm(
     ErlNifEnv *,
     fine::ResourcePtr<Tensor> x,
     std::optional<fine::ResourcePtr<Tensor>> weight,
-    double eps) {
+    double eps,
+    int64_t s) {
   return wrap(mx::fast::rms_norm(
-      x->array, opt_array(weight), static_cast<float>(eps)));
+      x->array, opt_array(weight), static_cast<float>(eps),
+      emily::resolve_stream(s)));
 }
 FINE_NIF(fast_rms_norm, 0);
 
@@ -71,12 +73,14 @@ fine::ResourcePtr<Tensor> fast_layer_norm(
     fine::ResourcePtr<Tensor> x,
     std::optional<fine::ResourcePtr<Tensor>> weight,
     std::optional<fine::ResourcePtr<Tensor>> bias,
-    double eps) {
+    double eps,
+    int64_t s) {
   return wrap(mx::fast::layer_norm(
       x->array,
       opt_array(weight),
       opt_array(bias),
-      static_cast<float>(eps)));
+      static_cast<float>(eps),
+      emily::resolve_stream(s)));
 }
 FINE_NIF(fast_layer_norm, 0);
 
@@ -108,7 +112,8 @@ fine::ResourcePtr<Tensor> fast_rope(
     std::optional<double> base,
     double scale,
     fine::ResourcePtr<Tensor> offset,
-    std::optional<fine::ResourcePtr<Tensor>> freqs) {
+    std::optional<fine::ResourcePtr<Tensor>> freqs,
+    int64_t s) {
   std::optional<float> base_f;
   if (base) base_f = static_cast<float>(*base);
 
@@ -119,7 +124,8 @@ fine::ResourcePtr<Tensor> fast_rope(
       base_f,
       static_cast<float>(scale),
       offset->array,
-      opt_array(freqs)));
+      opt_array(freqs),
+      emily::resolve_stream(s)));
 }
 FINE_NIF(fast_rope, 0);
 
@@ -147,14 +153,16 @@ fine::ResourcePtr<Tensor> fast_scaled_dot_product_attention(
     fine::ResourcePtr<Tensor> v,
     double scale,
     std::string mask_mode,
-    std::vector<fine::ResourcePtr<Tensor>> mask_arrs) {
+    std::vector<fine::ResourcePtr<Tensor>> mask_arrs,
+    int64_t s) {
   return wrap(mx::fast::scaled_dot_product_attention(
       q->array,
       k->array,
       v->array,
       static_cast<float>(scale),
       mask_mode,
-      unwrap_all(mask_arrs)));
+      unwrap_all(mask_arrs),
+      emily::resolve_stream(s)));
 }
 FINE_NIF(fast_scaled_dot_product_attention, 0);
 

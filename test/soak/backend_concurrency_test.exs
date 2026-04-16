@@ -1,23 +1,15 @@
 defmodule Emily.Soak.ConcurrencyTest do
   @moduledoc """
-  Cross-process determinism check for the Backend layer: run a
-  deterministic Nx computation in separate BEAM processes and assert
-  every process produces bit-identical output.
+  Cross-process determinism + safety check for the Backend layer:
+  run a deterministic Nx computation in separate BEAM processes and
+  assert every process produces bit-identical output.
 
-  ## Why this test runs with `max_concurrency: 1`
-
-  MLX's Metal backend is not safe for concurrent kernel dispatch from
-  multiple OS threads. Running several BEAM processes that hit the
-  dirty-CPU scheduler simultaneously trips Metal assertions like
-  `A command encoder is already encoding to this command buffer`.
-  That is a library-wide constraint inherited from Apple's MLX runtime
-  — not an Emily-side race. The intended deployment model is a single
-  consumer process fed by `Nx.Serving`, which already serialises work.
-
-  So this test exercises the **determinism** half of the PLAN
-  requirement ("parallel inference; determinism + no crashes"). True
-  multi-threaded kernel dispatch is blocked upstream until MLX adds
-  stream-per-thread support; we'll revisit then.
+  Each worker uses its own `Emily.Stream` so concurrent dispatch
+  targets separate Metal command queues. Without per-process streams,
+  concurrent dispatch on the shared default stream trips Metal
+  assertions like `A command encoder is already encoding to this
+  command buffer` — see `stream_concurrency_test.exs` for the
+  heavier concurrency soak.
   """
 
   use ExUnit.Case, async: false
@@ -27,35 +19,40 @@ defmodule Emily.Soak.ConcurrencyTest do
   @workers 8
   @iters_per_worker 10
 
-  defp fresh_input do
-    Nx.iota({8, 64}, type: {:f, 32}, backend: Emily.Backend) |> Nx.divide(512.0)
+  defp fresh_input(s) do
+    Emily.Stream.with_stream(s, fn ->
+      Nx.iota({8, 64}, type: {:f, 32}, backend: Emily.Backend) |> Nx.divide(512.0)
+    end)
   end
 
-  defp workload(x) do
-    x
-    |> Nx.multiply(x)
-    |> Nx.add(Nx.tensor(1.0, backend: Emily.Backend))
-    |> Nx.sum(axes: [1])
-    |> Nx.to_binary()
+  defp workload(x, s) do
+    Emily.Stream.with_stream(s, fn ->
+      x
+      |> Nx.multiply(x)
+      |> Nx.add(Nx.tensor(1.0, backend: Emily.Backend))
+      |> Nx.sum(axes: [1])
+      |> Nx.to_binary()
+    end)
   end
 
   test "parallel workers produce bit-identical outputs" do
-    # Baseline: single-process reference using a fresh tensor.
-    baseline = workload(fresh_input())
+    # Baseline: single-process reference on its own stream.
+    baseline_stream = Emily.Stream.new(:gpu)
+    baseline = workload(fresh_input(baseline_stream), baseline_stream)
 
     results =
       1..@workers
       |> Task.async_stream(
         fn _ ->
-          x = fresh_input()
+          stream = Emily.Stream.new(:gpu)
+          x = fresh_input(stream)
 
           for _ <- 1..@iters_per_worker do
-            workload(x)
+            workload(x, stream)
           end
           |> Enum.uniq()
         end,
-        # Serialised by design — see @moduledoc.
-        max_concurrency: 1,
+        max_concurrency: @workers,
         timeout: 30_000
       )
       |> Enum.map(fn {:ok, v} -> v end)

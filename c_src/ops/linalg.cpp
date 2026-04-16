@@ -20,8 +20,9 @@ namespace {
 fine::ResourcePtr<Tensor> matmul(
     ErlNifEnv *,
     fine::ResourcePtr<Tensor> a,
-    fine::ResourcePtr<Tensor> b) {
-  return wrap(mx::matmul(a->array, b->array));
+    fine::ResourcePtr<Tensor> b,
+    int64_t s) {
+  return wrap(mx::matmul(a->array, b->array, emily::resolve_stream(s)));
 }
 FINE_NIF(matmul, 0);
 
@@ -31,25 +32,29 @@ fine::ResourcePtr<Tensor> tensordot(
     fine::ResourcePtr<Tensor> a,
     fine::ResourcePtr<Tensor> b,
     std::vector<int64_t> axes_a,
-    std::vector<int64_t> axes_b) {
+    std::vector<int64_t> axes_b,
+    int64_t s) {
   return wrap(mx::tensordot(
-      a->array, b->array, to_int_vec(axes_a), to_int_vec(axes_b)));
+      a->array, b->array, to_int_vec(axes_a), to_int_vec(axes_b),
+      emily::resolve_stream(s)));
 }
 FINE_NIF(tensordot, 0);
 
 fine::ResourcePtr<Tensor> outer(
     ErlNifEnv *,
     fine::ResourcePtr<Tensor> a,
-    fine::ResourcePtr<Tensor> b) {
-  return wrap(mx::outer(a->array, b->array));
+    fine::ResourcePtr<Tensor> b,
+    int64_t s) {
+  return wrap(mx::outer(a->array, b->array, emily::resolve_stream(s)));
 }
 FINE_NIF(outer, 0);
 
 fine::ResourcePtr<Tensor> inner(
     ErlNifEnv *,
     fine::ResourcePtr<Tensor> a,
-    fine::ResourcePtr<Tensor> b) {
-  return wrap(mx::inner(a->array, b->array));
+    fine::ResourcePtr<Tensor> b,
+    int64_t s) {
+  return wrap(mx::inner(a->array, b->array, emily::resolve_stream(s)));
 }
 FINE_NIF(inner, 0);
 
@@ -68,9 +73,11 @@ quantize(
     ErlNifEnv *,
     fine::ResourcePtr<Tensor> w,
     int64_t group_size,
-    int64_t bits) {
+    int64_t bits,
+    int64_t s) {
   auto triple = mx::quantize(
-      w->array, static_cast<int>(group_size), static_cast<int>(bits));
+      w->array, static_cast<int>(group_size), static_cast<int>(bits),
+      emily::resolve_stream(s));
   return std::make_tuple(
       wrap(std::move(std::get<0>(triple))),
       wrap(std::move(std::get<1>(triple))),
@@ -86,13 +93,15 @@ fine::ResourcePtr<Tensor> dequantize(
     fine::ResourcePtr<Tensor> scales,
     fine::ResourcePtr<Tensor> biases,
     int64_t group_size,
-    int64_t bits) {
+    int64_t bits,
+    int64_t s) {
   return wrap(mx::dequantize(
       w_q->array,
       scales->array,
       biases->array,
       static_cast<int>(group_size),
-      static_cast<int>(bits)));
+      static_cast<int>(bits),
+      emily::resolve_stream(s)));
 }
 FINE_NIF(dequantize, 0);
 
@@ -108,7 +117,8 @@ fine::ResourcePtr<Tensor> quantized_matmul(
     fine::ResourcePtr<Tensor> biases,
     bool transpose,
     int64_t group_size,
-    int64_t bits) {
+    int64_t bits,
+    int64_t s) {
   return wrap(mx::quantized_matmul(
       x->array,
       w_q->array,
@@ -116,7 +126,8 @@ fine::ResourcePtr<Tensor> quantized_matmul(
       biases->array,
       transpose,
       static_cast<int>(group_size),
-      static_cast<int>(bits)));
+      static_cast<int>(bits),
+      emily::resolve_stream(s)));
 }
 FINE_NIF(quantized_matmul, 0);
 

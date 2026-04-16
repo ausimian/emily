@@ -15,8 +15,9 @@ namespace {
   fine::ResourcePtr<Tensor> nif_name(                                          \
       ErlNifEnv *,                                                             \
       fine::ResourcePtr<Tensor> a,                                             \
-      fine::ResourcePtr<Tensor> b) {                                           \
-    return wrap(mlx_fn(a->array, b->array));                                   \
+      fine::ResourcePtr<Tensor> b,                                             \
+      int64_t s) {                                                             \
+    return wrap(mlx_fn(a->array, b->array, emily::resolve_stream(s)));         \
   }                                                                            \
   FINE_NIF(nif_name, 0);
 

@@ -52,7 +52,7 @@ defmodule Emily.CompilerTest do
     end
 
     test "__partitions_options__ rejects max_concurrency > 1" do
-      assert_raise ArgumentError, ~r/MLX's Metal runtime/, fn ->
+      assert_raise ArgumentError, ~r/does not support :max_concurrency > 1/, fn ->
         Emily.Compiler.__partitions_options__(max_concurrency: 4)
       end
     end

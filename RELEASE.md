@@ -2,6 +2,24 @@
 
 ## Added
 
+- M14 — Serving concurrency: stream-per-process. `Emily.Stream` lets
+  each BEAM process use its own Metal command queue for concurrent
+  inference. `Emily.Stream.new/1` creates a stream,
+  `Emily.Stream.with_stream/2` scopes all ops in a block to that
+  stream, and `Emily.Stream.synchronize/1` waits for completion.
+  The stream index is passed explicitly to every op NIF (no
+  thread-local race) via a `-1` sentinel for "use default stream"
+  (backwards-compatible). `Emily.Compiler.__partitions_options__/1`
+  error message now points to `Emily.Stream`.
+  - **New files**: `c_src/stream.cpp` (4 stream management NIFs),
+    `lib/emily/stream.ex` (`Emily.Stream` struct + API),
+    `test/emily/stream_test.exs`, `test/soak/stream_concurrency_test.exs`.
+  - **Modified**: every op NIF gained a trailing `int64_t s` stream
+    parameter; `Emily.Native` stubs, `Emily.Backend`, and all test
+    files updated accordingly.
+  - README now documents both concurrency patterns (stream-per-process
+    and pooled servings).
+
 - M13 — EXLA gradient conformance. Adds a third gradient oracle —
   EXLA (XLA CPU backend) — to catch bugs where Emily and BinaryBackend
   agree on the wrong gradient (they share the same `Nx.Defn.grad`
