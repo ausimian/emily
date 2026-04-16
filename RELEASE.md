@@ -1,5 +1,11 @@
 # Release notes for next release
 
+## Fixed
+
+- Relax MNIST convergence canary threshold from 97% to 96% to eliminate
+  stochastic flaps (observed 96.99% on occasional runs). The test is a
+  sanity gate, not a performance benchmark.
+
 ## Added
 
 - M14 — Serving concurrency: stream-per-process. `Emily.Stream` lets

@@ -4,7 +4,7 @@ defmodule Emily.Training.MnistFullTest do
 
   Opt-in — `mix test --only training_full`. Downloads MNIST via
   `scidata` (~11 MB, cached in `~/Library/Caches/scidata`), trains an
-  Axon MLP on `Emily.Compiler`, and asserts >97% test accuracy.
+  Axon MLP on `Emily.Compiler`, and asserts >96% test accuracy.
 
   Purpose: catch systemic numerical drift that the curve-matching
   tests in `mlp_curve_test.exs` can't see — those compare Emily vs
@@ -33,7 +33,7 @@ defmodule Emily.Training.MnistFullTest do
 
   @batch_size 128
   @epochs 5
-  @target_accuracy 0.97
+  @target_accuracy 0.96
 
   test "Axon MLP reaches >#{trunc(@target_accuracy * 100)}% test accuracy under Emily.Compiler" do
     {train_batches, test_images, test_labels} = load_mnist(@batch_size)
