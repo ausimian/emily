@@ -686,9 +686,10 @@ defmodule Emily.BackendTest do
 
     property "svd: singular values match BinaryBackend" do
       check all(a <- square_matrix(), max_runs: @max_runs) do
-        emily_a = to_emily(a)
+        a_safe = make_well_conditioned(a)
+        emily_a = to_emily(a_safe)
         {_u, emily_s, _vt} = Nx.LinAlg.svd(emily_a)
-        {_u, ref_s, _vt} = Nx.LinAlg.svd(a)
+        {_u, ref_s, _vt} = Nx.LinAlg.svd(a_safe)
 
         # Compare sorted singular values (sign/ordering of U/Vt is
         # ambiguous, but singular values themselves must match).

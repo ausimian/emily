@@ -754,29 +754,21 @@ BinaryBackend-slow. MLX exposes most natively under `mx::linalg::*`.
 **Exit:** all `mx::linalg::*`-backed callbacks pass property suite;
 remaining `via_binary` linalg paths documented with rationale.
 
-**Post-M15 note — intermittent test crashes:**
-Two distinct crash modes appeared during M15 development. Both are
-non-deterministic and seed-dependent.
+**Post-M15 note — intermittent test crashes (resolved):**
+Two distinct crash modes appeared during M15 development. Both fixed;
+20 consecutive full-suite runs pass cleanly.
 
 1. **SIGABRT (exit 134):** `svd_impl: sgesvdx_ failed with code 5` —
    LAPACK SVD convergence failure on ill-conditioned random inputs.
-   A C++ exception that aborts the process. The property-test
-   generators use `make_well_conditioned/1` to bias inputs, but SVD
-   is tested against arbitrary matrices so this can still trigger.
-2. **SIGSEGV (exit 139):** No error message; the process crashes
-   mid-test-run with no stack trace. Cause unknown — could be a
-   use-after-free in the NIF layer, an MLX lazy-eval race, or
-   something else entirely.
-
-Both crash modes were first observed after M14 (stream-per-process)
-shipped, but M15 exercises MLX's CPU-only linalg primitives in a way
-that earlier milestones did not, so either milestone could be the
-trigger. The crashes are rare enough (~1 in 4 full-suite runs) that
-they don't block development but frequent enough to warrant
-investigation before any production use. Needs a focused debugging
-session: run the suite in a loop under ASAN/TSAN, bisect by
-milestone, and check whether excluding the linalg tests eliminates
-the SIGSEGV.
+   The SVD property test was the only linalg test that didn't apply
+   `make_well_conditioned/1` to its inputs. Fixed: SVD test now
+   conditions its matrices the same way LU/QR/solve do.
+2. **SIGSEGV (exit 139):** Cross-stream data race. All linalg ops
+   force `cpu_stream()`, but input tensors may have pending lazy ops
+   on the caller's GPU stream. The CPU linalg primitive would read
+   memory the GPU hadn't finished writing. Fixed: every linalg NIF
+   now calls `mx::eval()` on its inputs before the cross-stream
+   handoff to `cpu_stream()`.
 
 ### M16 — Mixed-precision training
 

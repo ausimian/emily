@@ -129,6 +129,12 @@ FINE_NIF(quantized_matmul, 0);
 // MLX's linalg primitives are CPU-only (no GPU kernels as of 0.25).
 // We ignore the caller's stream index and force the CPU default
 // stream so these ops work regardless of the process-level stream.
+//
+// Every input is eval'd before the linalg call so that any pending
+// lazy ops on the caller's (possibly GPU) stream are materialised
+// before the CPU stream reads the buffer. Without this, a cross-stream
+// data race can SIGSEGV when the CPU linalg primitive touches memory
+// that the GPU hasn't finished writing.
 
 inline mx::Stream cpu_stream() {
   return mx::default_stream(mx::Device(mx::Device::DeviceType::cpu));
@@ -142,6 +148,7 @@ linalg_lu(
     ErlNifEnv *,
     fine::ResourcePtr<Tensor> a,
     int64_t /*s*/) {
+  mx::eval(a->array);
   auto result = mx::linalg::lu(a->array, cpu_stream());
   return std::make_tuple(
       wrap(std::move(result[0])),
@@ -158,6 +165,7 @@ linalg_svd(
     ErlNifEnv *,
     fine::ResourcePtr<Tensor> a,
     int64_t /*s*/) {
+  mx::eval(a->array);
   auto result = mx::linalg::svd(a->array, true, cpu_stream());
   return std::make_tuple(
       wrap(std::move(result[0])),
@@ -173,6 +181,7 @@ linalg_qr(
     ErlNifEnv *,
     fine::ResourcePtr<Tensor> a,
     int64_t /*s*/) {
+  mx::eval(a->array);
   auto [q, r] = mx::linalg::qr(a->array, cpu_stream());
   return std::make_tuple(wrap(std::move(q)), wrap(std::move(r)));
 }
@@ -184,6 +193,7 @@ fine::ResourcePtr<Tensor> linalg_cholesky(
     fine::ResourcePtr<Tensor> a,
     bool upper,
     int64_t /*s*/) {
+  mx::eval(a->array);
   return wrap(mx::linalg::cholesky(a->array, upper, cpu_stream()));
 }
 FINE_NIF(linalg_cholesky, 0);
@@ -196,6 +206,7 @@ linalg_eigh(
     fine::ResourcePtr<Tensor> a,
     std::string uplo,
     int64_t /*s*/) {
+  mx::eval(a->array);
   auto [vals, vecs] = mx::linalg::eigh(a->array, uplo, cpu_stream());
   return std::make_tuple(wrap(std::move(vals)), wrap(std::move(vecs)));
 }
@@ -207,6 +218,7 @@ fine::ResourcePtr<Tensor> linalg_solve(
     fine::ResourcePtr<Tensor> a,
     fine::ResourcePtr<Tensor> b,
     int64_t /*s*/) {
+  mx::eval({a->array, b->array});
   return wrap(mx::linalg::solve(a->array, b->array, cpu_stream()));
 }
 FINE_NIF(linalg_solve, 0);
@@ -218,6 +230,7 @@ fine::ResourcePtr<Tensor> linalg_solve_triangular(
     fine::ResourcePtr<Tensor> b,
     bool upper,
     int64_t /*s*/) {
+  mx::eval({a->array, b->array});
   return wrap(mx::linalg::solve_triangular(
       a->array, b->array, upper, cpu_stream()));
 }
