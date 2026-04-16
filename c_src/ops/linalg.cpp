@@ -126,19 +126,10 @@ FINE_NIF(quantized_matmul, 0);
 
 // ---- Decompositions / solvers (mx::linalg::*) ------------------
 //
-// MLX's linalg primitives are CPU-only (no GPU kernels as of 0.25).
-// We ignore the caller's stream index and force the CPU default
-// stream so these ops work regardless of the process-level stream.
-//
-// Every input is eval'd before the linalg call so that any pending
-// lazy ops on the caller's (possibly GPU) stream are materialised
-// before the CPU stream reads the buffer. Without this, a cross-stream
-// data race can SIGSEGV when the CPU linalg primitive touches memory
-// that the GPU hasn't finished writing.
-
-inline mx::Stream cpu_stream() {
-  return mx::default_stream(mx::Device(mx::Device::DeviceType::cpu));
-}
+// MLX's linalg primitives are CPU-only — they throw on a GPU stream.
+// Each NIF dispatches via the worker's run_sync (serialisation) but
+// uses the CPU default stream for the actual linalg call. MLX handles
+// cross-stream data dependencies internally via its lazy eval graph.
 
 // LU decomposition. Returns {P, L, U}.
 std::tuple<fine::ResourcePtr<Tensor>,
@@ -146,14 +137,16 @@ std::tuple<fine::ResourcePtr<Tensor>,
            fine::ResourcePtr<Tensor>>
 linalg_lu(
     ErlNifEnv *,
-    fine::ResourcePtr<Tensor> a,
-    int64_t /*s*/) {
-  mx::eval(a->array);
-  auto result = mx::linalg::lu(a->array, cpu_stream());
-  return std::make_tuple(
-      wrap(std::move(result[0])),
-      wrap(std::move(result[1])),
-      wrap(std::move(result[2])));
+    fine::ResourcePtr<WorkerThread> w,
+    fine::ResourcePtr<Tensor> a) {
+  return w->run_sync([&](mx::Stream & /*s*/) {
+    auto cpu = mx::default_stream(mx::Device(mx::Device::DeviceType::cpu));
+    auto result = mx::linalg::lu(a->array, cpu);
+    return std::make_tuple(
+        wrap(std::move(result[0])),
+        wrap(std::move(result[1])),
+        wrap(std::move(result[2])));
+  });
 }
 FINE_NIF(linalg_lu, 0);
 
@@ -163,14 +156,16 @@ std::tuple<fine::ResourcePtr<Tensor>,
            fine::ResourcePtr<Tensor>>
 linalg_svd(
     ErlNifEnv *,
-    fine::ResourcePtr<Tensor> a,
-    int64_t /*s*/) {
-  mx::eval(a->array);
-  auto result = mx::linalg::svd(a->array, true, cpu_stream());
-  return std::make_tuple(
-      wrap(std::move(result[0])),
-      wrap(std::move(result[1])),
-      wrap(std::move(result[2])));
+    fine::ResourcePtr<WorkerThread> w,
+    fine::ResourcePtr<Tensor> a) {
+  return w->run_sync([&](mx::Stream & /*s*/) {
+    auto cpu = mx::default_stream(mx::Device(mx::Device::DeviceType::cpu));
+    auto result = mx::linalg::svd(a->array, true, cpu);
+    return std::make_tuple(
+        wrap(std::move(result[0])),
+        wrap(std::move(result[1])),
+        wrap(std::move(result[2])));
+  });
 }
 FINE_NIF(linalg_svd, 0);
 
@@ -179,22 +174,26 @@ std::tuple<fine::ResourcePtr<Tensor>,
            fine::ResourcePtr<Tensor>>
 linalg_qr(
     ErlNifEnv *,
-    fine::ResourcePtr<Tensor> a,
-    int64_t /*s*/) {
-  mx::eval(a->array);
-  auto [q, r] = mx::linalg::qr(a->array, cpu_stream());
-  return std::make_tuple(wrap(std::move(q)), wrap(std::move(r)));
+    fine::ResourcePtr<WorkerThread> w,
+    fine::ResourcePtr<Tensor> a) {
+  return w->run_sync([&](mx::Stream & /*s*/) {
+    auto cpu = mx::default_stream(mx::Device(mx::Device::DeviceType::cpu));
+    auto [q, r] = mx::linalg::qr(a->array, cpu);
+    return std::make_tuple(wrap(std::move(q)), wrap(std::move(r)));
+  });
 }
 FINE_NIF(linalg_qr, 0);
 
 // Cholesky decomposition. `upper` selects upper- vs lower-triangular.
 fine::ResourcePtr<Tensor> linalg_cholesky(
     ErlNifEnv *,
+    fine::ResourcePtr<WorkerThread> w,
     fine::ResourcePtr<Tensor> a,
-    bool upper,
-    int64_t /*s*/) {
-  mx::eval(a->array);
-  return wrap(mx::linalg::cholesky(a->array, upper, cpu_stream()));
+    bool upper) {
+  return w->run_sync([&](mx::Stream & /*s*/) {
+    auto cpu = mx::default_stream(mx::Device(mx::Device::DeviceType::cpu));
+    return wrap(mx::linalg::cholesky(a->array, upper, cpu));
+  });
 }
 FINE_NIF(linalg_cholesky, 0);
 
@@ -203,36 +202,41 @@ std::tuple<fine::ResourcePtr<Tensor>,
            fine::ResourcePtr<Tensor>>
 linalg_eigh(
     ErlNifEnv *,
+    fine::ResourcePtr<WorkerThread> w,
     fine::ResourcePtr<Tensor> a,
-    std::string uplo,
-    int64_t /*s*/) {
-  mx::eval(a->array);
-  auto [vals, vecs] = mx::linalg::eigh(a->array, uplo, cpu_stream());
-  return std::make_tuple(wrap(std::move(vals)), wrap(std::move(vecs)));
+    std::string uplo) {
+  return w->run_sync([&](mx::Stream & /*s*/) {
+    auto cpu = mx::default_stream(mx::Device(mx::Device::DeviceType::cpu));
+    auto [vals, vecs] = mx::linalg::eigh(a->array, uplo, cpu);
+    return std::make_tuple(wrap(std::move(vals)), wrap(std::move(vecs)));
+  });
 }
 FINE_NIF(linalg_eigh, 0);
 
 // General linear solve: A X = B.
 fine::ResourcePtr<Tensor> linalg_solve(
     ErlNifEnv *,
+    fine::ResourcePtr<WorkerThread> w,
     fine::ResourcePtr<Tensor> a,
-    fine::ResourcePtr<Tensor> b,
-    int64_t /*s*/) {
-  mx::eval({a->array, b->array});
-  return wrap(mx::linalg::solve(a->array, b->array, cpu_stream()));
+    fine::ResourcePtr<Tensor> b) {
+  return w->run_sync([&](mx::Stream & /*s*/) {
+    auto cpu = mx::default_stream(mx::Device(mx::Device::DeviceType::cpu));
+    return wrap(mx::linalg::solve(a->array, b->array, cpu));
+  });
 }
 FINE_NIF(linalg_solve, 0);
 
 // Triangular solve: A X = B where A is upper- or lower-triangular.
 fine::ResourcePtr<Tensor> linalg_solve_triangular(
     ErlNifEnv *,
+    fine::ResourcePtr<WorkerThread> w,
     fine::ResourcePtr<Tensor> a,
     fine::ResourcePtr<Tensor> b,
-    bool upper,
-    int64_t /*s*/) {
-  mx::eval({a->array, b->array});
-  return wrap(mx::linalg::solve_triangular(
-      a->array, b->array, upper, cpu_stream()));
+    bool upper) {
+  return w->run_sync([&](mx::Stream & /*s*/) {
+    auto cpu = mx::default_stream(mx::Device(mx::Device::DeviceType::cpu));
+    return wrap(mx::linalg::solve_triangular(a->array, b->array, upper, cpu));
+  });
 }
 FINE_NIF(linalg_solve_triangular, 0);
 

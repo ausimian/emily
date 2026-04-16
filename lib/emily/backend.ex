@@ -1201,33 +1201,27 @@ defmodule Emily.Backend do
 
   @impl true
   def lu({p_out, l_out, u_out}, t, _opts) do
-    s = stream_index()
-    {perm_ref, l_ref, u_ref} = Native.linalg_lu(ref(t), s)
-    # MLX returns P as a 1-D permutation index vector; Nx expects a
-    # full permutation matrix. Build it by indexing an identity matrix.
+    w = worker()
+    {perm_ref, l_ref, u_ref} = Native.linalg_lu(w, ref(t))
     n = elem(t.shape, tuple_size(t.shape) - 1)
-    eye_ref = Native.eye(n, n, 0, p_out.type, s)
-    p_ref = Native.take(eye_ref, perm_ref, 0, s)
-    {wrap(p_ref, p_out, s), wrap(l_ref, l_out, s), wrap(u_ref, u_out, s)}
+    eye_ref = Native.eye(w, n, n, 0, p_out.type)
+    p_ref = Native.take(w, eye_ref, perm_ref, 0)
+    {wrap(p_ref, p_out, w), wrap(l_ref, l_out, w), wrap(u_ref, u_out, w)}
   end
 
   @impl true
   def svd({u_out, s_out, v_out}, t, _opts) do
-    s = stream_index()
-    {u_ref, s_ref, v_ref} = Native.linalg_svd(ref(t), s)
-    # MLX always returns full matrices ({...,m,m} and {...,n,n}).
-    # Slice to match out shapes when Nx requests reduced SVD.
+    w = worker()
+    {u_ref, s_ref, v_ref} = Native.linalg_svd(w, ref(t))
     rank = tuple_size(t.shape)
     m = elem(t.shape, rank - 2)
     n = elem(t.shape, rank - 1)
-    u_ref = maybe_slice_svd(u_ref, u_out.shape, {m, m}, s)
-    v_ref = maybe_slice_svd(v_ref, v_out.shape, {n, n}, s)
-    {wrap(u_ref, u_out, s), wrap(s_ref, s_out, s), wrap(v_ref, v_out, s)}
+    u_ref = maybe_slice_svd(u_ref, u_out.shape, {m, m}, w)
+    v_ref = maybe_slice_svd(v_ref, v_out.shape, {n, n}, w)
+    {wrap(u_ref, u_out, w), wrap(s_ref, s_out, w), wrap(v_ref, v_out, w)}
   end
 
-  # Slice an SVD factor if the target shape differs from the full shape.
-  # `full_last2` is the last two dims of the full-matrices result.
-  defp maybe_slice_svd(ref, out_shape, full_last2, s) do
+  defp maybe_slice_svd(ref, out_shape, full_last2, w) do
     rank = tuple_size(out_shape)
 
     if {elem(out_shape, rank - 2), elem(out_shape, rank - 1)} == full_last2 do
@@ -1235,53 +1229,44 @@ defmodule Emily.Backend do
     else
       starts = List.duplicate(0, rank)
       strides = List.duplicate(1, rank)
-      Native.slice(ref, starts, Tuple.to_list(out_shape), strides, s)
+      Native.slice(w, ref, starts, Tuple.to_list(out_shape), strides)
     end
   end
 
   @impl true
   def triangular_solve(%T{} = out, a, b, opts) do
-    s = stream_index()
+    w = worker()
     a_ref = ref(a)
     b_ref = ref(b)
 
-    # MLX's solve_triangular only supports AX = B with an upper/lower
-    # toggle. Map all four (transform_a × left_side) combinations to
-    # that primitive using native transpose.
     case {opts[:transform_a], opts[:left_side]} do
       {:none, true} ->
-        # AX = B — direct
-        Native.linalg_solve_triangular(a_ref, b_ref, not opts[:lower], s)
-        |> wrap(out, s)
+        Native.linalg_solve_triangular(w, a_ref, b_ref, not opts[:lower])
+        |> wrap(out, w)
 
       {:transpose, true} ->
-        # A^T X = B — transpose A; lower ↔ upper flips
-        at = Native.transpose(a_ref, mat_transpose_axes(a.shape), s)
+        at = Native.transpose(w, a_ref, mat_transpose_axes(a.shape))
 
-        Native.linalg_solve_triangular(at, b_ref, opts[:lower], s)
-        |> wrap(out, s)
+        Native.linalg_solve_triangular(w, at, b_ref, opts[:lower])
+        |> wrap(out, w)
 
       {:none, false} ->
-        # XA = B → A^T X^T = B^T — transpose A and B, solve, transpose result
-        at = Native.transpose(a_ref, mat_transpose_axes(a.shape), s)
-        bt = Native.transpose(b_ref, mat_transpose_axes(b.shape), s)
-        xt = Native.linalg_solve_triangular(at, bt, opts[:lower], s)
+        at = Native.transpose(w, a_ref, mat_transpose_axes(a.shape))
+        bt = Native.transpose(w, b_ref, mat_transpose_axes(b.shape))
+        xt = Native.linalg_solve_triangular(w, at, bt, opts[:lower])
 
-        Native.transpose(xt, mat_transpose_axes(out.shape), s)
-        |> wrap(out, s)
+        Native.transpose(w, xt, mat_transpose_axes(out.shape))
+        |> wrap(out, w)
 
       {:transpose, false} ->
-        # X A^T = B → AX^T = B^T — A is already what we need
-        bt = Native.transpose(b_ref, mat_transpose_axes(b.shape), s)
-        xt = Native.linalg_solve_triangular(a_ref, bt, not opts[:lower], s)
+        bt = Native.transpose(w, b_ref, mat_transpose_axes(b.shape))
+        xt = Native.linalg_solve_triangular(w, a_ref, bt, not opts[:lower])
 
-        Native.transpose(xt, mat_transpose_axes(out.shape), s)
-        |> wrap(out, s)
+        Native.transpose(w, xt, mat_transpose_axes(out.shape))
+        |> wrap(out, w)
     end
   end
 
-  # Axes list that swaps the last two dimensions (matrix transpose),
-  # preserving any leading batch dimensions. Requires rank ≥ 2.
   defp mat_transpose_axes(shape) do
     rank = tuple_size(shape)
     Enum.to_list(0..(rank - 3)//1) ++ [rank - 1, rank - 2]
@@ -1291,33 +1276,32 @@ defmodule Emily.Backend do
   def qr({q_out, r_out}, t, opts) do
     case opts[:mode] do
       :reduced ->
-        s = stream_index()
-        {q_ref, r_ref} = Native.linalg_qr(ref(t), s)
-        {wrap(q_ref, q_out, s), wrap(r_ref, r_out, s)}
+        w = worker()
+        {q_ref, r_ref} = Native.linalg_qr(w, ref(t))
+        {wrap(q_ref, q_out, w), wrap(r_ref, r_out, w)}
 
       :complete ->
-        # MLX only supports reduced QR; fall back for complete mode.
         via_binary_tuple({q_out, r_out}, [t], &Nx.LinAlg.qr(&1, opts))
     end
   end
 
   @impl true
   def cholesky(%T{} = out, t) do
-    s = stream_index()
-    Native.linalg_cholesky(ref(t), false, s) |> wrap(out, s)
+    w = worker()
+    Native.linalg_cholesky(w, ref(t), false) |> wrap(out, w)
   end
 
   @impl true
   def eigh({vals_out, vecs_out}, t, _opts) do
-    s = stream_index()
-    {vals_ref, vecs_ref} = Native.linalg_eigh(ref(t), "L", s)
-    {wrap(vals_ref, vals_out, s), wrap(vecs_ref, vecs_out, s)}
+    w = worker()
+    {vals_ref, vecs_ref} = Native.linalg_eigh(w, ref(t), "L")
+    {wrap(vals_ref, vals_out, w), wrap(vecs_ref, vecs_out, w)}
   end
 
   @impl true
   def solve(%T{} = out, a, b) do
-    s = stream_index()
-    Native.linalg_solve(ref(a), ref(b), s) |> wrap(out, s)
+    w = worker()
+    Native.linalg_solve(w, ref(a), ref(b)) |> wrap(out, w)
   end
 
   # =================================================================

@@ -257,26 +257,26 @@ defmodule Emily.Native do
 
   # --- Linalg (decompositions / solvers) ---------------------------
 
-  @spec linalg_lu(tensor(), integer()) :: {tensor(), tensor(), tensor()}
-  def linalg_lu(_a, _s), do: nif()
+  @spec linalg_lu(worker(), tensor()) :: {tensor(), tensor(), tensor()}
+  def linalg_lu(_w, _a), do: nif()
 
-  @spec linalg_svd(tensor(), integer()) :: {tensor(), tensor(), tensor()}
-  def linalg_svd(_a, _s), do: nif()
+  @spec linalg_svd(worker(), tensor()) :: {tensor(), tensor(), tensor()}
+  def linalg_svd(_w, _a), do: nif()
 
-  @spec linalg_qr(tensor(), integer()) :: {tensor(), tensor()}
-  def linalg_qr(_a, _s), do: nif()
+  @spec linalg_qr(worker(), tensor()) :: {tensor(), tensor()}
+  def linalg_qr(_w, _a), do: nif()
 
-  @spec linalg_cholesky(tensor(), boolean(), integer()) :: tensor()
-  def linalg_cholesky(_a, _upper, _s), do: nif()
+  @spec linalg_cholesky(worker(), tensor(), boolean()) :: tensor()
+  def linalg_cholesky(_w, _a, _upper), do: nif()
 
-  @spec linalg_eigh(tensor(), String.t(), integer()) :: {tensor(), tensor()}
-  def linalg_eigh(_a, _uplo, _s), do: nif()
+  @spec linalg_eigh(worker(), tensor(), String.t()) :: {tensor(), tensor()}
+  def linalg_eigh(_w, _a, _uplo), do: nif()
 
-  @spec linalg_solve(tensor(), tensor(), integer()) :: tensor()
-  def linalg_solve(_a, _b, _s), do: nif()
+  @spec linalg_solve(worker(), tensor(), tensor()) :: tensor()
+  def linalg_solve(_w, _a, _b), do: nif()
 
-  @spec linalg_solve_triangular(tensor(), tensor(), boolean(), integer()) :: tensor()
-  def linalg_solve_triangular(_a, _b, _upper, _s), do: nif()
+  @spec linalg_solve_triangular(worker(), tensor(), tensor(), boolean()) :: tensor()
+  def linalg_solve_triangular(_w, _a, _b, _upper), do: nif()
 
   # --- Quantization ------------------------------------------------
 
