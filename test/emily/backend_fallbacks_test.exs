@@ -235,6 +235,26 @@ defmodule Emily.Backend.FallbacksTest do
       end
     end
 
+    test "triangular_solve: left_side: false + transform_a: :transpose" do
+      # Solve X A^T = B
+      a = emily([[1.0, 0.0], [2.0, 3.0]])
+      b = emily([[1.0, 2.0], [3.0, 3.0]])
+
+      x = Nx.LinAlg.triangular_solve(a, b, left_side: false, transform_a: :transpose)
+
+      ref =
+        Nx.LinAlg.triangular_solve(
+          a |> Nx.backend_transfer(Nx.BinaryBackend),
+          b |> Nx.backend_transfer(Nx.BinaryBackend),
+          left_side: false,
+          transform_a: :transpose
+        )
+
+      for i <- 0..1, j <- 0..1 do
+        assert_in_delta Nx.to_number(x[i][j]), Nx.to_number(ref[i][j]), 1.0e-4
+      end
+    end
+
     test "qr (reduced) returns Q * R ≈ A" do
       t = emily([[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]])
       {q, r} = Nx.LinAlg.qr(t, mode: :reduced)

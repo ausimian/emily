@@ -163,17 +163,19 @@ defmodule Emily.BackendGenerators do
   @doc "Generate a lower-triangular matrix with positive diagonal (non-singular)."
   def lower_triangular_matrix do
     bind(integer(2..5), fn n ->
-      tensor({n, n}, {:f, 32}) |> map(&make_lower_triangular(&1, n))
+      tensor({n, n}, {:f, 32})
+      |> map(fn a ->
+        # Strictly-lower triangle + positive diagonal.
+        strict_lower = Nx.tril(a, k: -1)
+        diag = a |> Nx.take_diagonal() |> Nx.abs() |> Nx.add(1.0) |> Nx.make_diagonal()
+        Nx.add(strict_lower, diag)
+      end)
     end)
   end
 
-  defp make_lower_triangular(a, n) do
-    flat = Nx.to_flat_list(a)
-    values = for i <- 0..(n - 1), j <- 0..(n - 1), do: lower_elem(flat, n, i, j)
-    Nx.tensor(values, type: {:f, 32}, backend: Nx.BinaryBackend) |> Nx.reshape({n, n})
+  @doc "Add diagonal dominance to a square matrix to ensure non-singularity."
+  def make_well_conditioned(a) do
+    n = elem(Nx.shape(a), 0)
+    Nx.add(a, Nx.multiply(Nx.eye(n, backend: Nx.BinaryBackend), n * 10))
   end
-
-  defp lower_elem(flat, n, i, j) when i == j, do: abs(Enum.at(flat, i * n + j)) + 1.0
-  defp lower_elem(flat, n, i, j) when i > j, do: Enum.at(flat, i * n + j)
-  defp lower_elem(_flat, _n, _i, _j), do: 0.0
 end

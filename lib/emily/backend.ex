@@ -1215,75 +1215,76 @@ defmodule Emily.Backend do
   def svd({u_out, s_out, v_out}, t, _opts) do
     s = stream_index()
     {u_ref, s_ref, v_ref} = Native.linalg_svd(ref(t), s)
-    # MLX always returns full matrices. Slice to match out shapes when
-    # Nx requests reduced SVD (full_matrices?: false).
-    u_ref = maybe_slice_for_reduced(u_ref, u_out, s)
-    v_ref = maybe_slice_for_reduced(v_ref, v_out, s)
+    # MLX always returns full matrices ({...,m,m} and {...,n,n}).
+    # Slice to match out shapes when Nx requests reduced SVD.
+    rank = tuple_size(t.shape)
+    m = elem(t.shape, rank - 2)
+    n = elem(t.shape, rank - 1)
+    u_ref = maybe_slice_svd(u_ref, u_out.shape, {m, m}, s)
+    v_ref = maybe_slice_svd(v_ref, v_out.shape, {n, n}, s)
     {wrap(u_ref, u_out, s), wrap(s_ref, s_out, s), wrap(v_ref, v_out, s)}
   end
 
-  defp maybe_slice_for_reduced(ref, %T{shape: out_shape}, s) do
-    mlx_shape = Native.shape(ref)
-    out_list = Tuple.to_list(out_shape)
+  # Slice an SVD factor if the target shape differs from the full shape.
+  # `full_last2` is the last two dims of the full-matrices result.
+  defp maybe_slice_svd(ref, out_shape, full_last2, s) do
+    rank = tuple_size(out_shape)
 
-    if mlx_shape == out_list do
+    if {elem(out_shape, rank - 2), elem(out_shape, rank - 1)} == full_last2 do
       ref
     else
-      rank = length(mlx_shape)
       starts = List.duplicate(0, rank)
       strides = List.duplicate(1, rank)
-      Native.slice(ref, starts, out_list, strides, s)
+      Native.slice(ref, starts, Tuple.to_list(out_shape), strides, s)
     end
   end
 
   @impl true
   def triangular_solve(%T{} = out, a, b, opts) do
     s = stream_index()
-    lower = opts[:lower]
-    left_side = opts[:left_side]
-    transform_a = opts[:transform_a]
-
     a_ref = ref(a)
     b_ref = ref(b)
 
     # MLX's solve_triangular only supports AX = B with an upper/lower
-    # toggle. Handle transform_a and left_side in Elixir using native
-    # transpose + the triangular solver.
-    {a_ref, upper} =
-      case transform_a do
-        :none ->
-          {a_ref, not lower}
+    # toggle. Map all four (transform_a × left_side) combinations to
+    # that primitive using native transpose.
+    case {opts[:transform_a], opts[:left_side]} do
+      {:none, true} ->
+        # AX = B — direct
+        Native.linalg_solve_triangular(a_ref, b_ref, not opts[:lower], s)
+        |> wrap(out, s)
 
-        :transpose ->
-          # A^T X = B: transpose A; lower ↔ upper flips.
-          {Native.transpose(a_ref, mat_transpose_axes(a.shape), s), lower}
-      end
+      {:transpose, true} ->
+        # A^T X = B — transpose A; lower ↔ upper flips
+        at = Native.transpose(a_ref, mat_transpose_axes(a.shape), s)
 
-    if left_side do
-      Native.linalg_solve_triangular(a_ref, b_ref, upper, s)
-      |> wrap(out, s)
-    else
-      # XA = B  →  A^T X^T = B^T
-      at_ref = Native.transpose(a_ref, mat_transpose_axes(a.shape), s)
-      bt_ref = Native.transpose(b_ref, mat_transpose_axes(b.shape), s)
-      flipped_upper = not upper
+        Native.linalg_solve_triangular(at, b_ref, opts[:lower], s)
+        |> wrap(out, s)
 
-      xt_ref = Native.linalg_solve_triangular(at_ref, bt_ref, flipped_upper, s)
+      {:none, false} ->
+        # XA = B → A^T X^T = B^T — transpose A and B, solve, transpose result
+        at = Native.transpose(a_ref, mat_transpose_axes(a.shape), s)
+        bt = Native.transpose(b_ref, mat_transpose_axes(b.shape), s)
+        xt = Native.linalg_solve_triangular(at, bt, opts[:lower], s)
 
-      Native.transpose(xt_ref, mat_transpose_axes(out.shape), s)
-      |> wrap(out, s)
+        Native.transpose(xt, mat_transpose_axes(out.shape), s)
+        |> wrap(out, s)
+
+      {:transpose, false} ->
+        # X A^T = B → AX^T = B^T — A is already what we need
+        bt = Native.transpose(b_ref, mat_transpose_axes(b.shape), s)
+        xt = Native.linalg_solve_triangular(a_ref, bt, not opts[:lower], s)
+
+        Native.transpose(xt, mat_transpose_axes(out.shape), s)
+        |> wrap(out, s)
     end
   end
 
   # Axes list that swaps the last two dimensions (matrix transpose),
-  # preserving any leading batch dimensions.
+  # preserving any leading batch dimensions. Requires rank ≥ 2.
   defp mat_transpose_axes(shape) do
     rank = tuple_size(shape)
-
-    case rank do
-      1 -> [0]
-      _ -> Enum.to_list(0..(rank - 3)//1) ++ [rank - 1, rank - 2]
-    end
+    Enum.to_list(0..(rank - 3)//1) ++ [rank - 1, rank - 2]
   end
 
   @impl true

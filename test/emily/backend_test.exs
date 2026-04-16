@@ -676,9 +676,7 @@ defmodule Emily.BackendTest do
   describe "linalg" do
     property "lu: P * L * U ≈ A for random well-conditioned matrices" do
       check all(a <- square_matrix(), max_runs: @max_runs) do
-        # Diagonal dominance ensures non-singularity.
-        n = elem(Nx.shape(a), 0)
-        a_safe = Nx.add(a, Nx.multiply(Nx.eye(n, backend: Nx.BinaryBackend), n * 10))
+        a_safe = make_well_conditioned(a)
         emily_a = to_emily(a_safe)
         {p, l, u} = Nx.LinAlg.lu(emily_a)
         reconstructed = p |> Nx.dot(l) |> Nx.dot(u)
@@ -700,8 +698,7 @@ defmodule Emily.BackendTest do
 
     property "qr: Q * R ≈ A for random well-conditioned matrices" do
       check all(a <- square_matrix(), max_runs: @max_runs) do
-        n = elem(Nx.shape(a), 0)
-        a_safe = Nx.add(a, Nx.multiply(Nx.eye(n, backend: Nx.BinaryBackend), n * 10))
+        a_safe = make_well_conditioned(a)
         emily_a = to_emily(a_safe)
         {q, r} = Nx.LinAlg.qr(emily_a, mode: :reduced)
         reconstructed = Nx.dot(q, r)
@@ -734,8 +731,7 @@ defmodule Emily.BackendTest do
         n = elem(Nx.shape(a), 0)
         b = Nx.iota({n}, type: {:f, 32}, backend: Nx.BinaryBackend) |> Nx.add(1.0)
 
-        # Add diagonal dominance to ensure non-singularity
-        a_safe = Nx.add(a, Nx.multiply(Nx.eye(n, backend: Nx.BinaryBackend), n * 10))
+        a_safe = make_well_conditioned(a)
 
         emily_x = Nx.LinAlg.solve(to_emily(a_safe), to_emily(b))
         ref_x = Nx.LinAlg.solve(a_safe, b)
