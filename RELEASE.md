@@ -2,6 +2,22 @@
 
 ## Added
 
+- M13 — EXLA gradient conformance. Adds a third gradient oracle —
+  EXLA (XLA CPU backend) — to catch bugs where Emily and BinaryBackend
+  agree on the wrong gradient (they share the same `Nx.Defn.grad`
+  lowering). Eight zoo functions plus a full transformer-block training
+  step (forward + grad + SGD update) are tested against checked-in EXLA
+  golden values. Per-function tolerance tables (linear ops at 1e-6,
+  compositions at 1e-4) are calibrated against EXLA 0.11.0 CPU output.
+  - **New files**: `test/support/grad_zoo.ex` (shared defn functions),
+    `test/support/exla_golden_data.ex` (golden values),
+    `test/emily/grad/exla_oracle_test.exs` (test harness),
+    `bench/exla_golden_gen.exs` (standalone golden generator script).
+  - **Refactored**: `grad_equivalence_test.exs` and
+    `finite_diff_test.exs` now import shared functions from
+    `Emily.GradZoo` instead of defining inline copies.
+  - CUDA conformance deferred to post-1.0.
+
 - M12 — Zero-copy `to_binary`. `Emily.to_binary/1` (and everything
   that routes through `Nx.to_binary` on the Emily backend) now
   returns a BEAM resource binary that aliases the MLX buffer

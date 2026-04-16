@@ -33,6 +33,12 @@
 #
 #     mix test --only qwen3_quant_full
 #
+# `:grad_conformance` is the M13 EXLA gradient oracle suite — compares
+# Emily grads against EXLA-produced golden values. Lightweight (no
+# network, no downloads), runs in the default suite. Select explicitly:
+#
+#     mix test --only grad_conformance
+#
 # `:fast_kernels_full` is the M11 fused-kernel variant of every full
 # conformance model (and one tiny-random DistilBERT smoke). Each test
 # applies `Emily.Bumblebee.FastKernels.apply/1` to the loaded Axon

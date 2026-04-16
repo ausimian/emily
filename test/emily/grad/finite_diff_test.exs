@@ -16,15 +16,14 @@ defmodule Emily.Grad.FiniteDiffTest do
   use ExUnit.Case, async: true
 
   import Emily.BackendGenerators, only: [to_emily: 1]
+  import Emily.GradZoo, only: [grad_sum_op: 1, grad_dot_left: 2]
   import Nx.Defn
 
   alias Emily.GradHelper
 
-  # ---- Symbolic grad defns (same as Phase B structure) ----
-
-  defn(grad_sum_op(x), do: grad(x, fn z -> Nx.sum(z) end))
-
-  defn(grad_dot_left(x, b), do: grad(x, fn z -> z |> Nx.dot(b) |> Nx.sum() end))
+  # grad_sum_op/1 and grad_dot_left/2 live in Emily.GradZoo (shared
+  # with the equivalence and EXLA oracle suites). The two below are
+  # finite-diff-only pilots not in the cross-backend zoo.
 
   defn(grad_logsumexp(x), do: grad(x, fn z -> z |> Nx.exp() |> Nx.sum() |> Nx.log() end))
 
