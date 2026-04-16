@@ -754,21 +754,27 @@ BinaryBackend-slow. MLX exposes most natively under `mx::linalg::*`.
 **Exit:** all `mx::linalg::*`-backed callbacks pass property suite;
 remaining `via_binary` linalg paths documented with rationale.
 
-**Post-M15 note — intermittent test crashes (resolved):**
-Two distinct crash modes appeared during M15 development. Both fixed;
-20 consecutive full-suite runs pass cleanly.
+**Post-M15 note — intermittent test crashes:**
+Two crash modes were observed during M15 development.
 
-1. **SIGABRT (exit 134):** `svd_impl: sgesvdx_ failed with code 5` —
-   LAPACK SVD convergence failure on ill-conditioned random inputs.
-   The SVD property test was the only linalg test that didn't apply
-   `make_well_conditioned/1` to its inputs. Fixed: SVD test now
-   conditions its matrices the same way LU/QR/solve do.
-2. **SIGSEGV (exit 139):** Cross-stream data race. All linalg ops
-   force `cpu_stream()`, but input tensors may have pending lazy ops
-   on the caller's GPU stream. The CPU linalg primitive would read
-   memory the GPU hadn't finished writing. Fixed: every linalg NIF
-   now calls `mx::eval()` on its inputs before the cross-stream
-   handoff to `cpu_stream()`.
+1. **SIGABRT (exit 134) — fixed:** LAPACK errors (SVD convergence, LU
+   singular matrix) abort the VM because MLX's `StreamThread::thread_fn`
+   has no catch frame — any C++ exception from an `eval_cpu` primitive
+   hits `std::terminate`. This is an MLX design constraint, not
+   something the NIF layer can catch. Fixed by strengthening test
+   inputs:
+   - SVD property test now applies `make_well_conditioned/1` (was the
+     only linalg test without it).
+   - `make_well_conditioned/1` multiplier raised from `n*10` to
+     `n*10+20` — the old value landed on the diagonal-dominance
+     boundary for n=2, allowing f32 rounding to produce singular
+     pivots in LAPACK.
+2. **SIGSEGV (exit 139) — pre-existing, not M15-related:** Reproduces
+   at ~4/10 on main with no linalg tests. Likely an MLX Metal driver
+   issue (see `test_helper.exs` commentary). The linalg NIFs add
+   `mx::eval()` on inputs before the cross-stream `cpu_stream()`
+   handoff as a defensive measure, but this does not fix the underlying
+   SIGSEGV. Needs separate investigation outside the M15 scope.
 
 ### M16 — Mixed-precision training
 

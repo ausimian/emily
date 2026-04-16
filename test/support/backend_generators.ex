@@ -176,6 +176,10 @@ defmodule Emily.BackendGenerators do
   @doc "Add diagonal dominance to a square matrix to ensure non-singularity."
   def make_well_conditioned(a) do
     n = elem(Nx.shape(a), 0)
-    Nx.add(a, Nx.multiply(Nx.eye(n, backend: Nx.BinaryBackend), n * 10))
+    # Elements are in [-10, 10]. Row sum of abs(off-diagonal) ≤ (n-1)*10.
+    # Diagonal must strictly exceed that, so we add (n-1)*10 + 10 = n*10
+    # per element — but that lands right on the boundary for n=2 (diag=10,
+    # off-diag sum=10). Use n*10 + 20 for clear margin under f32 rounding.
+    Nx.add(a, Nx.multiply(Nx.eye(n, backend: Nx.BinaryBackend), n * 10 + 20))
   end
 end
