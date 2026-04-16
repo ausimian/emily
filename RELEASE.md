@@ -2,6 +2,16 @@
 
 ## Fixed
 
+- **Fix SIGABRT/SIGSEGV from concurrent `mx::eval` dispatch.** MLX's
+  Metal `CommandEncoder` is not thread-safe (ml-explore/mlx#2133).
+  Concurrent `mx::eval` calls from BEAM dirty-CPU scheduler threads
+  triggered `"A command encoder is already encoding"` assertions or
+  SIGSEGV from corrupted encoder state. Fixed by serialising all
+  `mx::eval` calls through `emily::safe_eval()` (mutex in
+  `c_src/emily/tensor.hpp`). Also removed `set_default_stream` calls
+  from `with_stream/2` — the NIF mutated MLX thread-local state which
+  is unreliable under BEAM process migration. Hardened
+  `resolve_stream(-1)` to avoid reading the thread-local default.
 - Relax MNIST convergence canary threshold from 97% to 96% to eliminate
   stochastic flaps (observed 96.99% on occasional runs). The test is a
   sanity gate, not a performance benchmark.

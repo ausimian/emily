@@ -674,6 +674,31 @@ silent about it and ships a tested pattern.
 **Exit:** both patterns documented; concurrency soak demonstrates
 the streamed path is stable.
 
+**Post-M14 note — eval serialisation:**
+MLX is not thread-safe (ml-explore/mlx#2133). The Metal
+`CommandEncoder` is shared state — concurrent `mx::eval` calls from
+different OS threads crash with `"A command encoder is already
+encoding to this command buffer"` (SIGABRT) or SIGSEGV from corrupted
+encoder state. The M14 soak tests (8 concurrent workers via
+`Task.async_stream`) exposed this by being the first code path to call
+`mx::eval` from multiple dirty-CPU scheduler threads simultaneously.
+
+Fixed by:
+1. **`emily::safe_eval()`**: a mutex-serialised `mx::eval` wrapper in
+   `c_src/emily/tensor.hpp`. All eval callsites route through it.
+   Graph-building ops (regular scheduler) remain lock-free.
+2. **Removed `set_default_stream` from `with_stream/2`**: the NIF
+   mutated MLX thread-local state on BEAM scheduler threads, which
+   is unreliable since BEAM processes migrate between OS threads.
+   The process-dictionary-based stream routing was already correct.
+3. **Hardened `resolve_stream(-1)`**: the -1 fallback now reads the
+   device default directly instead of the (potentially corrupted)
+   thread-local default.
+
+The mutex serialises Metal dispatch at the cost of true concurrent
+GPU execution. See M15.5 (MLX upgrade) for the plan to restore
+concurrency via MLX's native thread-local `CommandEncoder` support.
+
 ### M15 — Native linalg
 
 `lu`, `svd`, `qr`, `cholesky`, `triangular_solve`, `eigh`,
@@ -697,6 +722,37 @@ BinaryBackend-slow. MLX exposes most natively under `mx::linalg::*`.
 
 **Exit:** all `mx::linalg::*`-backed callbacks pass property suite;
 remaining `via_binary` linalg paths documented with rationale.
+
+### M15.5 — MLX upgrade (build from source)
+
+Emily pins MLX 0.25.1 via pre-built binaries from `cocoa-xu/mlx-build`.
+MLX gained native thread-safety on `main` in April 2026 (thread-local
+`CommandEncoder` ml-explore/mlx#3348, `ThreadLocalStream` C++ API
+ml-explore/mlx#3405), but neither fix is in any release yet (latest:
+0.31.1). Building from source unblocks true concurrent Metal dispatch
+and removes the `safe_eval` mutex introduced in the post-M14 fix.
+
+- **Build MLX from source** (from `main` or 0.32+ when released)
+  instead of fetching the pre-built 0.25.1 tarball. Extend `mix.exs`
+  to support an `MLX_SOURCE` env var pointing at a local MLX build.
+- **Audit API changes** between 0.25.1 and target version. Emily's
+  C++ surface is narrow (core ops, linalg, streams, eval, allocator),
+  but six months of MLX releases may rename or remove functions.
+- **Adopt `ThreadLocalStream` C++ API**: each BEAM dirty-CPU thread
+  gets its own MLX stream automatically, enabling true per-thread
+  Metal command queues without the eval mutex.
+- **Remove `emily::safe_eval` mutex** once native thread-safety is
+  validated — revert to direct `mx::eval` calls.
+
+**Testing**:
+- Amplified stress test (16 workers, 100 iterations) passes without
+  mutex under the new MLX build.
+- Full test suite 20x with zero crashes.
+- Benchmark `to_binary` latency under concurrent load: confirm
+  throughput improves vs. the mutex-serialised path.
+
+**Exit:** concurrent soak tests pass without mutex; MLX build-from-source
+documented; stress test confirms concurrent Metal dispatch is stable.
 
 ### M16 — Mixed-precision training
 
