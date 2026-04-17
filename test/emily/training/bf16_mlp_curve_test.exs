@@ -13,6 +13,7 @@ defmodule Emily.Training.Bf16MlpCurveTest do
   use ExUnit.Case, async: true
 
   alias Emily.TrainingHelper, as: TH
+  import TH, only: [close?: 4, flunk_trajectory: 5]
 
   @dims {4, 8, 3}
   @batch_shape {16, 4, 3}
@@ -74,19 +75,5 @@ defmodule Emily.Training.Bf16MlpCurveTest do
     assert close?(le_final, lb_final, 1.0e-2, 5.0e-2),
            "final loss divergence: emily=#{le_final} bin=#{lb_final} " <>
              "reldiff=#{abs(le_final - lb_final) / abs(lb_final)}"
-  end
-
-  defp close?(a, b, atol, rtol), do: abs(a - b) <= atol + rtol * abs(b)
-
-  defp flunk_trajectory(i, le, lb, losses_emily, losses_bin) do
-    preview_e = losses_emily |> Enum.take(min(i + 3, length(losses_emily)))
-    preview_b = losses_bin |> Enum.take(min(i + 3, length(losses_bin)))
-
-    flunk("""
-    per-step loss diverged at step #{i}:
-      emily=#{le} bin=#{lb} reldiff=#{abs(le - lb) / abs(lb)}
-    emily trajectory (first #{length(preview_e)} steps): #{inspect(preview_e)}
-    bin   trajectory (first #{length(preview_b)} steps): #{inspect(preview_b)}
-    """)
   end
 end

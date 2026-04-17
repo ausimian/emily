@@ -20,6 +20,8 @@ defmodule Emily.Training.MnistFullTest do
 
   use ExUnit.Case, async: false
 
+  alias Emily.MnistHelper
+
   @moduletag :training_full
   @moduletag capture_log: true
   @moduletag timeout: 600_000
@@ -36,7 +38,7 @@ defmodule Emily.Training.MnistFullTest do
   @target_accuracy 0.96
 
   test "Axon MLP reaches >#{trunc(@target_accuracy * 100)}% test accuracy under Emily.Compiler" do
-    {train_batches, test_images, test_labels} = load_mnist(@batch_size)
+    {train_batches, test_images, test_labels} = MnistHelper.load_mnist(@batch_size)
 
     model =
       Axon.input("input", shape: {nil, 784})
@@ -51,67 +53,9 @@ defmodule Emily.Training.MnistFullTest do
         compiler: Emily.Compiler
       )
 
-    accuracy = evaluate(model, trained_state, test_images, test_labels)
+    accuracy = MnistHelper.evaluate(model, trained_state, test_images, test_labels)
 
     assert accuracy >= @target_accuracy,
            "MNIST accuracy #{Float.round(accuracy, 4)} below target #{@target_accuracy}"
-  end
-
-  # ---- Data loading ----
-
-  defp load_mnist(batch_size) do
-    # Training set — streamed in batches for Axon.Loop.
-    {train_images_raw, train_labels_raw} = Scidata.MNIST.download()
-
-    train_images =
-      train_images_raw
-      |> mnist_images_to_tensor()
-      |> Nx.to_batched(batch_size)
-
-    train_labels =
-      train_labels_raw
-      |> mnist_labels_to_tensor()
-      |> Nx.to_batched(batch_size)
-
-    train_batches = Stream.zip(train_images, train_labels)
-
-    # Test set — loaded as whole tensors for one-shot evaluation.
-    {test_images_raw, test_labels_raw} = Scidata.MNIST.download_test()
-
-    test_images = mnist_images_to_tensor(test_images_raw)
-    test_labels = mnist_labels_to_tensor(test_labels_raw)
-
-    {train_batches, test_images, test_labels}
-  end
-
-  defp mnist_images_to_tensor({bin, type, shape}) do
-    bin
-    |> Nx.from_binary(type)
-    |> Nx.reshape(shape)
-    # {N, 1, 28, 28} → {N, 784} + normalize to [0, 1].
-    |> Nx.reshape({elem(shape, 0), 784})
-    |> Nx.divide(255.0)
-  end
-
-  defp mnist_labels_to_tensor({bin, type, shape}) do
-    bin
-    |> Nx.from_binary(type)
-    |> Nx.reshape(shape)
-    |> Nx.new_axis(-1)
-    |> Nx.equal(Nx.iota({1, 10}))
-  end
-
-  # ---- Evaluation ----
-
-  defp evaluate(model, state, test_images, test_labels) do
-    logits =
-      Axon.predict(model, state, test_images, compiler: Emily.Compiler)
-
-    predicted = Nx.argmax(logits, axis: -1)
-    actual = Nx.argmax(test_labels, axis: -1)
-
-    Nx.mean(Nx.equal(predicted, actual))
-    |> Nx.backend_transfer(Nx.BinaryBackend)
-    |> Nx.to_number()
   end
 end

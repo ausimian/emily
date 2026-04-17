@@ -62,8 +62,10 @@ defmodule Emily.MixedPrecision do
     after `growth_interval` successful steps it doubles.
     """
 
+    @default_scale 65_536.0
+
     @enforce_keys [:scale]
-    defstruct scale: 65_536.0,
+    defstruct scale: @default_scale,
               growth_factor: 2.0,
               backoff_factor: 0.5,
               growth_interval: 2000,
@@ -81,22 +83,18 @@ defmodule Emily.MixedPrecision do
           :growth_interval,
           :min_scale
         ])
-        |> then(&Keyword.merge(Map.to_list(%__MODULE__{scale: 65_536.0}), &1))
+        |> then(&Keyword.merge(Map.to_list(%__MODULE__{scale: @default_scale}), &1))
 
       struct!(__MODULE__, fields)
     end
   end
-
-  # -------------------------------------------------------------------
-  # Public API
-  # -------------------------------------------------------------------
 
   @doc """
   Downcast float tensors in a nested structure to `type`.
 
   Integer and predicate tensors are left unchanged.
   """
-  def cast_params(params, type), do: deep_cast(params, type)
+  def cast_params(params, type), do: deep_apply(params, &Nx.as_type(&1, type))
 
   @doc """
   Upcast float tensors in a nested gradient structure to `type`.
@@ -104,7 +102,7 @@ defmodule Emily.MixedPrecision do
   Semantically identical to `cast_params/2` — exists for readability
   at the call site (the direction of the cast is part of the name).
   """
-  def accumulate_grad(grads, type), do: deep_cast(grads, type)
+  def accumulate_grad(grads, type), do: deep_apply(grads, &Nx.as_type(&1, type))
 
   @doc """
   Create a new dynamic loss scaler.
@@ -167,34 +165,8 @@ defmodule Emily.MixedPrecision do
   """
   def has_overflow?(structure), do: deep_overflow?(structure)
 
-  # -------------------------------------------------------------------
-  # Internal: recursive structure traversal
-  # -------------------------------------------------------------------
-
   defp float_type?({kind, _}) when kind in [:f, :bf], do: true
   defp float_type?(_), do: false
-
-  # deep_cast — cast float tensors to target type
-
-  defp deep_cast(%Nx.Tensor{} = t, type) do
-    if float_type?(t.type), do: Nx.as_type(t, type), else: t
-  end
-
-  defp deep_cast(map, type) when is_map(map) and not is_struct(map) do
-    Map.new(map, fn {k, v} -> {k, deep_cast(v, type)} end)
-  end
-
-  defp deep_cast(tuple, type) when is_tuple(tuple) do
-    tuple |> Tuple.to_list() |> Enum.map(&deep_cast(&1, type)) |> List.to_tuple()
-  end
-
-  defp deep_cast(list, type) when is_list(list) do
-    Enum.map(list, &deep_cast(&1, type))
-  end
-
-  defp deep_cast(other, _type), do: other
-
-  # deep_apply — apply fun to every float tensor
 
   defp deep_apply(%Nx.Tensor{} = t, fun) do
     if float_type?(t.type), do: fun.(t), else: t
@@ -213,8 +185,6 @@ defmodule Emily.MixedPrecision do
   end
 
   defp deep_apply(other, _fun), do: other
-
-  # deep_overflow? — check for nan/inf in any float tensor
 
   defp deep_overflow?(%Nx.Tensor{} = t) do
     if float_type?(t.type) do

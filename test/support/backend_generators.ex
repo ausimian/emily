@@ -40,18 +40,8 @@ defmodule Emily.BackendGenerators do
     |> map(&Nx.reshape(&1, shape))
   end
 
-  def tensor(shape, {:bf, 16}) do
-    list_of(float(min: -10.0, max: 10.0), length: Nx.size(shape))
-    |> map(&Nx.tensor(&1, type: {:f, 32}, backend: Nx.BinaryBackend))
-    |> map(&Nx.reshape(&1, shape))
-    |> map(&Nx.as_type(&1, {:bf, 16}))
-  end
-
-  def tensor(shape, {:f, 16}) do
-    list_of(float(min: -10.0, max: 10.0), length: Nx.size(shape))
-    |> map(&Nx.tensor(&1, type: {:f, 32}, backend: Nx.BinaryBackend))
-    |> map(&Nx.reshape(&1, shape))
-    |> map(&Nx.as_type(&1, {:f, 16}))
+  def tensor(shape, {kind, 16} = type) when kind in [:bf, :f] do
+    tensor(shape, {:f, 32}) |> map(&Nx.as_type(&1, type))
   end
 
   def tensor(shape, {:s, bits}) do

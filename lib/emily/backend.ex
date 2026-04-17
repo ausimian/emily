@@ -55,6 +55,11 @@ defmodule Emily.Backend do
     %{out | data: %B{ref: coerce(ref, type, w)}}
   end
 
+  # Fast path: pred→u8 is the most common mismatch (MLX comparison/logical
+  # ops yield bool; Nx expects u8). The general path covers bf16→f32 type
+  # promotion from Nx.Defn.grad and any other MLX/Nx dtype disagreement.
+  defp coerce(ref, {:u, 8}, w), do: Native.astype(w, ref, {:u, 8})
+
   defp coerce(ref, type, w) do
     case Native.dtype(ref) do
       ^type -> ref
