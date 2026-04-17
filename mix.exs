@@ -197,7 +197,7 @@ defmodule Emily.MixProject do
       "-DMLX_BUILD_PYTHON_BINDINGS=OFF",
       "-DMLX_BUILD_SAFETENSORS=OFF",
       "-DMLX_BUILD_GGUF=OFF",
-      "-DUSE_SYSTEM_FMT=ON"
+      "-DMLX_BUILD_METAL_TESTS=OFF"
     ]
 
     # When xcode-select points at CommandLineTools (the default on fresh
