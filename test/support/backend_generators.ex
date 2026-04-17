@@ -128,4 +128,58 @@ defmodule Emily.BackendGenerators do
 
   defp abs_diff(a, b) when is_number(a) and is_number(b), do: abs(a - b)
   defp abs_diff(_, _), do: :na
+
+  # --- Linalg generators ---
+
+  @doc "Generate a random n×n square matrix (n in 2..5)."
+  def square_matrix do
+    bind(integer(2..5), fn n ->
+      tensor({n, n}, {:f, 32})
+    end)
+  end
+
+  @doc """
+  Generate a symmetric positive-definite matrix by constructing A^T A + nI.
+  The identity diagonal ensures positive eigenvalues even if A is rank-deficient.
+  """
+  def spd_matrix do
+    bind(integer(2..5), fn n ->
+      tensor({n, n}, {:f, 32})
+      |> map(fn a ->
+        ata = Nx.dot(Nx.transpose(a), a)
+        Nx.add(ata, Nx.multiply(Nx.eye(n, backend: Nx.BinaryBackend), n))
+      end)
+    end)
+  end
+
+  @doc "Generate a symmetric matrix (A + A^T) / 2."
+  def symmetric_matrix do
+    bind(integer(2..5), fn n ->
+      tensor({n, n}, {:f, 32})
+      |> map(fn a -> Nx.divide(Nx.add(a, Nx.transpose(a)), 2) end)
+    end)
+  end
+
+  @doc "Generate a lower-triangular matrix with positive diagonal (non-singular)."
+  def lower_triangular_matrix do
+    bind(integer(2..5), fn n ->
+      tensor({n, n}, {:f, 32})
+      |> map(fn a ->
+        # Strictly-lower triangle + positive diagonal.
+        strict_lower = Nx.tril(a, k: -1)
+        diag = a |> Nx.take_diagonal() |> Nx.abs() |> Nx.add(1.0) |> Nx.make_diagonal()
+        Nx.add(strict_lower, diag)
+      end)
+    end)
+  end
+
+  @doc "Add diagonal dominance to a square matrix to ensure non-singularity."
+  def make_well_conditioned(a) do
+    n = elem(Nx.shape(a), 0)
+    # Elements are in [-10, 10]. Row sum of abs(off-diagonal) ≤ (n-1)*10.
+    # Diagonal must strictly exceed that, so we add (n-1)*10 + 10 = n*10
+    # per element — but that lands right on the boundary for n=2 (diag=10,
+    # off-diag sum=10). Use n*10 + 20 for clear margin under f32 rounding.
+    Nx.add(a, Nx.multiply(Nx.eye(n, backend: Nx.BinaryBackend), n * 10 + 20))
+  end
 end

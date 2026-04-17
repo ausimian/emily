@@ -14,10 +14,11 @@ defmodule Emily.Backend do
       message pointing to f32.
     * `from_pointer`, `to_pointer`, `population_count`, and
       `count_leading_zeros` raise `ArgumentError` — MLX has no primitive.
-    * Window operations (`window_sum`, `window_scatter_max`, etc.) and
-      advanced linalg (`lu`, `svd`, `qr`, `cholesky`, `eigh`, `solve`,
-      `determinant`, `triangular_solve`) fall back to Nx's default
-      `optional/3` implementation — correct but slow.
+    * Window operations (`window_sum`, `window_scatter_max`, etc.) fall
+      back to Nx's default `optional/3` implementation — correct but slow.
+      `qr` with `mode: :complete` also falls back (MLX only supports
+      reduced QR). `determinant` uses Nx's default implementation, which
+      calls `lu` (native via MLX) for matrices larger than 3×3.
     * `quotient` uses MLX `floor_divide` semantics (floor toward -inf
       rather than Nx's truncate-toward-zero). For non-negative integer
       operands the results agree; mixed-sign inputs diverge by one. We
@@ -1194,15 +1195,114 @@ defmodule Emily.Backend do
     batch ++ trailing
   end
 
-  @impl true
-  def lu(outs, t, opts), do: via_binary_tuple(outs, [t], &Nx.LinAlg.lu(&1, opts))
+  # =================================================================
+  # Native linalg — decompositions & solvers via mx::linalg::*
+  # =================================================================
 
   @impl true
-  def triangular_solve(out, a, b, opts),
-    do: via_binary(out, [a, b], &Nx.LinAlg.triangular_solve(&1, &2, opts))
+  def lu({p_out, l_out, u_out}, t, _opts) do
+    w = worker()
+    {perm_ref, l_ref, u_ref} = Native.linalg_lu(w, ref(t))
+    n = elem(t.shape, tuple_size(t.shape) - 1)
+    eye_ref = Native.eye(w, n, n, 0, p_out.type)
+    p_ref = Native.take(w, eye_ref, perm_ref, 0)
+    {wrap(p_ref, p_out, w), wrap(l_ref, l_out, w), wrap(u_ref, u_out, w)}
+  end
 
   @impl true
-  def svd(outs, t, opts), do: via_binary_tuple(outs, [t], &Nx.LinAlg.svd(&1, opts))
+  def svd({u_out, s_out, v_out}, t, _opts) do
+    w = worker()
+    {u_ref, s_ref, v_ref} = Native.linalg_svd(w, ref(t))
+    rank = tuple_size(t.shape)
+    m = elem(t.shape, rank - 2)
+    n = elem(t.shape, rank - 1)
+    u_ref = maybe_slice_svd(u_ref, u_out.shape, {m, m}, w)
+    v_ref = maybe_slice_svd(v_ref, v_out.shape, {n, n}, w)
+    {wrap(u_ref, u_out, w), wrap(s_ref, s_out, w), wrap(v_ref, v_out, w)}
+  end
+
+  defp maybe_slice_svd(ref, out_shape, full_last2, w) do
+    rank = tuple_size(out_shape)
+
+    if {elem(out_shape, rank - 2), elem(out_shape, rank - 1)} == full_last2 do
+      ref
+    else
+      starts = List.duplicate(0, rank)
+      strides = List.duplicate(1, rank)
+      Native.slice(w, ref, starts, Tuple.to_list(out_shape), strides)
+    end
+  end
+
+  @impl true
+  def triangular_solve(%T{} = out, a, b, opts) do
+    w = worker()
+    a_ref = ref(a)
+    b_ref = ref(b)
+
+    case {opts[:transform_a], opts[:left_side]} do
+      {:none, true} ->
+        Native.linalg_solve_triangular(w, a_ref, b_ref, not opts[:lower])
+        |> wrap(out, w)
+
+      {:transpose, true} ->
+        at = Native.transpose(w, a_ref, mat_transpose_axes(a.shape))
+
+        Native.linalg_solve_triangular(w, at, b_ref, opts[:lower])
+        |> wrap(out, w)
+
+      {:none, false} ->
+        at = Native.transpose(w, a_ref, mat_transpose_axes(a.shape))
+        bt = Native.transpose(w, b_ref, mat_transpose_axes(b.shape))
+        xt = Native.linalg_solve_triangular(w, at, bt, opts[:lower])
+
+        Native.transpose(w, xt, mat_transpose_axes(out.shape))
+        |> wrap(out, w)
+
+      {:transpose, false} ->
+        bt = Native.transpose(w, b_ref, mat_transpose_axes(b.shape))
+        xt = Native.linalg_solve_triangular(w, a_ref, bt, not opts[:lower])
+
+        Native.transpose(w, xt, mat_transpose_axes(out.shape))
+        |> wrap(out, w)
+    end
+  end
+
+  defp mat_transpose_axes(shape) do
+    rank = tuple_size(shape)
+    Enum.to_list(0..(rank - 3)//1) ++ [rank - 1, rank - 2]
+  end
+
+  @impl true
+  def qr({q_out, r_out}, t, opts) do
+    case opts[:mode] do
+      :reduced ->
+        w = worker()
+        {q_ref, r_ref} = Native.linalg_qr(w, ref(t))
+        {wrap(q_ref, q_out, w), wrap(r_ref, r_out, w)}
+
+      :complete ->
+        via_binary_tuple({q_out, r_out}, [t], &Nx.LinAlg.qr(&1, opts))
+    end
+  end
+
+  @impl true
+  def cholesky(%T{} = out, t) do
+    w = worker()
+    Native.linalg_cholesky(w, ref(t), false) |> wrap(out, w)
+  end
+
+  @impl true
+  def eigh({vals_out, vecs_out}, t, _opts) do
+    w = worker()
+    {vals_ref, vecs_ref} = Native.linalg_eigh(w, ref(t), "L")
+    {wrap(vals_ref, vals_out, w), wrap(vecs_ref, vecs_out, w)}
+  end
+
+  @impl true
+  def solve(%T{} = out, a, b) do
+    w = worker()
+    Native.linalg_solve(w, ref(a), ref(b)) |> wrap(out, w)
+  end
 
   # =================================================================
   # Custom fused-kernel callbacks for Emily.Fast

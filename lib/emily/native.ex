@@ -255,6 +255,29 @@ defmodule Emily.Native do
   @spec inner(worker(), tensor(), tensor()) :: tensor()
   def inner(_w, _a, _b), do: nif()
 
+  # --- Linalg (decompositions / solvers) ---------------------------
+
+  @spec linalg_lu(worker(), tensor()) :: {tensor(), tensor(), tensor()}
+  def linalg_lu(_w, _a), do: nif()
+
+  @spec linalg_svd(worker(), tensor()) :: {tensor(), tensor(), tensor()}
+  def linalg_svd(_w, _a), do: nif()
+
+  @spec linalg_qr(worker(), tensor()) :: {tensor(), tensor()}
+  def linalg_qr(_w, _a), do: nif()
+
+  @spec linalg_cholesky(worker(), tensor(), boolean()) :: tensor()
+  def linalg_cholesky(_w, _a, _upper), do: nif()
+
+  @spec linalg_eigh(worker(), tensor(), String.t()) :: {tensor(), tensor()}
+  def linalg_eigh(_w, _a, _uplo), do: nif()
+
+  @spec linalg_solve(worker(), tensor(), tensor()) :: tensor()
+  def linalg_solve(_w, _a, _b), do: nif()
+
+  @spec linalg_solve_triangular(worker(), tensor(), tensor(), boolean()) :: tensor()
+  def linalg_solve_triangular(_w, _a, _b, _upper), do: nif()
+
   # --- Quantization ------------------------------------------------
 
   @spec quantize(worker(), tensor(), integer(), integer()) ::

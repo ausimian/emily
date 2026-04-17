@@ -670,4 +670,86 @@ defmodule Emily.BackendTest do
   end
 
   defp sanitise_unary_arg(_op, a), do: a
+
+  # ---------------- Linalg ----------------
+
+  describe "linalg" do
+    @describetag :linalg
+    property "lu: P * L * U ≈ A for random well-conditioned matrices" do
+      check all(a <- square_matrix(), max_runs: @max_runs) do
+        a_safe = make_well_conditioned(a)
+        emily_a = to_emily(a_safe)
+        {p, l, u} = Nx.LinAlg.lu(emily_a)
+        reconstructed = p |> Nx.dot(l) |> Nx.dot(u)
+        assert_close(reconstructed, emily_a, tol: 1.0e-3)
+      end
+    end
+
+    property "svd: singular values match BinaryBackend" do
+      check all(a <- square_matrix(), max_runs: @max_runs) do
+        a_safe = make_well_conditioned(a)
+        emily_a = to_emily(a_safe)
+        {_u, emily_s, _vt} = Nx.LinAlg.svd(emily_a)
+        {_u, ref_s, _vt} = Nx.LinAlg.svd(a_safe)
+
+        # Compare sorted singular values (sign/ordering of U/Vt is
+        # ambiguous, but singular values themselves must match).
+        assert_close(Nx.sort(emily_s), Nx.sort(ref_s), tol: 1.0e-3)
+      end
+    end
+
+    property "qr: Q * R ≈ A for random well-conditioned matrices" do
+      check all(a <- square_matrix(), max_runs: @max_runs) do
+        a_safe = make_well_conditioned(a)
+        emily_a = to_emily(a_safe)
+        {q, r} = Nx.LinAlg.qr(emily_a, mode: :reduced)
+        reconstructed = Nx.dot(q, r)
+        assert_close(reconstructed, emily_a, tol: 1.0e-3)
+      end
+    end
+
+    property "cholesky: L * L^T ≈ A for random SPD matrices" do
+      check all(a <- spd_matrix(), max_runs: @max_runs) do
+        emily_a = to_emily(a)
+        l = Nx.LinAlg.cholesky(emily_a)
+        reconstructed = Nx.dot(l, Nx.transpose(l))
+        assert_close(reconstructed, emily_a, tol: 1.0e-3)
+      end
+    end
+
+    property "eigh: eigenvalues match BinaryBackend for symmetric matrices" do
+      check all(a <- symmetric_matrix(), max_runs: @max_runs) do
+        emily_a = to_emily(a)
+        {emily_vals, _emily_vecs} = Nx.LinAlg.eigh(emily_a)
+        {ref_vals, _ref_vecs} = Nx.LinAlg.eigh(a)
+
+        # Sort eigenvalues before comparing (ordering may differ)
+        assert_close(Nx.sort(emily_vals), Nx.sort(ref_vals), tol: 1.0e-3)
+      end
+    end
+
+    property "solve: Ax = b matches BinaryBackend" do
+      check all(a <- square_matrix(), max_runs: @max_runs) do
+        n = elem(Nx.shape(a), 0)
+        b = Nx.iota({n}, type: {:f, 32}, backend: Nx.BinaryBackend) |> Nx.add(1.0)
+
+        a_safe = make_well_conditioned(a)
+
+        emily_x = Nx.LinAlg.solve(to_emily(a_safe), to_emily(b))
+        ref_x = Nx.LinAlg.solve(a_safe, b)
+        assert_close(emily_x, ref_x, tol: 1.0e-3)
+      end
+    end
+
+    property "triangular_solve matches BinaryBackend for lower-triangular" do
+      check all(l <- lower_triangular_matrix(), max_runs: @max_runs) do
+        n = elem(Nx.shape(l), 0)
+        b = Nx.iota({n}, type: {:f, 32}, backend: Nx.BinaryBackend) |> Nx.add(1.0)
+
+        emily_x = Nx.LinAlg.triangular_solve(to_emily(l), to_emily(b))
+        ref_x = Nx.LinAlg.triangular_solve(l, b)
+        assert_close(emily_x, ref_x, tol: 1.0e-3)
+      end
+    end
+  end
 end
