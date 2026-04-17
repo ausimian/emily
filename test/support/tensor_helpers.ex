@@ -6,6 +6,9 @@ defmodule Emily.TensorHelpers do
 
   alias Emily.Native
 
+  @doc "Return the default worker for NIF calls in tests."
+  def worker, do: Emily.MlxStream.worker(Emily.MlxStream.Default)
+
   @doc "Build an f32 tensor from a numeric list and shape."
   def f32(list, shape) when is_list(list) do
     bin = for x <- list, into: <<>>, do: <<x * 1.0::float-32-native>>
@@ -17,7 +20,7 @@ defmodule Emily.TensorHelpers do
 
   @doc "Read an f32 tensor back as a flat list of floats."
   def to_f32_list(tensor) do
-    bin = Native.to_binary(tensor, -1)
+    bin = Native.to_binary(worker(), tensor)
     for <<f::float-32-native <- bin>>, do: f
   end
 
@@ -29,7 +32,7 @@ defmodule Emily.TensorHelpers do
 
   @doc "Read an s32 tensor back as a flat list of ints."
   def to_s32_list(tensor) do
-    bin = Native.to_binary(tensor, -1)
+    bin = Native.to_binary(worker(), tensor)
     for <<i::signed-integer-32-native <- bin>>, do: i
   end
 
@@ -41,7 +44,7 @@ defmodule Emily.TensorHelpers do
 
   @doc "Read a pred tensor back as a flat list of booleans."
   def to_pred_list(tensor) do
-    bin = Native.to_binary(tensor, -1)
+    bin = Native.to_binary(worker(), tensor)
     for <<b::unsigned-integer-8 <- bin>>, do: b == 1
   end
 

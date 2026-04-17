@@ -1,10 +1,7 @@
-# MLX's Metal runtime isn't safe for concurrent kernel dispatch from
-# multiple OS threads — six test modules hammering MLX in parallel
-# SIGSEGVs the Metal driver on macOS 14 (and produces sporadic
-# "A command encoder is already encoding" assertions on other
-# versions). Serialise module execution unconditionally; the entire
-# suite still completes in seconds. See
-# `test/soak/backend_concurrency_test.exs` for the full story.
+# MLX is now thread-safe (thread-local CommandEncoder, ml-explore/mlx#3348;
+# ThreadLocalStream API, ml-explore/mlx#3405). Parallel module execution
+# is safe — the safe_eval mutex is removed and concurrent Metal dispatch
+# is handled natively by MLX.
 #
 # Conformance tests pull tiny-random HuggingFace models at runtime and
 # take ~tens of seconds per model on a cold cache — opt-in via
@@ -47,7 +44,7 @@
 #
 #     mix test --only fast_kernels_full
 ExUnit.start(
-  max_cases: 1,
+  max_cases: System.schedulers_online(),
   exclude: [
     :conformance,
     :qwen3_full,

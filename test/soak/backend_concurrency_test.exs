@@ -5,19 +5,16 @@ defmodule Emily.Soak.ConcurrencyTest do
   assert every process produces bit-identical output.
 
   Each worker uses its own `Emily.Stream` so concurrent dispatch
-  targets separate Metal command queues. Without per-process streams,
-  concurrent dispatch on the shared default stream trips Metal
-  assertions like `A command encoder is already encoding to this
-  command buffer` — see `stream_concurrency_test.exs` for the
-  heavier concurrency soak.
+  targets separate Metal command queues (each backed by its own
+  dedicated OS thread / MLX stream).
   """
 
   use ExUnit.Case, async: false
 
   @moduletag :soak
 
-  @workers 8
-  @iters_per_worker 10
+  @workers 16
+  @iters_per_worker 100
 
   defp fresh_input(s) do
     Emily.Stream.with_stream(s, fn ->
@@ -53,7 +50,7 @@ defmodule Emily.Soak.ConcurrencyTest do
           |> Enum.uniq()
         end,
         max_concurrency: @workers,
-        timeout: 30_000
+        timeout: 120_000
       )
       |> Enum.map(fn {:ok, v} -> v end)
 

@@ -49,19 +49,13 @@ defmodule Emily.Backend do
   # ref extraction goes through the primary clause.
   defp ref(%T{} = t), do: t |> Nx.backend_transfer(Emily.Backend) |> ref()
 
-  @spec wrap(ref(), tensor(), integer()) :: tensor()
-  defp wrap(ref, %T{type: type} = out, s) do
-    %{out | data: %B{ref: coerce(ref, type, s)}}
+  @spec wrap(ref(), tensor(), reference()) :: tensor()
+  defp wrap(ref, %T{type: type} = out, w) do
+    %{out | data: %B{ref: coerce(ref, type, w)}}
   end
 
-  # Nx uses `{:u, 8}` to represent boolean outputs (comparisons,
-  # logical ops, is_nan, …); MLX yields `mx::bool_` which Native
-  # surfaces as `{:pred, 1}`. Same in-memory layout (1 byte/elem), but
-  # Nx's dtype invariant fails downstream without the cast. MLX elides
-  # a same-type astype, so the unconditional call is ~free when the
-  # ref is already u8.
-  defp coerce(ref, {:u, 8}, s), do: Native.astype(ref, {:u, 8}, s)
-  defp coerce(ref, _, _s), do: ref
+  defp coerce(ref, {:u, 8}, w), do: Native.astype(w, ref, {:u, 8})
+  defp coerce(ref, _, _w), do: ref
 
   defp shape_list(shape) when is_tuple(shape), do: Tuple.to_list(shape)
 
@@ -83,7 +77,7 @@ defmodule Emily.Backend do
     Native.from_binary(bin, [], type)
   end
 
-  defp stream_index, do: Process.get(:emily_stream, -1)
+  defp worker, do: Emily.MlxStream.default_worker()
 
   # =================================================================
   # init
@@ -110,7 +104,7 @@ defmodule Emily.Backend do
     check_dtype!(type)
     bin = ensure_binary(binary)
     ref = Native.from_binary(bin, shape_list(shape), type)
-    wrap(ref, out, stream_index())
+    wrap(ref, out, worker())
   end
 
   defp ensure_binary(b) when is_binary(b), do: b
@@ -120,7 +114,7 @@ defmodule Emily.Backend do
 
   @impl true
   def to_binary(%T{data: %B{ref: r}, type: {_, bits}} = tensor, limit) do
-    bin = Native.to_binary(r, stream_index())
+    bin = Native.to_binary(worker(), r)
     elem_bits = effective_elem_bits(bits)
     size = Nx.size(tensor)
 
@@ -234,68 +228,61 @@ defmodule Emily.Backend do
   @impl true
   def constant(%T{shape: {}, type: type} = out, value, _opts) do
     check_dtype!(type)
-    scalar_ref(value, type) |> wrap(out, stream_index())
+    scalar_ref(value, type) |> wrap(out, worker())
   end
 
   def constant(%T{shape: shape, type: type} = out, value, _opts) do
     check_dtype!(type)
-    s = stream_index()
+    w = worker()
     scalar = scalar_ref(value, type)
-    Native.full(shape_list(shape), scalar, type, s) |> wrap(out, s)
+    Native.full(w, shape_list(shape), scalar, type) |> wrap(out, w)
   end
 
   @impl true
   def iota(%T{shape: {}, type: type} = out, _axis, _opts) do
     check_dtype!(type)
-    scalar_ref(0, type) |> wrap(out, stream_index())
+    scalar_ref(0, type) |> wrap(out, worker())
   end
 
   def iota(%T{shape: shape, type: type} = out, nil, _opts) do
     check_dtype!(type)
-    s = stream_index()
+    w = worker()
     size = Nx.size(shape)
 
-    Native.arange(0.0, size * 1.0, 1.0, type, s)
-    |> Native.reshape(shape_list(shape), s)
-    |> wrap(out, s)
+    r = Native.arange(w, 0.0, size * 1.0, 1.0, type)
+    Native.reshape(w, r, shape_list(shape)) |> wrap(out, w)
   end
 
   def iota(%T{shape: shape, type: type} = out, axis, _opts) do
     check_dtype!(type)
-    s = stream_index()
+    w = worker()
     dims = Tuple.to_list(shape)
     dim = Enum.at(dims, axis)
 
-    # Build a 1-D arange along the chosen axis, reshape to a thin
-    # (1, 1, ..., dim, ..., 1, 1) and broadcast to the full shape.
-    line = Native.arange(0.0, dim * 1.0, 1.0, type, s)
+    line = Native.arange(w, 0.0, dim * 1.0, 1.0, type)
 
     thin_shape =
       dims
       |> Enum.with_index()
       |> Enum.map(fn {_, i} -> if i == axis, do: dim, else: 1 end)
 
-    line
-    |> Native.reshape(thin_shape, s)
-    |> Native.broadcast_to(dims, s)
-    |> wrap(out, s)
+    r = Native.reshape(w, line, thin_shape)
+    Native.broadcast_to(w, r, dims) |> wrap(out, w)
   end
 
   @impl true
   def eye(%T{shape: shape, type: type} = out, _opts) do
     check_dtype!(type)
-    s = stream_index()
+    w = worker()
     rank = tuple_size(shape)
     n = elem(shape, rank - 2)
     m = elem(shape, rank - 1)
-    base = Native.eye(n, m, 0, type, s)
+    base = Native.eye(w, n, m, 0, type)
 
     if rank == 2 do
-      base |> wrap(out, s)
+      wrap(base, out, w)
     else
-      base
-      |> Native.broadcast_to(shape_list(shape), s)
-      |> wrap(out, s)
+      Native.broadcast_to(w, base, shape_list(shape)) |> wrap(out, w)
     end
   end
 
@@ -306,17 +293,14 @@ defmodule Emily.Backend do
   @impl true
   def as_type(%T{type: type} = out, %T{} = t) do
     check_dtype!(type)
-    s = stream_index()
-    t |> ref() |> Native.astype(type, s) |> wrap(out, s)
+    w = worker()
+    Native.astype(w, ref(t), type) |> wrap(out, w)
   end
 
-  # bitcast: reinterpret the bits as the output dtype (same element
-  # size). MLX exposes this as `mx::view`. Used by Nx.Random to move
-  # between uint and float of matching width.
   @impl true
   def bitcast(%T{type: type} = out, t) do
-    s = stream_index()
-    t |> ref() |> Native.bitcast(type, s) |> wrap(out, s)
+    w = worker()
+    Native.bitcast(w, ref(t), type) |> wrap(out, w)
   end
 
   # =================================================================
@@ -342,8 +326,8 @@ defmodule Emily.Backend do
   for {nx_name, native_name} <- @renamed_unary do
     @impl true
     def unquote(nx_name)(out, t) do
-      s = stream_index()
-      t |> ref() |> Native.unquote(native_name)(s) |> wrap(out, s)
+      w = worker()
+      Native.unquote(native_name)(w, ref(t)) |> wrap(out, w)
     end
   end
 
@@ -354,37 +338,35 @@ defmodule Emily.Backend do
   for op <- @direct_unary do
     @impl true
     def unquote(op)(out, t) do
-      s = stream_index()
-      t |> ref() |> Native.unquote(op)(s) |> wrap(out, s)
+      w = worker()
+      Native.unquote(op)(w, ref(t)) |> wrap(out, w)
     end
   end
 
   @impl true
   def round(out, t) do
-    s = stream_index()
-    t |> ref() |> Native.round(0, s) |> wrap(out, s)
+    w = worker()
+    Native.round(w, ref(t), 0) |> wrap(out, w)
   end
 
-  # erfc(x) = 1 - erf(x) — composed in Elixir.
   @impl true
   def erfc(%T{type: type} = out, t) do
-    s = stream_index()
+    w = worker()
     r = ref(t)
     one = scalar_ref(1, type)
-    erf_r = Native.erf(r, s)
-    Native.subtract(one, erf_r, s) |> wrap(out, s)
+    erf_r = Native.erf(w, r)
+    Native.subtract(w, one, erf_r) |> wrap(out, w)
   end
 
-  # cbrt(x) = sign(x) * |x|^(1/3). MLX has no cbrt primitive.
   @impl true
   def cbrt(%T{type: type} = out, t) do
-    s = stream_index()
+    w = worker()
     r = ref(t)
-    signed = Native.sign(r, s)
-    absolute = Native.abs(r, s)
+    signed = Native.sign(w, r)
+    absolute = Native.abs(w, r)
     third = scalar_ref(1.0 / 3.0, type)
-    pow = Native.power(absolute, third, s)
-    Native.multiply(signed, pow, s) |> wrap(out, s)
+    pow = Native.power(w, absolute, third)
+    Native.multiply(w, signed, pow) |> wrap(out, w)
   end
 
   @impl true
@@ -407,8 +389,8 @@ defmodule Emily.Backend do
   # implement it directly.
   @impl true
   def logical_not(out, t) do
-    s = stream_index()
-    t |> ref() |> Native.logical_not(s) |> wrap(out, s)
+    w = worker()
+    Native.logical_not(w, ref(t)) |> wrap(out, w)
   end
 
   # =================================================================
@@ -442,10 +424,10 @@ defmodule Emily.Backend do
   for {nx_name, native_name} <- @renamed_arith_binary do
     @impl true
     def unquote(nx_name)(%T{type: type} = out, a, b) do
-      s = stream_index()
-      ra = Native.astype(ref(a), type, s)
-      rb = Native.astype(ref(b), type, s)
-      Native.unquote(native_name)(ra, rb, s) |> wrap(out, s)
+      w = worker()
+      ra = Native.astype(w, ref(a), type)
+      rb = Native.astype(w, ref(b), type)
+      Native.unquote(native_name)(w, ra, rb) |> wrap(out, w)
     end
   end
 
@@ -466,46 +448,40 @@ defmodule Emily.Backend do
   for {nx_name, native_name} <- @renamed_pred_binary do
     @impl true
     def unquote(nx_name)(out, a, b) do
-      s = stream_index()
+      w = worker()
       target = Nx.Type.merge(a.type, b.type)
-      ra = Native.astype(ref(a), target, s)
-      rb = Native.astype(ref(b), target, s)
-      Native.unquote(native_name)(ra, rb, s) |> wrap(out, s)
+      ra = Native.astype(w, ref(a), target)
+      rb = Native.astype(w, ref(b), target)
+      Native.unquote(native_name)(w, ra, rb) |> wrap(out, w)
     end
   end
 
   @impl true
   def add(%T{type: type} = out, a, b) do
-    s = stream_index()
-    ra = Native.astype(ref(a), type, s)
-    rb = Native.astype(ref(b), type, s)
-    Native.add(ra, rb, s) |> wrap(out, s)
+    w = worker()
+    ra = Native.astype(w, ref(a), type)
+    rb = Native.astype(w, ref(b), type)
+    Native.add(w, ra, rb) |> wrap(out, w)
   end
 
-  # See moduledoc: we intentionally use MLX floor_divide for quotient,
-  # matching its rounding (floor toward -inf) rather than Nx's
-  # truncate-toward-zero. The two agree for non-negative operands.
   @impl true
   def quotient(%T{type: type} = out, a, b) do
-    s = stream_index()
-    ra = Native.astype(ref(a), type, s)
-    rb = Native.astype(ref(b), type, s)
-    Native.floor_divide(ra, rb, s) |> wrap(out, s)
+    w = worker()
+    ra = Native.astype(w, ref(a), type)
+    rb = Native.astype(w, ref(b), type)
+    Native.floor_divide(w, ra, rb) |> wrap(out, w)
   end
 
-  # logical_xor: MLX has no direct op. Compose via `not_equal` on
-  # booleanised inputs. With u8 inputs, `not_equal(0)` yields truthy
-  # masks; their `not_equal` is the xor.
   @impl true
   def logical_xor(out, a, b) do
-    s = stream_index()
+    w = worker()
     ra = ref(a)
     rb = ref(b)
     za = scalar_ref(0, a.type)
     zb = scalar_ref(0, b.type)
-    ma = Native.not_equal(ra, za, s)
-    mb = Native.not_equal(rb, zb, s)
-    Native.not_equal(ma, mb, s) |> wrap(out, s)
+    ma = Native.not_equal(w, ra, za)
+    mb = Native.not_equal(w, rb, zb)
+    Native.not_equal(w, ma, mb) |> wrap(out, w)
   end
 
   # =================================================================
@@ -514,20 +490,20 @@ defmodule Emily.Backend do
 
   @impl true
   def reshape(%T{shape: shape} = out, t) do
-    s = stream_index()
-    t |> ref() |> Native.reshape(shape_list(shape), s) |> wrap(out, s)
+    w = worker()
+    Native.reshape(w, ref(t), shape_list(shape)) |> wrap(out, w)
   end
 
   @impl true
   def squeeze(out, t, axes) do
-    s = stream_index()
-    t |> ref() |> Native.squeeze(axes, s) |> wrap(out, s)
+    w = worker()
+    Native.squeeze(w, ref(t), axes) |> wrap(out, w)
   end
 
   @impl true
   def transpose(out, t, axes) do
-    s = stream_index()
-    t |> ref() |> Native.transpose(axes, s) |> wrap(out, s)
+    w = worker()
+    Native.transpose(w, ref(t), axes) |> wrap(out, w)
   end
 
   # Nx broadcast: given input tensor shape `in_shape` and output `shape`,
@@ -551,13 +527,10 @@ defmodule Emily.Backend do
       |> Enum.with_index()
       |> Enum.map(fn {_, i} -> Map.get(placed, i, 1) end)
 
-    s = stream_index()
+    w = worker()
 
-    t
-    |> ref()
-    |> Native.reshape(intermediate, s)
-    |> Native.broadcast_to(out_dims, s)
-    |> wrap(out, s)
+    r = Native.reshape(w, ref(t), intermediate)
+    Native.broadcast_to(w, r, out_dims) |> wrap(out, w)
   end
 
   # Nx padding_config: [{low, high, interior}, ...]. MLX supports low/high
@@ -573,9 +546,9 @@ defmodule Emily.Backend do
             "Emily.Backend does not implement interior padding (MLX has no primitive)"
     end
 
-    s = stream_index()
+    w = worker()
     axes = Enum.to_list(0..(length(lows) - 1))
-    Native.pad(ref(t), axes, lows, highs, ref(pad_value), s) |> wrap(out, s)
+    Native.pad(w, ref(t), axes, lows, highs, ref(pad_value)) |> wrap(out, w)
   end
 
   # Reverse along each axis in `axes`. MLX's C++ slice doesn't interpret
@@ -583,34 +556,34 @@ defmodule Emily.Backend do
   # tensor per axis and `take`.
   @impl true
   def reverse(%T{} = out, t, axes) do
-    s = stream_index()
+    w = worker()
 
     reversed =
       Enum.reduce(axes, ref(t), fn axis, acc ->
         dim = elem(t.shape, axis)
-        indices = reverse_indices(dim, s)
-        Native.take(acc, indices, axis, s)
+        indices = reverse_indices(dim, w)
+        Native.take(w, acc, indices, axis)
       end)
 
-    wrap(reversed, out, s)
+    wrap(reversed, out, w)
   end
 
-  defp reverse_indices(dim, s) do
-    Native.arange(dim * 1.0 - 1.0, -1.0, -1.0, {:s, 32}, s)
+  defp reverse_indices(dim, w) do
+    Native.arange(w, dim * 1.0 - 1.0, -1.0, -1.0, {:s, 32})
   end
 
   @impl true
   def concatenate(%T{} = out, tensors, axis) do
-    s = stream_index()
+    w = worker()
     refs = Enum.map(tensors, &ref/1)
-    Native.concatenate(refs, axis, s) |> wrap(out, s)
+    Native.concatenate(w, refs, axis) |> wrap(out, w)
   end
 
   @impl true
   def stack(%T{} = out, tensors, axis) do
-    s = stream_index()
+    w = worker()
     refs = Enum.map(tensors, &ref/1)
-    Native.stack(refs, axis, s) |> wrap(out, s)
+    Native.stack(w, refs, axis) |> wrap(out, w)
   end
 
   # =================================================================
@@ -622,10 +595,10 @@ defmodule Emily.Backend do
     # Nx passes starts as either integers or scalar tensors (dynamic
     # slicing). MLX's slice takes integer bounds; under the evaluator
     # we materialise scalar-tensor starts to their concrete value.
-    s = stream_index()
+    w = worker()
     starts = Enum.map(starts, &slice_start/1)
     stops = Enum.zip_with(starts, lengths, fn st, l -> st + l end)
-    Native.slice(ref(t), starts, stops, strides, s) |> wrap(out, s)
+    Native.slice(w, ref(t), starts, stops, strides) |> wrap(out, w)
   end
 
   defp slice_start(i) when is_integer(i), do: i
@@ -641,25 +614,24 @@ defmodule Emily.Backend do
   # within `defn`).
   @impl true
   def put_slice(%T{type: type} = out, %T{} = t, start_indices, %T{} = slice) do
-    s = stream_index()
+    w = worker()
     starts = Enum.map(start_indices, &slice_start/1)
-    src_ref = Native.astype(ref(t), type, s)
-    update_ref = Native.astype(ref(slice), type, s)
-    Native.slice_update(src_ref, update_ref, starts, s) |> wrap(out, s)
+    src_ref = Native.astype(w, ref(t), type)
+    update_ref = Native.astype(w, ref(slice), type)
+    Native.slice_update(w, src_ref, update_ref, starts) |> wrap(out, w)
   end
 
   @impl true
   def select(%T{} = out, pred, on_true, on_false) do
-    s = stream_index()
-    # MLX where expects a bool condition.
-    cond_ref = Native.astype(ref(pred), {:pred, 1}, s)
-    Native.where(cond_ref, ref(on_true), ref(on_false), s) |> wrap(out, s)
+    w = worker()
+    cond_ref = Native.astype(w, ref(pred), {:pred, 1})
+    Native.where(w, cond_ref, ref(on_true), ref(on_false)) |> wrap(out, w)
   end
 
   @impl true
   def clip(%T{} = out, t, min_t, max_t) do
-    s = stream_index()
-    Native.clip(ref(t), ref(min_t), ref(max_t), s) |> wrap(out, s)
+    w = worker()
+    Native.clip(w, ref(t), ref(min_t), ref(max_t)) |> wrap(out, w)
   end
 
   # gather: Nx's gather takes a multi-dimensional index tensor whose
@@ -670,29 +642,21 @@ defmodule Emily.Backend do
   def gather(out, input, indices, opts) do
     axes = opts[:axes]
     indices_shape = Tuple.to_list(indices.shape)
-    s = stream_index()
+    w = worker()
 
     cond do
       match?([_], axes) ->
         [axis] = axes
-        idx_ref = ref(indices) |> Native.astype({:s, 32}, s)
-        # Reshape to `out.shape`: Nx gather with axes=[a] passes indices
-        # of shape `{..., 1}`, so MLX take produces the Nx batch shape
-        # with an extra trailing 1 (e.g. `{3, 1, D}` not `{3, D}`). Nx
-        # metadata wants the squeezed form, and so do downstream MLX ops
-        # that read the ref shape (e.g. tensordot).
-        Native.take(ref(input), idx_ref, axis, s)
-        |> Native.reshape(Tuple.to_list(out.shape), s)
-        |> wrap(out, s)
+        idx_ref = Native.astype(w, ref(indices), {:s, 32})
+        r = Native.take(w, ref(input), idx_ref, axis)
+        Native.reshape(w, r, Tuple.to_list(out.shape)) |> wrap(out, w)
 
       scatter_gather_compatible?(indices_shape, axes) ->
-        idx_refs = split_indices_per_axis(ref(indices), indices_shape, length(axes), s)
+        idx_refs = split_indices_per_axis(ref(indices), indices_shape, length(axes), w)
         slice_sizes = slice_sizes_for_gather(input.shape, axes)
 
-        ref(input)
-        |> Native.gather(idx_refs, axes, slice_sizes, s)
-        |> Native.reshape(Tuple.to_list(out.shape), s)
-        |> wrap(out, s)
+        r = Native.gather(w, ref(input), idx_refs, axes, slice_sizes)
+        Native.reshape(w, r, Tuple.to_list(out.shape)) |> wrap(out, w)
 
       true ->
         via_binary(out, [input, indices], &Nx.gather(&1, &2, opts))
@@ -713,10 +677,10 @@ defmodule Emily.Backend do
       ] do
     @impl true
     def unquote(nx_name)(out, t, opts) do
-      s = stream_index()
+      w = worker()
       axes = reduction_axes(opts, t)
       keep = opts[:keep_axes] || false
-      Native.unquote(native_name)(ref(t), axes, keep, s) |> wrap(out, s)
+      Native.unquote(native_name)(w, ref(t), axes, keep) |> wrap(out, w)
     end
   end
 
@@ -735,26 +699,22 @@ defmodule Emily.Backend do
   # if `out.shape` has the same rank as the input, the axis was kept.
   @impl true
   def argmax(%T{} = out, t, opts) do
-    s = stream_index()
+    w = worker()
     axis = opts[:axis] || 0
     keep = tuple_size(out.shape) == tuple_size(t.shape)
 
-    ref(t)
-    |> Native.argmax(axis, keep, s)
-    |> Native.astype(out.type, s)
-    |> wrap(out, s)
+    r = Native.argmax(w, ref(t), axis, keep)
+    Native.astype(w, r, out.type) |> wrap(out, w)
   end
 
   @impl true
   def argmin(%T{} = out, t, opts) do
-    s = stream_index()
+    w = worker()
     axis = opts[:axis] || 0
     keep = tuple_size(out.shape) == tuple_size(t.shape)
 
-    ref(t)
-    |> Native.argmin(axis, keep, s)
-    |> Native.astype(out.type, s)
-    |> wrap(out, s)
+    r = Native.argmin(w, ref(t), axis, keep)
+    Native.astype(w, r, out.type) |> wrap(out, w)
   end
 
   # Cumulative reductions are optional callbacks in Nx. We implement
@@ -780,8 +740,8 @@ defmodule Emily.Backend do
       rank = tuple_size(t.shape)
 
       if axis == rank - 1 do
-        s = stream_index()
-        Native.unquote(native_name)(ref(t), axis, reverse, true, s) |> wrap(out, s)
+        w = worker()
+        Native.unquote(native_name)(w, ref(t), axis, reverse, true) |> wrap(out, w)
       else
         nx_fun = unquote(nx_name)
         via_binary(out, [t], &apply(Nx, nx_fun, [&1, opts]))
@@ -799,8 +759,8 @@ defmodule Emily.Backend do
   # Nx's canonical `batch ++ free_a ++ free_b` layout.
   @impl true
   def dot(%T{} = out, a, contract_a, [], b, contract_b, []) do
-    s = stream_index()
-    Native.tensordot(ref(a), ref(b), contract_a, contract_b, s) |> wrap(out, s)
+    w = worker()
+    Native.tensordot(w, ref(a), ref(b), contract_a, contract_b) |> wrap(out, w)
   end
 
   def dot(%T{type: type} = out, a, contract_a, batch_a, b, contract_b, batch_b) do
@@ -845,25 +805,18 @@ defmodule Emily.Backend do
     n = dim_product(free_b, bs)
     k_prod = dim_product(contract_a, as)
 
-    s = stream_index()
+    w = worker()
     perm_a = batch_a ++ free_a ++ contract_a
     perm_b = batch_a ++ contract_b ++ free_b
 
-    ra =
-      a
-      |> ref()
-      |> Native.transpose(perm_a, s)
-      |> Native.reshape([b_prod, m, k_prod], s)
+    ra = Native.transpose(w, ref(a), perm_a)
+    ra = Native.reshape(w, ra, [b_prod, m, k_prod])
 
-    rb =
-      b
-      |> ref()
-      |> Native.transpose(perm_b, s)
-      |> Native.reshape([b_prod, k_prod, n], s)
+    rb = Native.transpose(w, ref(b), perm_b)
+    rb = Native.reshape(w, rb, [b_prod, k_prod, n])
 
-    Native.matmul(ra, rb, s)
-    |> Native.reshape(shape_list(out_shape), s)
-    |> wrap(out, s)
+    r = Native.matmul(w, ra, rb)
+    Native.reshape(w, r, shape_list(out_shape)) |> wrap(out, w)
   end
 
   defp dim_product(axes, shape), do: Enum.reduce(axes, 1, &(elem(shape, &1) * &2))
@@ -874,62 +827,56 @@ defmodule Emily.Backend do
 
   @impl true
   def sort(%T{} = out, t, opts) do
-    s = stream_index()
+    w = worker()
     axis = opts[:axis] || 0
     direction = opts[:direction] || :asc
 
-    sorted = Native.sort(ref(t), axis, s)
+    sorted = Native.sort(w, ref(t), axis)
 
     case direction do
-      :asc -> sorted |> wrap(out, s)
-      :desc -> flip_axis(sorted, t.shape, axis, s) |> wrap(out, s)
+      :asc -> wrap(sorted, out, w)
+      :desc -> flip_axis(sorted, t.shape, axis, w) |> wrap(out, w)
     end
   end
 
   @impl true
   def argsort(%T{} = out, t, opts) do
-    s = stream_index()
+    w = worker()
     axis = opts[:axis] || 0
     direction = opts[:direction] || :asc
 
-    idx = Native.argsort(ref(t), axis, s)
+    idx = Native.argsort(w, ref(t), axis)
 
     idx =
       case direction do
         :asc -> idx
-        :desc -> flip_axis(idx, t.shape, axis, s)
+        :desc -> flip_axis(idx, t.shape, axis, w)
       end
 
-    idx |> Native.astype(out.type, s) |> wrap(out, s)
+    Native.astype(w, idx, out.type) |> wrap(out, w)
   end
 
-  # Flip a single axis by take-with-reversed-indices. Same reasoning
-  # as `reverse/3`.
-  defp flip_axis(ref, shape, axis, s) do
+  defp flip_axis(ref, shape, axis, w) do
     dim = elem(shape, axis)
-    Native.take(ref, reverse_indices(dim, s), axis, s)
+    Native.take(w, ref, reverse_indices(dim, w), axis)
   end
 
-  # MLX topk returns k largest values along the last axis, unsorted;
-  # Nx expects them sorted descending.
   @impl true
   def top_k(%T{} = out, t, opts) do
-    s = stream_index()
+    w = worker()
     k = opts[:k]
     axis = tuple_size(t.shape) - 1
 
-    ref(t)
-    |> Native.topk(k, -1, s)
-    |> Native.sort(axis, s)
-    |> flip_axis(out.shape, axis, s)
-    |> wrap(out, s)
+    r = Native.topk(w, ref(t), k, -1)
+    r = Native.sort(w, r, axis)
+    flip_axis(r, out.shape, axis, w) |> wrap(out, w)
   end
 
   # all_close with absolute/relative tolerance:
   # all(abs(a - b) <= atol + rtol * abs(b)).
   @impl true
   def all_close(%T{} = out, a, b, opts) do
-    s = stream_index()
+    w = worker()
     rtol = opts[:rtol] || 1.0e-5
     atol = opts[:atol] || 1.0e-8
     equal_nan = opts[:equal_nan] || false
@@ -937,46 +884,46 @@ defmodule Emily.Backend do
     t = Nx.Type.merge(a.type, b.type) |> Nx.Type.to_floating()
     check_dtype!(t)
 
-    ra = Native.astype(ref(a), t, s)
-    rb = Native.astype(ref(b), t, s)
+    ra = Native.astype(w, ref(a), t)
+    rb = Native.astype(w, ref(b), t)
 
-    diff = Native.abs(Native.subtract(ra, rb, s), s)
+    diff = Native.abs(w, Native.subtract(w, ra, rb))
 
     tol =
       Native.add(
+        w,
         scalar_ref(atol, t),
-        Native.multiply(scalar_ref(rtol, t), Native.abs(rb, s), s),
-        s
+        Native.multiply(w, scalar_ref(rtol, t), Native.abs(w, rb))
       )
 
-    close = Native.less_equal(diff, tol, s)
+    close = Native.less_equal(w, diff, tol)
 
     close =
       if equal_nan do
-        both_nan = Native.logical_and(Native.isnan(ra, s), Native.isnan(rb, s), s)
-        Native.logical_or(close, both_nan, s)
+        both_nan = Native.logical_and(w, Native.isnan(w, ra), Native.isnan(w, rb))
+        Native.logical_or(w, close, both_nan)
       else
         close
       end
 
     axes = Enum.to_list(0..(tuple_size(a.shape) - 1))
-    Native.all(close, axes, false, s) |> wrap(out, s)
+    Native.all(w, close, axes, false) |> wrap(out, w)
   end
 
   @impl true
   def take(%T{} = out, input, indices, opts) do
-    s = stream_index()
+    w = worker()
     axis = opts[:axis] || 0
-    idx_ref = ref(indices) |> Native.astype({:s, 32}, s)
-    Native.take(ref(input), idx_ref, axis, s) |> wrap(out, s)
+    idx_ref = Native.astype(w, ref(indices), {:s, 32})
+    Native.take(w, ref(input), idx_ref, axis) |> wrap(out, w)
   end
 
   @impl true
   def take_along_axis(%T{} = out, input, indices, opts) do
-    s = stream_index()
+    w = worker()
     axis = opts[:axis] || 0
-    idx_ref = ref(indices) |> Native.astype({:s, 32}, s)
-    Native.take_along_axis(ref(input), idx_ref, axis, s) |> wrap(out, s)
+    idx_ref = Native.astype(w, ref(indices), {:s, 32})
+    Native.take_along_axis(w, ref(input), idx_ref, axis) |> wrap(out, w)
   end
 
   # =================================================================
@@ -985,34 +932,34 @@ defmodule Emily.Backend do
 
   @impl true
   def fft(%T{} = out, t, opts) do
-    s = stream_index()
+    w = worker()
     length = opts[:length]
     axis = tuple_size(t.shape) - 1
-    Native.fftn(ref(t), [length], [axis], s) |> wrap(out, s)
+    Native.fftn(w, ref(t), [length], [axis]) |> wrap(out, w)
   end
 
   @impl true
   def ifft(%T{} = out, t, opts) do
-    s = stream_index()
+    w = worker()
     length = opts[:length]
     axis = tuple_size(t.shape) - 1
-    Native.ifftn(ref(t), [length], [axis], s) |> wrap(out, s)
+    Native.ifftn(w, ref(t), [length], [axis]) |> wrap(out, w)
   end
 
   @impl true
   def fft2(%T{} = out, t, opts) do
-    s = stream_index()
+    w = worker()
     lengths = opts[:lengths]
     axes = opts[:axes]
-    Native.fftn(ref(t), lengths, axes, s) |> wrap(out, s)
+    Native.fftn(w, ref(t), lengths, axes) |> wrap(out, w)
   end
 
   @impl true
   def ifft2(%T{} = out, t, opts) do
-    s = stream_index()
+    w = worker()
     lengths = opts[:lengths]
     axes = opts[:axes]
-    Native.ifftn(ref(t), lengths, axes, s) |> wrap(out, s)
+    Native.ifftn(w, ref(t), lengths, axes) |> wrap(out, w)
   end
 
   # =================================================================
@@ -1040,7 +987,7 @@ defmodule Emily.Backend do
         via_binary(out, [input, kernel], &Nx.conv(&1, &2, opts))
 
       true ->
-        s = stream_index()
+        w = worker()
         ip = opts[:input_permutation]
         kp = opts[:kernel_permutation]
         op = opts[:output_permutation]
@@ -1052,22 +999,25 @@ defmodule Emily.Backend do
         nhwc_to_nchw = [0, rank - 1] ++ Enum.to_list(1..(rank - 2)//1)
         inv_op = invert_permutation(op)
 
-        ir = input |> ref() |> Native.astype(out.type, s) |> Native.transpose(input_to_nhwc, s)
-        kr = kernel |> ref() |> Native.astype(out.type, s) |> Native.transpose(kernel_to_ohwi, s)
+        ir = Native.transpose(w, Native.astype(w, ref(input), out.type), input_to_nhwc)
+        kr = Native.transpose(w, Native.astype(w, ref(kernel), out.type), kernel_to_ohwi)
 
-        ir
-        |> Native.conv_general(
-          kr,
-          opts[:strides],
-          {lows, highs},
-          {opts[:kernel_dilation], opts[:input_dilation]},
-          opts[:feature_group_size],
-          false,
-          s
-        )
-        |> Native.transpose(nhwc_to_nchw, s)
-        |> Native.transpose(inv_op, s)
-        |> wrap(out, s)
+        conv_result =
+          Native.conv_general(
+            w,
+            ir,
+            kr,
+            opts[:strides],
+            {lows, highs},
+            {opts[:kernel_dilation], opts[:input_dilation]},
+            opts[:feature_group_size],
+            false
+          )
+
+        conv_result
+        |> then(&Native.transpose(w, &1, nhwc_to_nchw))
+        |> then(&Native.transpose(w, &1, inv_op))
+        |> wrap(out, w)
     end
   end
 
@@ -1189,13 +1139,13 @@ defmodule Emily.Backend do
     indices_shape = Tuple.to_list(indices.shape)
 
     if scatter_gather_compatible?(indices_shape, axes) do
-      s = stream_index()
-      idx_refs = split_indices_per_axis(ref(indices), indices_shape, length(axes), s)
+      w = worker()
+      idx_refs = split_indices_per_axis(ref(indices), indices_shape, length(axes), w)
       updates_shape = updates_shape_for_scatter(indices_shape, t.shape, axes)
-      updates_ref = ref(updates) |> Native.reshape(updates_shape, s)
+      updates_ref = Native.reshape(w, ref(updates), updates_shape)
 
-      apply(Native, native_fun, [ref(t), idx_refs, updates_ref, axes, s])
-      |> wrap(out, s)
+      apply(Native, native_fun, [w, ref(t), idx_refs, updates_ref, axes])
+      |> wrap(out, w)
     else
       via_binary(out, [t, indices, updates], fallback)
     end
@@ -1211,7 +1161,7 @@ defmodule Emily.Backend do
 
   # Split an {..., R} index tensor into R per-axis index tensors, each
   # of shape equal to the leading batch (last axis dropped).
-  defp split_indices_per_axis(indices_ref, indices_shape, n_axes, s) do
+  defp split_indices_per_axis(indices_ref, indices_shape, n_axes, w) do
     rank = length(indices_shape)
     last_axis = rank - 1
     batch_shape = Enum.take(indices_shape, last_axis)
@@ -1219,10 +1169,9 @@ defmodule Emily.Backend do
     batch_zeros = List.duplicate(0, last_axis)
 
     for i <- 0..(n_axes - 1) do
-      indices_ref
-      |> Native.slice(batch_zeros ++ [i], batch_shape ++ [i + 1], strides, s)
-      |> Native.squeeze([last_axis], s)
-      |> Native.astype({:s, 32}, s)
+      sliced = Native.slice(w, indices_ref, batch_zeros ++ [i], batch_shape ++ [i + 1], strides)
+      squeezed = Native.squeeze(w, sliced, [last_axis])
+      Native.astype(w, squeezed, {:s, 32})
     end
   end
 
@@ -1271,84 +1220,84 @@ defmodule Emily.Backend do
 
   @doc false
   def fast_rms_norm(%T{} = out, x, weight, opts) do
-    s = stream_index()
-    Native.fast_rms_norm(ref(x), ref(weight), opts[:eps] * 1.0, s) |> wrap(out, s)
+    w = worker()
+    Native.fast_rms_norm(w, ref(x), ref(weight), opts[:eps] * 1.0) |> wrap(out, w)
   end
 
   @doc false
   def fast_layer_norm(%T{} = out, x, weight, bias, opts) do
-    s = stream_index()
-    Native.fast_layer_norm(ref(x), ref(weight), ref(bias), opts[:eps] * 1.0, s) |> wrap(out, s)
+    w = worker()
+    Native.fast_layer_norm(w, ref(x), ref(weight), ref(bias), opts[:eps] * 1.0) |> wrap(out, w)
   end
 
   @doc false
   def fast_rope(%T{} = out, x, offset, opts) do
-    s = stream_index()
+    w = worker()
 
     ref =
       Native.fast_rope(
+        w,
         ref(x),
         opts[:dims],
         opts[:traditional],
         opts[:base] * 1.0,
         opts[:scale] * 1.0,
         ref(offset),
-        nil,
-        s
+        nil
       )
 
-    wrap(ref, out, s)
+    wrap(ref, out, w)
   end
 
   @doc false
   def fast_rope_with_freqs(%T{} = out, x, offset, freqs, opts) do
-    s = stream_index()
+    w = worker()
 
     ref =
       Native.fast_rope(
+        w,
         ref(x),
         opts[:dims],
         opts[:traditional],
         nil,
         opts[:scale] * 1.0,
         ref(offset),
-        ref(freqs),
-        s
+        ref(freqs)
       )
 
-    wrap(ref, out, s)
+    wrap(ref, out, w)
   end
 
   @doc false
   def fast_scaled_dot_product_attention(%T{} = out, q, k, v, opts) do
-    s = stream_index()
+    w = worker()
     mask_mode = if opts[:causal], do: "causal", else: ""
 
     Native.fast_scaled_dot_product_attention(
+      w,
       ref(q),
       ref(k),
       ref(v),
       opts[:scale] * 1.0,
       mask_mode,
-      [],
-      s
+      []
     )
-    |> wrap(out, s)
+    |> wrap(out, w)
   end
 
   @doc false
   def fast_scaled_dot_product_attention_with_mask(%T{} = out, q, k, v, mask, opts) do
-    s = stream_index()
+    w = worker()
 
     Native.fast_scaled_dot_product_attention(
+      w,
       ref(q),
       ref(k),
       ref(v),
       opts[:scale] * 1.0,
       "array",
-      [ref(mask)],
-      s
+      [ref(mask)]
     )
-    |> wrap(out, s)
+    |> wrap(out, w)
   end
 end

@@ -11,17 +11,15 @@ defmodule Emily.Soak.StreamConcurrencyTest do
 
   @moduletag :soak
 
-  @workers 4
-  @iters_per_worker 50
+  @workers 16
+  @iters_per_worker 100
 
   defp shared_weights do
-    s = Emily.Stream.new(:gpu)
-
-    Emily.Stream.with_stream(s, fn ->
-      w = Nx.iota({64, 64}, type: {:f, 32}, backend: Emily.Backend) |> Nx.divide(4096.0)
-      b = Nx.iota({64}, type: {:f, 32}, backend: Emily.Backend) |> Nx.divide(64.0)
-      {w, b}
-    end)
+    w = Nx.iota({64, 64}, type: {:f, 32}, backend: Emily.Backend) |> Nx.divide(4096.0)
+    b = Nx.iota({64}, type: {:f, 32}, backend: Emily.Backend) |> Nx.divide(64.0)
+    Nx.to_binary(w)
+    Nx.to_binary(b)
+    {w, b}
   end
 
   defp workload(x, {w, b}, stream) do
@@ -65,7 +63,7 @@ defmodule Emily.Soak.StreamConcurrencyTest do
           |> Enum.uniq()
         end,
         max_concurrency: @workers,
-        timeout: 60_000
+        timeout: 120_000
       )
       |> Enum.map(fn {:ok, v} -> v end)
 

@@ -1,12 +1,14 @@
 // Unary elementwise ops. All take a Tensor and return a Tensor.
 
 #include "../emily/tensor.hpp"
+#include "../emily/worker.hpp"
 
 #include <fine.hpp>
 #include <mlx/mlx.h>
 
 namespace mx = mlx::core;
 using emily::Tensor;
+using emily::WorkerThread;
 using emily::wrap;
 
 // Anonymous namespace so our NIF names (log1p, sqrt, sin, etc.) don't
@@ -15,8 +17,12 @@ namespace {
 
 #define EMILY_UNARY(nif_name, mlx_fn)                                          \
   fine::ResourcePtr<Tensor> nif_name(                                          \
-      ErlNifEnv *, fine::ResourcePtr<Tensor> a, int64_t s) {                   \
-    return wrap(mlx_fn(a->array, emily::resolve_stream(s)));                   \
+      ErlNifEnv *,                                                             \
+      fine::ResourcePtr<WorkerThread> w,                                       \
+      fine::ResourcePtr<Tensor> a) {                                           \
+    return w->run_sync([&](mx::Stream &s) {                                    \
+      return wrap(mlx_fn(a->array, s));                                        \
+    });                                                                        \
   }                                                                            \
   FINE_NIF(nif_name, 0);
 
@@ -62,11 +68,14 @@ EMILY_UNARY(stop_gradient,   mx::stop_gradient)
 
 #undef EMILY_UNARY
 
-// round/2 takes an extra decimals arg; handled separately.
 fine::ResourcePtr<Tensor> round(
-    ErlNifEnv *, fine::ResourcePtr<Tensor> a, int64_t decimals, int64_t s) {
-  return wrap(mx::round(a->array, static_cast<int>(decimals),
-                        emily::resolve_stream(s)));
+    ErlNifEnv *,
+    fine::ResourcePtr<WorkerThread> w,
+    fine::ResourcePtr<Tensor> a,
+    int64_t decimals) {
+  return w->run_sync([&](mx::Stream &s) {
+    return wrap(mx::round(a->array, static_cast<int>(decimals), s));
+  });
 }
 FINE_NIF(round, 0);
 

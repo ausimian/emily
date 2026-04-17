@@ -23,18 +23,14 @@ jobs:
       MIX_ENV: test
     steps:
       - uses: actions/checkout@v4
+        with:
+          submodules: recursive
 
       - name: Setup Beam
         uses: erlef/setup-beam@v1
         with:
           version-file: .tool-versions
           version-type: strict
-
-      - name: Cache MLX prebuilt
-        uses: actions/cache@v4
-        with:
-          path: ~/Library/Caches/emily
-          key: mlx-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('mix.exs') }}
 
       - name: Cache deps
         uses: actions/cache@v4
@@ -47,7 +43,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: _build
-          key: build-${{ runner.os }}-${{ hashFiles('mix.lock', 'c_src/**', 'Makefile', '.tool-versions') }}
+          key: build-${{ runner.os }}-${{ hashFiles('mix.lock', 'c_src/**', 'Makefile', '.tool-versions', '.gitmodules') }}
           restore-keys: build-${{ runner.os }}-
 
       # The Bumblebee cache holds tiny-random HuggingFace fixtures

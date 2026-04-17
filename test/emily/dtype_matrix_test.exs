@@ -8,6 +8,8 @@ defmodule Emily.DtypeMatrixTest do
 
   use ExUnit.Case, async: true
 
+  import Emily.TensorHelpers, only: [worker: 0]
+
   alias Emily.Native
 
   @float_dtypes [{:f, 32}, {:f, 16}, {:bf, 16}]
@@ -23,16 +25,14 @@ defmodule Emily.DtypeMatrixTest do
   @all_numeric @float_dtypes ++ @int_dtypes
 
   defp any_dtype(shape, dtype) do
-    # Use `ones` as the universal constructor — supported for every
-    # numeric dtype MLX cares about.
-    Native.ones(shape, dtype, -1)
+    Native.ones(worker(), shape, dtype)
   end
 
   describe "creation" do
     test "zeros / ones across dtypes" do
       for dtype <- @all_numeric do
-        z = Native.zeros([4], dtype, -1)
-        o = Native.ones([4], dtype, -1)
+        z = Native.zeros(worker(), [4], dtype)
+        o = Native.ones(worker(), [4], dtype)
         assert Native.shape(z) == [4]
         assert Native.dtype(z) == dtype
         assert Native.shape(o) == [4]
@@ -45,7 +45,7 @@ defmodule Emily.DtypeMatrixTest do
     test "astype across the numeric matrix" do
       for src <- @all_numeric, dst <- @all_numeric do
         t = any_dtype([4], src)
-        out = Native.astype(t, dst, -1)
+        out = Native.astype(worker(), t, dst)
 
         assert Native.dtype(out) == dst,
                "astype #{inspect(src)} -> #{inspect(dst)} yielded #{inspect(Native.dtype(out))}"
@@ -62,7 +62,7 @@ defmodule Emily.DtypeMatrixTest do
     test "transcendentals run across float dtypes" do
       for dtype <- @float_dtypes, op <- @float_unary do
         t = any_dtype([4], dtype)
-        out = apply(Native, op, [t, -1])
+        out = apply(Native, op, [worker(), t])
 
         assert Native.dtype(out) == dtype,
                "#{op} on #{inspect(dtype)} yielded #{inspect(Native.dtype(out))}"
@@ -82,7 +82,7 @@ defmodule Emily.DtypeMatrixTest do
           :skip
         else
           t = any_dtype([4], dtype)
-          out = apply(Native, op, [t, -1])
+          out = apply(Native, op, [worker(), t])
           assert Native.dtype(out) == dtype
           assert Native.shape(out) == [4]
         end
@@ -97,7 +97,7 @@ defmodule Emily.DtypeMatrixTest do
       for dtype <- @all_numeric, op <- @bin_arith do
         a = any_dtype([4], dtype)
         b = any_dtype([4], dtype)
-        out = apply(Native, op, [a, b, -1])
+        out = apply(Native, op, [worker(), a, b])
         assert Native.dtype(out) == dtype
         assert Native.shape(out) == [4]
       end
@@ -108,7 +108,7 @@ defmodule Emily.DtypeMatrixTest do
     test "sum / mean / max / min reduce to scalar across float dtypes" do
       for dtype <- @float_dtypes, op <- [:sum, :mean, :max, :min] do
         t = any_dtype([2, 3], dtype)
-        out = apply(Native, op, [t, [0, 1], false, -1])
+        out = apply(Native, op, [worker(), t, [0, 1], false])
         assert Native.dtype(out) == dtype
         assert Native.shape(out) == []
       end
@@ -120,7 +120,7 @@ defmodule Emily.DtypeMatrixTest do
       for dtype <- @all_numeric, op <- [:equal, :less, :greater] do
         a = any_dtype([4], dtype)
         b = any_dtype([4], dtype)
-        out = apply(Native, op, [a, b, -1])
+        out = apply(Native, op, [worker(), a, b])
         assert Native.dtype(out) == {:pred, 1}
         assert Native.shape(out) == [4]
       end
@@ -130,7 +130,7 @@ defmodule Emily.DtypeMatrixTest do
   describe "unsupported dtypes raise clearly" do
     test "f64 is rejected with a pointer at f32" do
       assert_raise ArgumentError, ~r/unsupported dtype/, fn ->
-        Native.zeros([2], {:f, 64}, -1)
+        Native.zeros(worker(), [2], {:f, 64})
       end
     end
   end

@@ -2,6 +2,7 @@
 // quantization primitives (quantize / dequantize / quantized_matmul).
 
 #include "../emily/tensor.hpp"
+#include "../emily/worker.hpp"
 
 #include <fine.hpp>
 #include <mlx/mlx.h>
@@ -12,6 +13,7 @@
 
 namespace mx = mlx::core;
 using emily::Tensor;
+using emily::WorkerThread;
 using emily::to_int_vec;
 using emily::wrap;
 
@@ -19,115 +21,104 @@ namespace {
 
 fine::ResourcePtr<Tensor> matmul(
     ErlNifEnv *,
+    fine::ResourcePtr<WorkerThread> w,
     fine::ResourcePtr<Tensor> a,
-    fine::ResourcePtr<Tensor> b,
-    int64_t s) {
-  return wrap(mx::matmul(a->array, b->array, emily::resolve_stream(s)));
+    fine::ResourcePtr<Tensor> b) {
+  return w->run_sync([&](mx::Stream &s) {
+    return wrap(mx::matmul(a->array, b->array, s));
+  });
 }
 FINE_NIF(matmul, 0);
 
-// tensordot/4: contract `a` over `axes_a` against `b` over `axes_b`.
 fine::ResourcePtr<Tensor> tensordot(
     ErlNifEnv *,
+    fine::ResourcePtr<WorkerThread> w,
     fine::ResourcePtr<Tensor> a,
     fine::ResourcePtr<Tensor> b,
     std::vector<int64_t> axes_a,
-    std::vector<int64_t> axes_b,
-    int64_t s) {
-  return wrap(mx::tensordot(
-      a->array, b->array, to_int_vec(axes_a), to_int_vec(axes_b),
-      emily::resolve_stream(s)));
+    std::vector<int64_t> axes_b) {
+  return w->run_sync([&](mx::Stream &s) {
+    return wrap(mx::tensordot(a->array, b->array, to_int_vec(axes_a),
+                              to_int_vec(axes_b), s));
+  });
 }
 FINE_NIF(tensordot, 0);
 
 fine::ResourcePtr<Tensor> outer(
     ErlNifEnv *,
+    fine::ResourcePtr<WorkerThread> w,
     fine::ResourcePtr<Tensor> a,
-    fine::ResourcePtr<Tensor> b,
-    int64_t s) {
-  return wrap(mx::outer(a->array, b->array, emily::resolve_stream(s)));
+    fine::ResourcePtr<Tensor> b) {
+  return w->run_sync([&](mx::Stream &s) {
+    return wrap(mx::outer(a->array, b->array, s));
+  });
 }
 FINE_NIF(outer, 0);
 
 fine::ResourcePtr<Tensor> inner(
     ErlNifEnv *,
+    fine::ResourcePtr<WorkerThread> w,
     fine::ResourcePtr<Tensor> a,
-    fine::ResourcePtr<Tensor> b,
-    int64_t s) {
-  return wrap(mx::inner(a->array, b->array, emily::resolve_stream(s)));
+    fine::ResourcePtr<Tensor> b) {
+  return w->run_sync([&](mx::Stream &s) {
+    return wrap(mx::inner(a->array, b->array, s));
+  });
 }
 FINE_NIF(inner, 0);
 
-// Affine quantization along the last axis.
-//
-// Returns {w_q, scales, biases}:
-//   - w_q is packed uint32 with (last_dim * bits / 32) elements per row
-//   - scales and biases share shape (..., last_dim / group_size), dtype
-//     matching the input.
-//
-// MLX requires last_dim % group_size == 0; bits ∈ {2, 3, 4, 6, 8}.
 std::tuple<fine::ResourcePtr<Tensor>,
            fine::ResourcePtr<Tensor>,
            fine::ResourcePtr<Tensor>>
 quantize(
     ErlNifEnv *,
-    fine::ResourcePtr<Tensor> w,
+    fine::ResourcePtr<WorkerThread> w,
+    fine::ResourcePtr<Tensor> wt,
     int64_t group_size,
-    int64_t bits,
-    int64_t s) {
-  auto triple = mx::quantize(
-      w->array, static_cast<int>(group_size), static_cast<int>(bits),
-      emily::resolve_stream(s));
-  return std::make_tuple(
-      wrap(std::move(std::get<0>(triple))),
-      wrap(std::move(std::get<1>(triple))),
-      wrap(std::move(std::get<2>(triple))));
+    int64_t bits) {
+  return w->run_sync([&](mx::Stream &s) {
+    auto result = mx::quantize(wt->array, static_cast<int>(group_size),
+                               static_cast<int>(bits), "affine",
+                               std::nullopt, s);
+    return std::make_tuple(wrap(std::move(result[0])),
+                           wrap(std::move(result[1])),
+                           wrap(std::move(result[2])));
+  });
 }
 FINE_NIF(quantize, 0);
 
-// Inverse of quantize. Reconstructs a dense tensor from packed w_q plus
-// per-group scales and biases.
 fine::ResourcePtr<Tensor> dequantize(
     ErlNifEnv *,
+    fine::ResourcePtr<WorkerThread> w,
     fine::ResourcePtr<Tensor> w_q,
     fine::ResourcePtr<Tensor> scales,
     fine::ResourcePtr<Tensor> biases,
     int64_t group_size,
-    int64_t bits,
-    int64_t s) {
-  return wrap(mx::dequantize(
-      w_q->array,
-      scales->array,
-      biases->array,
-      static_cast<int>(group_size),
-      static_cast<int>(bits),
-      emily::resolve_stream(s)));
+    int64_t bits) {
+  return w->run_sync([&](mx::Stream &s) {
+    return wrap(mx::dequantize(w_q->array, scales->array, biases->array,
+                               static_cast<int>(group_size),
+                               static_cast<int>(bits), "affine",
+                               std::nullopt, std::nullopt, s));
+  });
 }
 FINE_NIF(dequantize, 0);
 
-// Matmul against a quantized weight. `transpose` is wired through
-// explicitly because AWQ-style packed checkpoints ship in a different
-// layout than freshly-quantized weights, and MLX's kernel selection
-// depends on the flag.
 fine::ResourcePtr<Tensor> quantized_matmul(
     ErlNifEnv *,
+    fine::ResourcePtr<WorkerThread> w,
     fine::ResourcePtr<Tensor> x,
     fine::ResourcePtr<Tensor> w_q,
     fine::ResourcePtr<Tensor> scales,
     fine::ResourcePtr<Tensor> biases,
     bool transpose,
     int64_t group_size,
-    int64_t bits,
-    int64_t s) {
-  return wrap(mx::quantized_matmul(
-      x->array,
-      w_q->array,
-      scales->array,
-      biases->array,
-      transpose,
-      static_cast<int>(group_size),
-      static_cast<int>(bits),
-      emily::resolve_stream(s)));
+    int64_t bits) {
+  return w->run_sync([&](mx::Stream &s) {
+    return wrap(mx::quantized_matmul(x->array, w_q->array, scales->array,
+                                     biases->array, transpose,
+                                     static_cast<int>(group_size),
+                                     static_cast<int>(bits), "affine", s));
+  });
 }
 FINE_NIF(quantized_matmul, 0);
 

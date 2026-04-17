@@ -1,12 +1,14 @@
 // Binary elementwise: arithmetic, compare, logical, bitwise.
 
 #include "../emily/tensor.hpp"
+#include "../emily/worker.hpp"
 
 #include <fine.hpp>
 #include <mlx/mlx.h>
 
 namespace mx = mlx::core;
 using emily::Tensor;
+using emily::WorkerThread;
 using emily::wrap;
 
 namespace {
@@ -14,10 +16,12 @@ namespace {
 #define EMILY_BINARY(nif_name, mlx_fn)                                         \
   fine::ResourcePtr<Tensor> nif_name(                                          \
       ErlNifEnv *,                                                             \
+      fine::ResourcePtr<WorkerThread> w,                                       \
       fine::ResourcePtr<Tensor> a,                                             \
-      fine::ResourcePtr<Tensor> b,                                             \
-      int64_t s) {                                                             \
-    return wrap(mlx_fn(a->array, b->array, emily::resolve_stream(s)));         \
+      fine::ResourcePtr<Tensor> b) {                                           \
+    return w->run_sync([&](mx::Stream &s) {                                    \
+      return wrap(mlx_fn(a->array, b->array, s));                              \
+    });                                                                        \
   }                                                                            \
   FINE_NIF(nif_name, 0);
 

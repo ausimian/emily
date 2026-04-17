@@ -1,6 +1,6 @@
 PRIV_DIR       := $(MIX_APP_PATH)/priv
 NIF_SO         := $(PRIV_DIR)/libemily.so
-MLX_STAGE_DIR  := $(PRIV_DIR)/mlx/lib
+METALLIB       := $(PRIV_DIR)/mlx.metallib
 
 BUILD_DIR := $(EMILY_CACHE_DIR)/build-$(EMILY_VERSION)
 
@@ -17,14 +17,18 @@ CXXFLAGS += -I$(ERTS_INCLUDE_DIR) -Ic_src
 # -Werror.
 CXXFLAGS += -isystem $(FINE_INCLUDE_DIR) -isystem $(MLX_INCLUDE_DIR)
 
-LDFLAGS  := -L$(MLX_LIB_DIR) -lmlx -shared
+# Static link: embed libmlx.a into the NIF and link system frameworks
+# that MLX depends on directly (previously resolved transitively through
+# the dylib).
+LDFLAGS  := -shared
+LDFLAGS  += $(MLX_LIB_DIR)/libmlx.a
 
 UNAME_S := $(shell uname -s)
 ifeq ($(UNAME_S),Darwin)
-    LDFLAGS += -undefined dynamic_lookup -flat_namespace -rpath @loader_path/mlx/lib
+    LDFLAGS += -undefined dynamic_lookup -flat_namespace
+    LDFLAGS += -framework Metal -framework Foundation -framework Accelerate
     JOBS    := $(shell sysctl -n hw.ncpu)
 else
-    LDFLAGS += -Wl,-rpath,'$$ORIGIN/mlx/lib'
     JOBS    := $(shell nproc)
 endif
 
@@ -43,7 +47,7 @@ MAKE_JOBS ?= $(JOBS)
 
 .PHONY: all clean bench-native
 
-all: $(NIF_SO)
+all: $(NIF_SO) $(METALLIB)
 
 # ------------------------------------------------------------------
 # bench-native: standalone C++ microbenchmarks under bench/native/.
@@ -61,8 +65,8 @@ $(BENCH_NATIVE_BIN): $(BENCH_NATIVE_SRC) | $(BUILD_DIR)
 	$(CXX) -std=c++17 -O3 -Wall -Wextra \
 	    -isystem $(MLX_INCLUDE_DIR) \
 	    $(BENCH_NATIVE_SRC) \
-	    -L$(MLX_LIB_DIR) -lmlx \
-	    -Wl,-rpath,$(MLX_LIB_DIR) \
+	    $(MLX_LIB_DIR)/libmlx.a \
+	    -framework Metal -framework Foundation -framework Accelerate \
 	    -o $(BENCH_NATIVE_BIN)
 
 bench-native: $(BENCH_NATIVE_BIN)
@@ -79,12 +83,14 @@ $(BUILD_DIR)/%.o: c_src/%.cpp $(HEADERS) | $(BUILD_DIR)
 	@mkdir -p $(dir $@)
 	$(CXX) $(CXXFLAGS) -c $< -o $@
 
-$(MLX_STAGE_DIR): | $(PRIV_DIR)
-	@mkdir -p $(MLX_STAGE_DIR)
-	@cp -a $(MLX_LIB_DIR)/. $(MLX_STAGE_DIR)/
-
-$(NIF_SO): $(OBJECTS) $(MLX_STAGE_DIR) | $(PRIV_DIR)
+$(NIF_SO): $(OBJECTS) | $(PRIV_DIR)
 	$(CXX) $(OBJECTS) -o $(NIF_SO) $(LDFLAGS)
 
+# MLX searches for mlx.metallib colocated with the loaded binary
+# (see vendor/mlx/mlx/backend/metal/device.cpp:load_default_library).
+# Stage the compiled shader library next to the NIF .so in priv/.
+$(METALLIB): $(MLX_LIB_DIR)/mlx.metallib | $(PRIV_DIR)
+	cp $< $@
+
 clean:
-	rm -rf $(BUILD_DIR) $(NIF_SO) $(PRIV_DIR)/mlx
+	rm -rf $(BUILD_DIR) $(NIF_SO) $(METALLIB)

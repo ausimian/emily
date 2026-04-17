@@ -696,34 +696,10 @@ Fixed by:
    thread-local default.
 
 The mutex serialises Metal dispatch at the cost of true concurrent
-GPU execution. See M15.5 (MLX upgrade) for the plan to restore
+GPU execution. See M14.5 (MLX upgrade) for the plan to restore
 concurrency via MLX's native thread-local `CommandEncoder` support.
 
-### M15 — Native linalg
-
-`lu`, `svd`, `qr`, `cholesky`, `triangular_solve`, `eigh`,
-`determinant`, and friends route through `via_binary` today. Correct,
-BinaryBackend-slow. MLX exposes most natively under `mx::linalg::*`.
-
-- Bind each available `mx::linalg::*` function as a Native NIF.
-- Replace the `via_binary` Backend callbacks with Native dispatch.
-- Document divergences (MLX's pivot strategy may differ from Nx's
-  reference; numerical conditioning thresholds may differ).
-
-**Testing**:
-- Native unit tests against hand-computed references for small
-  matrices (3×3, 4×4) where the answer is checkable.
-- Backend property tests vs. `Nx.BinaryBackend` with shape generators
-  biased toward well-conditioned inputs (random Gaussian → QR →
-  reconstruct). Document the conditioning-bound failure mode for
-  ill-conditioned cases.
-- Existing `via_binary` fallbacks for any op MLX doesn't implement
-  natively; add a fallback-coverage test for the residual.
-
-**Exit:** all `mx::linalg::*`-backed callbacks pass property suite;
-remaining `via_binary` linalg paths documented with rationale.
-
-### M15.5 — MLX upgrade (build from source)
+### M14.5 — MLX upgrade (build from source)
 
 Emily pins MLX 0.25.1 via pre-built binaries from `cocoa-xu/mlx-build`.
 MLX gained native thread-safety on `main` in April 2026 (thread-local
@@ -753,6 +729,30 @@ and removes the `safe_eval` mutex introduced in the post-M14 fix.
 
 **Exit:** concurrent soak tests pass without mutex; MLX build-from-source
 documented; stress test confirms concurrent Metal dispatch is stable.
+
+### M15 — Native linalg
+
+`lu`, `svd`, `qr`, `cholesky`, `triangular_solve`, `eigh`,
+`determinant`, and friends route through `via_binary` today. Correct,
+BinaryBackend-slow. MLX exposes most natively under `mx::linalg::*`.
+
+- Bind each available `mx::linalg::*` function as a Native NIF.
+- Replace the `via_binary` Backend callbacks with Native dispatch.
+- Document divergences (MLX's pivot strategy may differ from Nx's
+  reference; numerical conditioning thresholds may differ).
+
+**Testing**:
+- Native unit tests against hand-computed references for small
+  matrices (3×3, 4×4) where the answer is checkable.
+- Backend property tests vs. `Nx.BinaryBackend` with shape generators
+  biased toward well-conditioned inputs (random Gaussian → QR →
+  reconstruct). Document the conditioning-bound failure mode for
+  ill-conditioned cases.
+- Existing `via_binary` fallbacks for any op MLX doesn't implement
+  natively; add a fallback-coverage test for the residual.
+
+**Exit:** all `mx::linalg::*`-backed callbacks pass property suite;
+remaining `via_binary` linalg paths documented with rationale.
 
 ### M16 — Mixed-precision training
 

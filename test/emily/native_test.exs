@@ -15,30 +15,30 @@ defmodule Emily.NativeTest do
 
   describe "creation" do
     test "zeros/2" do
-      t = Native.zeros([2, 3], {:f, 32}, -1)
+      t = Native.zeros(worker(), [2, 3], {:f, 32})
       assert Native.shape(t) == [2, 3]
       assert Native.dtype(t) == {:f, 32}
       assert to_f32_list(t) == [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
     end
 
     test "ones/2" do
-      t = Native.ones([4], {:s, 32}, -1)
+      t = Native.ones(worker(), [4], {:s, 32})
       assert to_s32_list(t) == [1, 1, 1, 1]
     end
 
     test "full/3 broadcasts a scalar value" do
       v = f32_scalar(3.5)
-      t = Native.full([2, 2], v, {:f, 32}, -1)
+      t = Native.full(worker(), [2, 2], v, {:f, 32})
       assert to_f32_list(t) == [3.5, 3.5, 3.5, 3.5]
     end
 
     test "arange/4" do
-      t = Native.arange(0.0, 5.0, 1.0, {:s, 32}, -1)
+      t = Native.arange(worker(), 0.0, 5.0, 1.0, {:s, 32})
       assert to_s32_list(t) == [0, 1, 2, 3, 4]
     end
 
     test "eye/4" do
-      t = Native.eye(3, 3, 0, {:f, 32}, -1)
+      t = Native.eye(worker(), 3, 3, 0, {:f, 32})
       assert to_f32_list(t) == [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]
     end
   end
@@ -48,7 +48,7 @@ defmodule Emily.NativeTest do
   describe "cast" do
     test "astype: f32 -> s32" do
       t = f32([1.2, -2.7, 3.5], [3])
-      out = Native.astype(t, {:s, 32}, -1)
+      out = Native.astype(worker(), t, {:s, 32})
       assert Native.dtype(out) == {:s, 32}
       # MLX truncates toward zero on float->int cast.
       assert to_s32_list(out) == [1, -2, 3]
@@ -56,7 +56,7 @@ defmodule Emily.NativeTest do
 
     test "astype: s32 -> f32" do
       t = s32([1, 2, 3], [3])
-      out = Native.astype(t, {:f, 32}, -1)
+      out = Native.astype(worker(), t, {:f, 32})
       assert Native.dtype(out) == {:f, 32}
       assert to_f32_list(out) == [1.0, 2.0, 3.0]
     end
@@ -66,65 +66,74 @@ defmodule Emily.NativeTest do
 
   describe "unary elementwise" do
     test "negative" do
-      assert to_f32_list(Native.negative(f32([1.0, -2.0, 3.0], [3]), -1)) == [-1.0, 2.0, -3.0]
+      assert to_f32_list(Native.negative(worker(), f32([1.0, -2.0, 3.0], [3]))) == [
+               -1.0,
+               2.0,
+               -3.0
+             ]
     end
 
     test "abs" do
-      assert to_f32_list(Native.abs(f32([-1.5, 2.0, -0.0], [3]), -1)) == [1.5, 2.0, 0.0]
+      assert to_f32_list(Native.abs(worker(), f32([-1.5, 2.0, -0.0], [3]))) == [1.5, 2.0, 0.0]
     end
 
     test "sign" do
-      assert to_f32_list(Native.sign(f32([-2.0, 0.0, 3.0], [3]), -1)) == [-1.0, 0.0, 1.0]
+      assert to_f32_list(Native.sign(worker(), f32([-2.0, 0.0, 3.0], [3]))) == [-1.0, 0.0, 1.0]
     end
 
     test "floor / ceil / round" do
       x = f32([1.7, -1.7, 2.5], [3])
-      assert to_f32_list(Native.floor(x, -1)) == [1.0, -2.0, 2.0]
-      assert to_f32_list(Native.ceil(x, -1)) == [2.0, -1.0, 3.0]
+      assert to_f32_list(Native.floor(worker(), x)) == [1.0, -2.0, 2.0]
+      assert to_f32_list(Native.ceil(worker(), x)) == [2.0, -1.0, 3.0]
       # MLX's round rounds-half-to-even on exact halves when decimals=0.
-      assert to_f32_list(Native.round(x, 0, -1)) == [2.0, -2.0, 2.0]
+      assert to_f32_list(Native.round(worker(), x, 0)) == [2.0, -2.0, 2.0]
     end
 
     test "sqrt / rsqrt / square / reciprocal" do
       x = f32([4.0, 9.0], [2])
-      assert to_f32_list(Native.sqrt(x, -1)) == [2.0, 3.0]
-      assert_close(to_f32_list(Native.rsqrt(x, -1)), [0.5, 1.0 / 3.0])
-      assert to_f32_list(Native.square(x, -1)) == [16.0, 81.0]
-      assert_close(to_f32_list(Native.reciprocal(x, -1)), [0.25, 1.0 / 9.0])
+      assert to_f32_list(Native.sqrt(worker(), x)) == [2.0, 3.0]
+      assert_close(to_f32_list(Native.rsqrt(worker(), x)), [0.5, 1.0 / 3.0])
+      assert to_f32_list(Native.square(worker(), x)) == [16.0, 81.0]
+      assert_close(to_f32_list(Native.reciprocal(worker(), x)), [0.25, 1.0 / 9.0])
     end
 
     test "exp / expm1 / log / log1p / log2 / log10" do
       x = f32([1.0, 2.0], [2])
-      assert_close(to_f32_list(Native.exp(x, -1)), [:math.exp(1.0), :math.exp(2.0)])
-      assert_close(to_f32_list(Native.expm1(x, -1)), [:math.exp(1.0) - 1.0, :math.exp(2.0) - 1.0])
-      assert_close(to_f32_list(Native.log(x, -1)), [0.0, :math.log(2.0)])
-      assert_close(to_f32_list(Native.log1p(x, -1)), [:math.log(2.0), :math.log(3.0)])
-      assert_close(to_f32_list(Native.log2(x, -1)), [0.0, 1.0])
-      assert_close(to_f32_list(Native.log10(x, -1)), [0.0, :math.log10(2.0)])
+      assert_close(to_f32_list(Native.exp(worker(), x)), [:math.exp(1.0), :math.exp(2.0)])
+
+      assert_close(to_f32_list(Native.expm1(worker(), x)), [
+        :math.exp(1.0) - 1.0,
+        :math.exp(2.0) - 1.0
+      ])
+
+      assert_close(to_f32_list(Native.log(worker(), x)), [0.0, :math.log(2.0)])
+      assert_close(to_f32_list(Native.log1p(worker(), x)), [:math.log(2.0), :math.log(3.0)])
+      assert_close(to_f32_list(Native.log2(worker(), x)), [0.0, 1.0])
+      assert_close(to_f32_list(Native.log10(worker(), x)), [0.0, :math.log10(2.0)])
     end
 
     test "trig: sin / cos / tan" do
       x = f32([0.0, :math.pi() / 2], [2])
-      assert_close(to_f32_list(Native.sin(x, -1)), [0.0, 1.0], 1.0e-4)
-      assert_close(to_f32_list(Native.cos(x, -1)), [1.0, 0.0], 1.0e-4)
-      assert_close(to_f32_list(Native.tan(f32([0.0], [1]), -1)), [0.0])
+      assert_close(to_f32_list(Native.sin(worker(), x)), [0.0, 1.0], 1.0e-4)
+      assert_close(to_f32_list(Native.cos(worker(), x)), [1.0, 0.0], 1.0e-4)
+      assert_close(to_f32_list(Native.tan(worker(), f32([0.0], [1]))), [0.0])
     end
 
     test "inverse trig: arcsin / arccos / arctan" do
       assert_close(
-        to_f32_list(Native.arcsin(f32([0.0, 1.0], [2]), -1)),
+        to_f32_list(Native.arcsin(worker(), f32([0.0, 1.0], [2]))),
         [0.0, :math.pi() / 2],
         1.0e-4
       )
 
       assert_close(
-        to_f32_list(Native.arccos(f32([1.0, 0.0], [2]), -1)),
+        to_f32_list(Native.arccos(worker(), f32([1.0, 0.0], [2]))),
         [0.0, :math.pi() / 2],
         1.0e-4
       )
 
       assert_close(
-        to_f32_list(Native.arctan(f32([0.0, 1.0], [2]), -1)),
+        to_f32_list(Native.arctan(worker(), f32([0.0, 1.0], [2]))),
         [0.0, :math.pi() / 4],
         1.0e-4
       )
@@ -132,44 +141,44 @@ defmodule Emily.NativeTest do
 
     test "hyperbolic: sinh / cosh / tanh and their inverses" do
       x = f32([0.0, 1.0], [2])
-      assert_close(to_f32_list(Native.sinh(x, -1)), [0.0, :math.sinh(1.0)])
-      assert_close(to_f32_list(Native.cosh(x, -1)), [1.0, :math.cosh(1.0)])
-      assert_close(to_f32_list(Native.tanh(x, -1)), [0.0, :math.tanh(1.0)])
-      assert_close(to_f32_list(Native.arcsinh(f32([0.0], [1]), -1)), [0.0])
-      assert_close(to_f32_list(Native.arccosh(f32([1.0], [1]), -1)), [0.0])
-      assert_close(to_f32_list(Native.arctanh(f32([0.0], [1]), -1)), [0.0])
+      assert_close(to_f32_list(Native.sinh(worker(), x)), [0.0, :math.sinh(1.0)])
+      assert_close(to_f32_list(Native.cosh(worker(), x)), [1.0, :math.cosh(1.0)])
+      assert_close(to_f32_list(Native.tanh(worker(), x)), [0.0, :math.tanh(1.0)])
+      assert_close(to_f32_list(Native.arcsinh(worker(), f32([0.0], [1]))), [0.0])
+      assert_close(to_f32_list(Native.arccosh(worker(), f32([1.0], [1]))), [0.0])
+      assert_close(to_f32_list(Native.arctanh(worker(), f32([0.0], [1]))), [0.0])
     end
 
     test "sigmoid" do
       x = f32([0.0, 10.0, -10.0], [3])
-      assert_close(to_f32_list(Native.sigmoid(x, -1)), [0.5, 1.0, 0.0], 1.0e-4)
+      assert_close(to_f32_list(Native.sigmoid(worker(), x)), [0.5, 1.0, 0.0], 1.0e-4)
     end
 
     test "erf / erfinv" do
-      assert_close(to_f32_list(Native.erf(f32([0.0], [1]), -1)), [0.0], 1.0e-6)
-      assert_close(to_f32_list(Native.erfinv(f32([0.0], [1]), -1)), [0.0], 1.0e-6)
+      assert_close(to_f32_list(Native.erf(worker(), f32([0.0], [1]))), [0.0], 1.0e-6)
+      assert_close(to_f32_list(Native.erfinv(worker(), f32([0.0], [1]))), [0.0], 1.0e-6)
     end
 
     test "logical_not" do
       p = pred([true, false, true], [3])
-      assert to_pred_list(Native.logical_not(p, -1)) == [false, true, false]
+      assert to_pred_list(Native.logical_not(worker(), p)) == [false, true, false]
     end
 
     test "bitwise_invert" do
       t = s32([0, -1, 5], [3])
-      assert to_s32_list(Native.bitwise_invert(t, -1)) == [-1, 0, -6]
+      assert to_s32_list(Native.bitwise_invert(worker(), t)) == [-1, 0, -6]
     end
 
     test "isnan / isinf / isfinite" do
       x = f32([0.0, 1.0], [2])
-      assert to_pred_list(Native.isnan(x, -1)) == [false, false]
-      assert to_pred_list(Native.isinf(x, -1)) == [false, false]
-      assert to_pred_list(Native.isfinite(x, -1)) == [true, true]
+      assert to_pred_list(Native.isnan(worker(), x)) == [false, false]
+      assert to_pred_list(Native.isinf(worker(), x)) == [false, false]
+      assert to_pred_list(Native.isfinite(worker(), x)) == [true, true]
     end
 
     test "stop_gradient is identity in forward pass" do
       x = f32([1.0, 2.0, 3.0], [3])
-      assert to_f32_list(Native.stop_gradient(x, -1)) == [1.0, 2.0, 3.0]
+      assert to_f32_list(Native.stop_gradient(worker(), x)) == [1.0, 2.0, 3.0]
     end
   end
 
@@ -179,44 +188,44 @@ defmodule Emily.NativeTest do
     test "add / subtract / multiply / divide" do
       a = f32([1.0, 2.0, 3.0], [3])
       b = f32([10.0, 20.0, 30.0], [3])
-      assert to_f32_list(Native.add(a, b, -1)) == [11.0, 22.0, 33.0]
-      assert to_f32_list(Native.subtract(a, b, -1)) == [-9.0, -18.0, -27.0]
-      assert to_f32_list(Native.multiply(a, b, -1)) == [10.0, 40.0, 90.0]
-      assert to_f32_list(Native.divide(b, a, -1)) == [10.0, 10.0, 10.0]
+      assert to_f32_list(Native.add(worker(), a, b)) == [11.0, 22.0, 33.0]
+      assert to_f32_list(Native.subtract(worker(), a, b)) == [-9.0, -18.0, -27.0]
+      assert to_f32_list(Native.multiply(worker(), a, b)) == [10.0, 40.0, 90.0]
+      assert to_f32_list(Native.divide(worker(), b, a)) == [10.0, 10.0, 10.0]
     end
 
     test "floor_divide / remainder" do
       a = s32([7, 8, 9], [3])
       b = s32([2, 3, 4], [3])
-      assert to_s32_list(Native.floor_divide(a, b, -1)) == [3, 2, 2]
-      assert to_s32_list(Native.remainder(a, b, -1)) == [1, 2, 1]
+      assert to_s32_list(Native.floor_divide(worker(), a, b)) == [3, 2, 2]
+      assert to_s32_list(Native.remainder(worker(), a, b)) == [1, 2, 1]
     end
 
     test "power" do
       a = f32([2.0, 3.0], [2])
       b = f32([3.0, 2.0], [2])
-      assert to_f32_list(Native.power(a, b, -1)) == [8.0, 9.0]
+      assert to_f32_list(Native.power(worker(), a, b)) == [8.0, 9.0]
     end
 
     test "maximum / minimum" do
       a = f32([1.0, 5.0, 3.0], [3])
       b = f32([4.0, 2.0, 3.0], [3])
-      assert to_f32_list(Native.maximum(a, b, -1)) == [4.0, 5.0, 3.0]
-      assert to_f32_list(Native.minimum(a, b, -1)) == [1.0, 2.0, 3.0]
+      assert to_f32_list(Native.maximum(worker(), a, b)) == [4.0, 5.0, 3.0]
+      assert to_f32_list(Native.minimum(worker(), a, b)) == [1.0, 2.0, 3.0]
     end
 
     test "logaddexp" do
       a = f32([0.0, 0.0], [2])
       b = f32([0.0, 1.0], [2])
 
-      assert_close(to_f32_list(Native.logaddexp(a, b, -1)), [
+      assert_close(to_f32_list(Native.logaddexp(worker(), a, b)), [
         :math.log(2.0),
         :math.log(1.0 + :math.exp(1.0))
       ])
     end
 
     test "arctan2" do
-      assert_close(to_f32_list(Native.arctan2(f32([1.0], [1]), f32([1.0], [1]), -1)), [
+      assert_close(to_f32_list(Native.arctan2(worker(), f32([1.0], [1]), f32([1.0], [1]))), [
         :math.pi() / 4
       ])
     end
@@ -224,7 +233,7 @@ defmodule Emily.NativeTest do
     test "broadcasting: [3] + [1]" do
       a = f32([1.0, 2.0, 3.0], [3])
       b = f32([10.0], [1])
-      assert to_f32_list(Native.add(a, b, -1)) == [11.0, 12.0, 13.0]
+      assert to_f32_list(Native.add(worker(), a, b)) == [11.0, 12.0, 13.0]
     end
   end
 
@@ -232,17 +241,17 @@ defmodule Emily.NativeTest do
     test "equal / not_equal" do
       a = f32([1.0, 2.0, 3.0], [3])
       b = f32([1.0, 5.0, 3.0], [3])
-      assert to_pred_list(Native.equal(a, b, -1)) == [true, false, true]
-      assert to_pred_list(Native.not_equal(a, b, -1)) == [false, true, false]
+      assert to_pred_list(Native.equal(worker(), a, b)) == [true, false, true]
+      assert to_pred_list(Native.not_equal(worker(), a, b)) == [false, true, false]
     end
 
     test "less / less_equal / greater / greater_equal" do
       a = f32([1.0, 2.0, 3.0], [3])
       b = f32([2.0, 2.0, 2.0], [3])
-      assert to_pred_list(Native.less(a, b, -1)) == [true, false, false]
-      assert to_pred_list(Native.less_equal(a, b, -1)) == [true, true, false]
-      assert to_pred_list(Native.greater(a, b, -1)) == [false, false, true]
-      assert to_pred_list(Native.greater_equal(a, b, -1)) == [false, true, true]
+      assert to_pred_list(Native.less(worker(), a, b)) == [true, false, false]
+      assert to_pred_list(Native.less_equal(worker(), a, b)) == [true, true, false]
+      assert to_pred_list(Native.greater(worker(), a, b)) == [false, false, true]
+      assert to_pred_list(Native.greater_equal(worker(), a, b)) == [false, true, true]
     end
   end
 
@@ -250,8 +259,8 @@ defmodule Emily.NativeTest do
     test "logical_and / logical_or" do
       a = pred([true, true, false, false], [4])
       b = pred([true, false, true, false], [4])
-      assert to_pred_list(Native.logical_and(a, b, -1)) == [true, false, false, false]
-      assert to_pred_list(Native.logical_or(a, b, -1)) == [true, true, true, false]
+      assert to_pred_list(Native.logical_and(worker(), a, b)) == [true, false, false, false]
+      assert to_pred_list(Native.logical_or(worker(), a, b)) == [true, true, true, false]
     end
   end
 
@@ -259,16 +268,16 @@ defmodule Emily.NativeTest do
     test "and / or / xor" do
       a = s32([0b1100, 0b1010], [2])
       b = s32([0b1010, 0b0110], [2])
-      assert to_s32_list(Native.bitwise_and(a, b, -1)) == [0b1000, 0b0010]
-      assert to_s32_list(Native.bitwise_or(a, b, -1)) == [0b1110, 0b1110]
-      assert to_s32_list(Native.bitwise_xor(a, b, -1)) == [0b0110, 0b1100]
+      assert to_s32_list(Native.bitwise_and(worker(), a, b)) == [0b1000, 0b0010]
+      assert to_s32_list(Native.bitwise_or(worker(), a, b)) == [0b1110, 0b1110]
+      assert to_s32_list(Native.bitwise_xor(worker(), a, b)) == [0b0110, 0b1100]
     end
 
     test "left_shift / right_shift" do
       a = s32([1, 16], [2])
       b = s32([3, 2], [2])
-      assert to_s32_list(Native.left_shift(a, b, -1)) == [8, 64]
-      assert to_s32_list(Native.right_shift(a, b, -1)) == [0, 4]
+      assert to_s32_list(Native.left_shift(worker(), a, b)) == [8, 64]
+      assert to_s32_list(Native.right_shift(worker(), a, b)) == [0, 4]
     end
   end
 
@@ -277,64 +286,64 @@ defmodule Emily.NativeTest do
   describe "reductions" do
     test "sum/mean/prod over all axes" do
       x = f32([1.0, 2.0, 3.0, 4.0], [2, 2])
-      assert to_f32_list(Native.sum(x, [0, 1], false, -1)) == [10.0]
-      assert to_f32_list(Native.mean(x, [0, 1], false, -1)) == [2.5]
-      assert to_f32_list(Native.prod(x, [0, 1], false, -1)) == [24.0]
+      assert to_f32_list(Native.sum(worker(), x, [0, 1], false)) == [10.0]
+      assert to_f32_list(Native.mean(worker(), x, [0, 1], false)) == [2.5]
+      assert to_f32_list(Native.prod(worker(), x, [0, 1], false)) == [24.0]
     end
 
     test "sum with axes + keepdims" do
       x = f32([1.0, 2.0, 3.0, 4.0], [2, 2])
       # sum over axis 1
-      r = Native.sum(x, [1], false, -1)
+      r = Native.sum(worker(), x, [1], false)
       assert Native.shape(r) == [2]
       assert to_f32_list(r) == [3.0, 7.0]
 
-      r_keep = Native.sum(x, [1], true, -1)
+      r_keep = Native.sum(worker(), x, [1], true)
       assert Native.shape(r_keep) == [2, 1]
     end
 
     test "max / min" do
       x = f32([1.0, 5.0, 3.0, 2.0], [4])
-      assert to_f32_list(Native.max(x, [0], false, -1)) == [5.0]
-      assert to_f32_list(Native.min(x, [0], false, -1)) == [1.0]
+      assert to_f32_list(Native.max(worker(), x, [0], false)) == [5.0]
+      assert to_f32_list(Native.min(worker(), x, [0], false)) == [1.0]
     end
 
     test "all / any" do
       p = pred([true, true, false], [3])
-      assert to_pred_list(Native.all(p, [0], false, -1)) == [false]
-      assert to_pred_list(Native.any(p, [0], false, -1)) == [true]
+      assert to_pred_list(Native.all(worker(), p, [0], false)) == [false]
+      assert to_pred_list(Native.any(worker(), p, [0], false)) == [true]
     end
 
     test "logsumexp" do
       x = f32([1.0, 2.0, 3.0], [3])
       expected = :math.log(:math.exp(1.0) + :math.exp(2.0) + :math.exp(3.0))
-      assert_close(to_f32_list(Native.logsumexp(x, [0], false, -1)), [expected])
+      assert_close(to_f32_list(Native.logsumexp(worker(), x, [0], false)), [expected])
     end
 
     test "argmax / argmin" do
       x = f32([1.0, 5.0, 3.0], [3])
-      assert to_s32_list(Native.argmax(x, 0, false, -1)) == [1]
-      assert to_s32_list(Native.argmin(x, 0, false, -1)) == [0]
+      assert to_s32_list(Native.argmax(worker(), x, 0, false)) == [1]
+      assert to_s32_list(Native.argmin(worker(), x, 0, false)) == [0]
     end
 
     test "var / std" do
       x = f32([1.0, 2.0, 3.0, 4.0], [4])
       # var with ddof=0 => population variance = 1.25
-      assert_close(to_f32_list(Native.var(x, [0], false, 0, -1)), [1.25])
-      assert_close(to_f32_list(Native.std(x, [0], false, 0, -1)), [:math.sqrt(1.25)])
+      assert_close(to_f32_list(Native.var(worker(), x, [0], false, 0)), [1.25])
+      assert_close(to_f32_list(Native.std(worker(), x, [0], false, 0)), [:math.sqrt(1.25)])
     end
 
     test "cumulative: cumsum / cumprod" do
       x = f32([1.0, 2.0, 3.0, 4.0], [4])
       # inclusive, not reversed
-      assert to_f32_list(Native.cumsum(x, 0, false, true, -1)) == [1.0, 3.0, 6.0, 10.0]
-      assert to_f32_list(Native.cumprod(x, 0, false, true, -1)) == [1.0, 2.0, 6.0, 24.0]
+      assert to_f32_list(Native.cumsum(worker(), x, 0, false, true)) == [1.0, 3.0, 6.0, 10.0]
+      assert to_f32_list(Native.cumprod(worker(), x, 0, false, true)) == [1.0, 2.0, 6.0, 24.0]
     end
 
     test "cumulative: cummax / cummin" do
       x = f32([3.0, 1.0, 4.0, 1.0, 5.0], [5])
-      assert to_f32_list(Native.cummax(x, 0, false, true, -1)) == [3.0, 3.0, 4.0, 4.0, 5.0]
-      assert to_f32_list(Native.cummin(x, 0, false, true, -1)) == [3.0, 1.0, 1.0, 1.0, 1.0]
+      assert to_f32_list(Native.cummax(worker(), x, 0, false, true)) == [3.0, 3.0, 4.0, 4.0, 5.0]
+      assert to_f32_list(Native.cummin(worker(), x, 0, false, true)) == [3.0, 1.0, 1.0, 1.0, 1.0]
     end
   end
 
@@ -343,29 +352,29 @@ defmodule Emily.NativeTest do
   describe "shape manipulation" do
     test "reshape" do
       x = f32([1.0, 2.0, 3.0, 4.0, 5.0, 6.0], [6])
-      r = Native.reshape(x, [2, 3], -1)
+      r = Native.reshape(worker(), x, [2, 3])
       assert Native.shape(r) == [2, 3]
       assert to_f32_list(r) == [1.0, 2.0, 3.0, 4.0, 5.0, 6.0]
     end
 
     test "transpose" do
       x = f32([1.0, 2.0, 3.0, 4.0, 5.0, 6.0], [2, 3])
-      r = Native.transpose(x, [1, 0], -1)
+      r = Native.transpose(worker(), x, [1, 0])
       assert Native.shape(r) == [3, 2]
       assert to_f32_list(r) == [1.0, 4.0, 2.0, 5.0, 3.0, 6.0]
     end
 
     test "squeeze / expand_dims" do
       x = f32([1.0, 2.0, 3.0], [1, 3, 1])
-      s = Native.squeeze(x, [0, 2], -1)
+      s = Native.squeeze(worker(), x, [0, 2])
       assert Native.shape(s) == [3]
-      e = Native.expand_dims(s, [0], -1)
+      e = Native.expand_dims(worker(), s, [0])
       assert Native.shape(e) == [1, 3]
     end
 
     test "broadcast_to" do
       x = f32([1.0, 2.0, 3.0], [3])
-      r = Native.broadcast_to(x, [2, 3], -1)
+      r = Native.broadcast_to(worker(), x, [2, 3])
       assert Native.shape(r) == [2, 3]
       assert to_f32_list(r) == [1.0, 2.0, 3.0, 1.0, 2.0, 3.0]
     end
@@ -373,44 +382,44 @@ defmodule Emily.NativeTest do
     test "concatenate / stack" do
       a = f32([1.0, 2.0], [2])
       b = f32([3.0, 4.0], [2])
-      c = Native.concatenate([a, b], 0, -1)
+      c = Native.concatenate(worker(), [a, b], 0)
       assert Native.shape(c) == [4]
       assert to_f32_list(c) == [1.0, 2.0, 3.0, 4.0]
 
-      s = Native.stack([a, b], 0, -1)
+      s = Native.stack(worker(), [a, b], 0)
       assert Native.shape(s) == [2, 2]
       assert to_f32_list(s) == [1.0, 2.0, 3.0, 4.0]
     end
 
     test "flatten" do
       x = f32([1.0, 2.0, 3.0, 4.0], [2, 2])
-      r = Native.flatten(x, 0, -1, -1)
+      r = Native.flatten(worker(), x, 0, -1)
       assert Native.shape(r) == [4]
     end
 
     test "tile" do
       x = f32([1.0, 2.0], [2])
-      r = Native.tile(x, [3], -1)
+      r = Native.tile(worker(), x, [3])
       assert to_f32_list(r) == [1.0, 2.0, 1.0, 2.0, 1.0, 2.0]
     end
 
     test "swapaxes" do
       x = f32([1.0, 2.0, 3.0, 4.0], [2, 2])
-      r = Native.swapaxes(x, 0, 1, -1)
+      r = Native.swapaxes(worker(), x, 0, 1)
       assert to_f32_list(r) == [1.0, 3.0, 2.0, 4.0]
     end
 
     test "pad" do
       x = f32([1.0, 2.0, 3.0], [3])
       zero = f32_scalar(0.0)
-      r = Native.pad(x, [0], [1], [2], zero, -1)
+      r = Native.pad(worker(), x, [0], [1], [2], zero)
       assert Native.shape(r) == [6]
       assert to_f32_list(r) == [0.0, 1.0, 2.0, 3.0, 0.0, 0.0]
     end
 
     test "repeat" do
       x = f32([1.0, 2.0], [2])
-      r = Native.repeat(x, 2, 0, -1)
+      r = Native.repeat(worker(), x, 2, 0)
       assert to_f32_list(r) == [1.0, 1.0, 2.0, 2.0]
     end
   end
@@ -420,7 +429,7 @@ defmodule Emily.NativeTest do
   describe "indexing" do
     test "slice" do
       x = f32(Enum.to_list(1..12) |> Enum.map(&(&1 * 1.0)), [3, 4])
-      r = Native.slice(x, [0, 1], [2, 3], [1, 1], -1)
+      r = Native.slice(worker(), x, [0, 1], [2, 3], [1, 1])
       assert Native.shape(r) == [2, 2]
       assert to_f32_list(r) == [2.0, 3.0, 6.0, 7.0]
     end
@@ -428,7 +437,7 @@ defmodule Emily.NativeTest do
     test "take" do
       x = f32([10.0, 20.0, 30.0, 40.0], [4])
       idx = s32([0, 2, 3], [3])
-      r = Native.take(x, idx, 0, -1)
+      r = Native.take(worker(), x, idx, 0)
       assert to_f32_list(r) == [10.0, 30.0, 40.0]
     end
 
@@ -436,7 +445,7 @@ defmodule Emily.NativeTest do
       cond_t = pred([true, false, true], [3])
       x = f32([1.0, 2.0, 3.0], [3])
       y = f32([10.0, 20.0, 30.0], [3])
-      r = Native.where(cond_t, x, y, -1)
+      r = Native.where(worker(), cond_t, x, y)
       assert to_f32_list(r) == [1.0, 20.0, 3.0]
     end
   end
@@ -447,7 +456,7 @@ defmodule Emily.NativeTest do
     test "matmul: 2x3 @ 3x2" do
       a = f32([1.0, 2.0, 3.0, 4.0, 5.0, 6.0], [2, 3])
       b = f32([7.0, 8.0, 9.0, 10.0, 11.0, 12.0], [3, 2])
-      r = Native.matmul(a, b, -1)
+      r = Native.matmul(worker(), a, b)
       assert Native.shape(r) == [2, 2]
       # [1*7+2*9+3*11, 1*8+2*10+3*12, 4*7+5*9+6*11, 4*8+5*10+6*12]
       assert to_f32_list(r) == [58.0, 64.0, 139.0, 154.0]
@@ -457,14 +466,14 @@ defmodule Emily.NativeTest do
       a = f32([1.0, 2.0, 3.0, 4.0], [2, 2])
       b = f32([5.0, 6.0, 7.0, 8.0], [2, 2])
       # contract last axis of a with first of b (= matmul)
-      r = Native.tensordot(a, b, [1], [0], -1)
+      r = Native.tensordot(worker(), a, b, [1], [0])
       assert to_f32_list(r) == [19.0, 22.0, 43.0, 50.0]
     end
 
     test "outer" do
       a = f32([1.0, 2.0], [2])
       b = f32([10.0, 20.0, 30.0], [3])
-      r = Native.outer(a, b, -1)
+      r = Native.outer(worker(), a, b)
       assert Native.shape(r) == [2, 3]
       assert to_f32_list(r) == [10.0, 20.0, 30.0, 20.0, 40.0, 60.0]
     end
@@ -472,7 +481,7 @@ defmodule Emily.NativeTest do
     test "inner of 1-D vectors = dot product" do
       a = f32([1.0, 2.0, 3.0], [3])
       b = f32([4.0, 5.0, 6.0], [3])
-      r = Native.inner(a, b, -1)
+      r = Native.inner(worker(), a, b)
       assert to_f32_list(r) == [32.0]
     end
   end
@@ -486,8 +495,8 @@ defmodule Emily.NativeTest do
 
     test "quantize returns packed w_q plus per-group scales and biases" do
       # Single group of 64 elements, all zero: scales and biases collapse.
-      w = f32(List.duplicate(0.0, 64), [1, 64])
-      {q, s, b} = Native.quantize(w, 64, 4, -1)
+      wt = f32(List.duplicate(0.0, 64), [1, 64])
+      {q, s, b} = Native.quantize(worker(), wt, 64, 4)
 
       # 64 nibbles → 8 u32 values.
       assert Native.shape(q) == [1, 8]
@@ -508,7 +517,7 @@ defmodule Emily.NativeTest do
 
     test "quantize validates last-axis divisibility" do
       bad = f32(List.duplicate(0.0, 30), [1, 30])
-      assert_raise ArgumentError, fn -> Native.quantize(bad, 64, 4, -1) end
+      assert_raise ArgumentError, fn -> Native.quantize(worker(), bad, 64, 4) end
     end
 
     test "dequantize recovers the original within int4 tolerance" do
@@ -516,10 +525,10 @@ defmodule Emily.NativeTest do
       # step for int4 is roughly `(max - min) / 15`; we assert an upper bound
       # slightly looser than that to avoid ulp noise.
       values = for i <- 0..63, do: (i - 32) / 32.0
-      w = f32(values, [1, 64])
+      wt = f32(values, [1, 64])
 
-      {q, s, b} = Native.quantize(w, 64, 4, -1)
-      deq = Native.dequantize(q, s, b, 64, 4, -1)
+      {q, s, b} = Native.quantize(worker(), wt, 64, 4)
+      deq = Native.dequantize(worker(), q, s, b, 64, 4)
 
       assert Native.shape(deq) == [1, 64]
       step = 2.0 / 15.0
@@ -530,15 +539,15 @@ defmodule Emily.NativeTest do
       # w: [out=2, in=64]; x: [batch=3, in=64]. With transpose=true, MLX
       # computes x @ w.T (i.e. w is "rows of output").
       w_vals = for i <- 0..127, do: (i - 64) / 128.0
-      w = f32(w_vals, [2, 64])
+      wt = f32(w_vals, [2, 64])
       x_vals = for i <- 0..(3 * 64 - 1), do: i / 64.0
       x = f32(x_vals, [3, 64])
 
-      {q, s, b} = Native.quantize(w, 64, 4, -1)
+      {q, s, b} = Native.quantize(worker(), wt, 64, 4)
 
-      qmm = Native.quantized_matmul(x, q, s, b, true, 64, 4, -1)
-      deq = Native.dequantize(q, s, b, 64, 4, -1)
-      ref = Native.matmul(x, Native.transpose(deq, [1, 0], -1), -1)
+      qmm = Native.quantized_matmul(worker(), x, q, s, b, true, 64, 4)
+      deq = Native.dequantize(worker(), q, s, b, 64, 4)
+      ref = Native.matmul(worker(), x, Native.transpose(worker(), deq, [1, 0]))
 
       assert Native.shape(qmm) == [3, 2]
       # Fused vs. composed dequant+matmul may reorder ops; allow a small
@@ -551,14 +560,14 @@ defmodule Emily.NativeTest do
       # transposed, so `y = x @ w`. Round-trip against a matching matmul
       # on the dequantized weight with the same convention.
       w_vals = for i <- 0..127, do: (i - 64) / 128.0
-      w = f32(w_vals, [2, 64])
+      wt = f32(w_vals, [2, 64])
       x = f32(for(i <- 0..(3 * 2 - 1), do: i / 6.0), [3, 2])
 
-      {q, s, b} = Native.quantize(w, 64, 4, -1)
+      {q, s, b} = Native.quantize(worker(), wt, 64, 4)
 
-      qmm = Native.quantized_matmul(x, q, s, b, false, 64, 4, -1)
-      deq = Native.dequantize(q, s, b, 64, 4, -1)
-      ref = Native.matmul(x, deq, -1)
+      qmm = Native.quantized_matmul(worker(), x, q, s, b, false, 64, 4)
+      deq = Native.dequantize(worker(), q, s, b, 64, 4)
+      ref = Native.matmul(worker(), x, deq)
 
       assert Native.shape(qmm) == [3, 64]
       assert_close(to_f32_list(qmm), to_f32_list(ref), 1.0e-4)
@@ -566,8 +575,8 @@ defmodule Emily.NativeTest do
 
     test "bits=8 halves the packing density" do
       values = for i <- 0..63, do: i / 64.0
-      w = f32(values, [1, 64])
-      {q, _s, _b} = Native.quantize(w, 64, 8, -1)
+      wt = f32(values, [1, 64])
+      {q, _s, _b} = Native.quantize(worker(), wt, 64, 8)
 
       # 64 bytes → 16 u32 values.
       assert Native.shape(q) == [1, 16]
@@ -575,8 +584,8 @@ defmodule Emily.NativeTest do
     end
 
     test "smaller group_size produces more scale/bias rows" do
-      w = f32(List.duplicate(0.0, 128), [1, 128])
-      {_q, s, _b} = Native.quantize(w, 32, 4, -1)
+      wt = f32(List.duplicate(0.0, 128), [1, 128])
+      {_q, s, _b} = Native.quantize(worker(), wt, 32, 4)
 
       # 128 / 32 = 4 groups along the last axis.
       assert Native.shape(s) == [1, 4]
@@ -589,8 +598,8 @@ defmodule Emily.NativeTest do
     test "chained lazy ops survive GC before eval" do
       a = f32([1.0, 2.0, 3.0, 4.0], [4])
       b = f32([10.0, 20.0, 30.0, 40.0], [4])
-      c = Native.add(a, b, -1)
-      d = Native.multiply(c, c, -1)
+      c = Native.add(worker(), a, b)
+      d = Native.multiply(worker(), c, c)
 
       :erlang.garbage_collect()
       assert to_f32_list(d) == [121.0, 484.0, 1089.0, 1936.0]
@@ -602,21 +611,21 @@ defmodule Emily.NativeTest do
   describe "sort / topk" do
     test "sort/2 and argsort/2 along last axis" do
       x = f32([3.0, 1.0, 2.0], [3])
-      assert to_f32_list(Native.sort(x, -1, -1)) == [1.0, 2.0, 3.0]
-      assert to_s32_list(Native.argsort(x, -1, -1)) == [1, 2, 0]
+      assert to_f32_list(Native.sort(worker(), x, -1)) == [1.0, 2.0, 3.0]
+      assert to_s32_list(Native.argsort(worker(), x, -1)) == [1, 2, 0]
     end
 
     test "partition/3 places kth smallest first" do
       x = f32([5.0, 2.0, 4.0, 1.0, 3.0], [5])
       # Partitioning around kth=2 guarantees first 2 entries are the two
       # smallest in some order, and later entries are >= those.
-      result = to_f32_list(Native.partition(x, 2, -1, -1))
+      result = to_f32_list(Native.partition(worker(), x, 2, -1))
       assert Enum.sort(Enum.take(result, 2)) == [1.0, 2.0]
     end
 
     test "topk/3 returns the k largest (unordered)" do
       x = f32([3.0, 1.0, 4.0, 1.0, 5.0, 9.0, 2.0, 6.0], [8])
-      result = to_f32_list(Native.topk(x, 3, -1, -1)) |> Enum.sort()
+      result = to_f32_list(Native.topk(worker(), x, 3, -1)) |> Enum.sort()
       assert result == [5.0, 6.0, 9.0]
     end
   end
@@ -628,18 +637,18 @@ defmodule Emily.NativeTest do
       x = f32([-1.0, 0.5, 2.0, 3.5], [4])
       lo = f32_scalar(0.0)
       hi = f32_scalar(2.0)
-      assert to_f32_list(Native.clip(x, lo, hi, -1)) == [0.0, 0.5, 2.0, 2.0]
+      assert to_f32_list(Native.clip(worker(), x, lo, hi)) == [0.0, 0.5, 2.0, 2.0]
     end
 
     test "roll/3" do
       x = f32([1.0, 2.0, 3.0, 4.0], [4])
-      assert to_f32_list(Native.roll(x, 1, 0, -1)) == [4.0, 1.0, 2.0, 3.0]
-      assert to_f32_list(Native.roll(x, -1, 0, -1)) == [2.0, 3.0, 4.0, 1.0]
+      assert to_f32_list(Native.roll(worker(), x, 1, 0)) == [4.0, 1.0, 2.0, 3.0]
+      assert to_f32_list(Native.roll(worker(), x, -1, 0)) == [2.0, 3.0, 4.0, 1.0]
     end
 
     test "softmax/3 along last axis sums to 1" do
       x = f32([1.0, 2.0, 3.0], [3])
-      result = to_f32_list(Native.softmax(x, [0], false, -1))
+      result = to_f32_list(Native.softmax(worker(), x, [0], false))
       assert_close(Enum.sum(result), 1.0)
       # Monotonically increasing input → monotonically increasing output.
       assert Enum.sort(result) == result
@@ -647,7 +656,7 @@ defmodule Emily.NativeTest do
 
     test "logcumsumexp/4 matches log(cumsum(exp(x)))" do
       x = f32([1.0, 2.0, 3.0, 4.0], [4])
-      result = to_f32_list(Native.logcumsumexp(x, 0, false, true, -1))
+      result = to_f32_list(Native.logcumsumexp(worker(), x, 0, false, true))
 
       # Reference: [log(e^1), log(e^1+e^2), log(e^1+e^2+e^3),
       #             log(e^1+e^2+e^3+e^4)].
@@ -663,8 +672,8 @@ defmodule Emily.NativeTest do
       a = f32([1.0, 2.0, 3.0], [3])
       b = f32([1.0, 2.0, 3.0], [3])
       c = f32([1.0, 2.0, 4.0], [3])
-      assert to_pred_list(Native.array_equal(a, b, false, -1)) == [true]
-      assert to_pred_list(Native.array_equal(a, c, false, -1)) == [false]
+      assert to_pred_list(Native.array_equal(worker(), a, b, false)) == [true]
+      assert to_pred_list(Native.array_equal(worker(), a, c, false)) == [false]
     end
   end
 
@@ -674,7 +683,7 @@ defmodule Emily.NativeTest do
     test "take_along_axis/3" do
       x = f32([10.0, 20.0, 30.0, 40.0, 50.0, 60.0], [2, 3])
       idx = s32([2, 0, 1, 1, 2, 0], [2, 3])
-      r = Native.take_along_axis(x, idx, 1, -1)
+      r = Native.take_along_axis(worker(), x, idx, 1)
       # Row 0: [30, 10, 20]; Row 1: [50, 60, 40]
       assert to_f32_list(r) == [30.0, 10.0, 20.0, 50.0, 60.0, 40.0]
     end
@@ -683,7 +692,7 @@ defmodule Emily.NativeTest do
       x = f32([0.0, 0.0, 0.0, 0.0], [4])
       idx = s32([0, 2], [2])
       vals = f32([1.0, 2.0], [2])
-      r = Native.put_along_axis(x, idx, vals, 0, -1)
+      r = Native.put_along_axis(worker(), x, idx, vals, 0)
       assert to_f32_list(r) == [1.0, 0.0, 2.0, 0.0]
     end
 
@@ -691,7 +700,7 @@ defmodule Emily.NativeTest do
       x = f32([10.0, 20.0, 30.0], [3])
       idx = s32([0, 0, 2], [3])
       vals = f32([1.0, 1.0, 5.0], [3])
-      r = Native.scatter_add_axis(x, idx, vals, 0, -1)
+      r = Native.scatter_add_axis(worker(), x, idx, vals, 0)
       # idx 0 gets +1+1; idx 2 gets +5.
       assert to_f32_list(r) == [12.0, 20.0, 35.0]
     end
@@ -709,7 +718,7 @@ defmodule Emily.NativeTest do
       idx0 = s32([0, 2, 1], [3])
       idx1 = s32([1, 3, 0], [3])
       # Expected: a[0,1]=2, a[2,3]=12, a[1,0]=5.
-      r = Native.gather(a, [idx0, idx1], [0, 1], [1, 1], -1)
+      r = Native.gather(worker(), a, [idx0, idx1], [0, 1], [1, 1])
       # Result shape is batch ++ slice_sizes = [3, 1, 1].
       assert Native.shape(r) == [3, 1, 1]
       assert to_f32_list(r) == [2.0, 12.0, 5.0]
@@ -720,7 +729,7 @@ defmodule Emily.NativeTest do
     test "gather/4 partial-axis keeps slice dims" do
       a = f32(Enum.map(1..12, &(&1 * 1.0)), [3, 4])
       idx0 = s32([2, 0], [2])
-      r = Native.gather(a, [idx0], [0], [1, 4], -1)
+      r = Native.gather(worker(), a, [idx0], [0], [1, 4])
       # Row 2: [9,10,11,12]; Row 0: [1,2,3,4].
       assert Native.shape(r) == [2, 1, 4]
       assert to_f32_list(r) == [9.0, 10.0, 11.0, 12.0, 1.0, 2.0, 3.0, 4.0]
@@ -734,7 +743,7 @@ defmodule Emily.NativeTest do
       # Updates must have rank = indices[0].ndim() + a.ndim() = 1 + 2 = 3.
       # Shape: batch ++ [1, 1] = [3, 1, 1].
       upd = f32([7.0, 8.0, 9.0], [3, 1, 1])
-      r = Native.scatter(a, [idx0, idx1], upd, [0, 1], -1)
+      r = Native.scatter(worker(), a, [idx0, idx1], upd, [0, 1])
       # a[0,1]=7, a[1,2]=8, a[0,0]=9.
       assert to_f32_list(r) == [9.0, 7.0, 0.0, 0.0, 0.0, 8.0]
     end
@@ -744,7 +753,7 @@ defmodule Emily.NativeTest do
       a = f32([10.0, 20.0, 30.0], [3])
       idx0 = s32([0, 0, 2], [3])
       upd = f32([1.0, 1.0, 5.0], [3, 1])
-      r = Native.scatter_add(a, [idx0], upd, [0], -1)
+      r = Native.scatter_add(worker(), a, [idx0], upd, [0])
       assert to_f32_list(r) == [12.0, 20.0, 35.0]
     end
 
@@ -760,7 +769,7 @@ defmodule Emily.NativeTest do
       idx_l = s32([1, 2], [2])
       # MLX updates: {2, 1, 1, 4} — one leading "1" per indexed axis.
       upd = f32([1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0], [2, 1, 1, 4])
-      r = Native.scatter_add(a, [idx_b, idx_l], upd, [0, 1], -1)
+      r = Native.scatter_add(worker(), a, [idx_b, idx_l], upd, [0, 1])
       assert Native.shape(r) == [2, 3, 4]
 
       # Build expected: zeros with the two slice writes.
@@ -790,14 +799,14 @@ defmodule Emily.NativeTest do
 
       r =
         Native.conv_general(
+          worker(),
           input,
           weight,
           [1],
           {[0], [0]},
           {[1], [1]},
           1,
-          false,
-          -1
+          false
         )
 
       assert Native.shape(r) == [1, 3, 1]
@@ -812,15 +821,15 @@ defmodule Emily.NativeTest do
       k1 = Native.random_key(42)
       k2 = Native.random_key(42)
 
-      assert to_s32_list(Native.astype(k1, {:s, 32}, -1)) ==
-               to_s32_list(Native.astype(k2, {:s, 32}, -1))
+      assert to_s32_list(Native.astype(worker(), k1, {:s, 32})) ==
+               to_s32_list(Native.astype(worker(), k2, {:s, 32}))
     end
 
     test "random_uniform/5 produces values in [low, high)" do
       key = Native.random_key(7)
       low = f32_scalar(0.0)
       high = f32_scalar(1.0)
-      t = Native.random_uniform(low, high, [1000], {:f, 32}, key, -1)
+      t = Native.random_uniform(worker(), low, high, [1000], {:f, 32}, key)
       vals = to_f32_list(t)
 
       assert Enum.all?(vals, &(&1 >= 0.0))
@@ -832,7 +841,7 @@ defmodule Emily.NativeTest do
 
     test "random_normal/5 has roughly the right mean and stdev" do
       key = Native.random_key(99)
-      t = Native.random_normal([2048], {:f, 32}, 0.0, 1.0, key, -1)
+      t = Native.random_normal(worker(), [2048], {:f, 32}, 0.0, 1.0, key)
       vals = to_f32_list(t)
 
       mean = Enum.sum(vals) / length(vals)
@@ -845,7 +854,7 @@ defmodule Emily.NativeTest do
     test "random_bernoulli/3 yields 0/1 pred values" do
       key = Native.random_key(1)
       p = f32_scalar(0.3)
-      t = Native.random_bernoulli(p, [256], key, -1)
+      t = Native.random_bernoulli(worker(), p, [256], key)
       assert Native.dtype(t) == {:pred, 1}
       assert Enum.all?(to_pred_list(t), &is_boolean/1)
     end
@@ -853,14 +862,14 @@ defmodule Emily.NativeTest do
     test "random with nil key still produces the right shape/dtype" do
       # Uses the default key sequence — value is non-deterministic, so
       # only assert shape/dtype.
-      t = Native.random_normal([4], {:f, 32}, 0.0, 1.0, nil, -1)
+      t = Native.random_normal(worker(), [4], {:f, 32}, 0.0, 1.0, nil)
       assert Native.shape(t) == [4]
       assert Native.dtype(t) == {:f, 32}
     end
 
     test "random_split/2 yields distinct keys" do
       k = Native.random_key(5)
-      split = Native.random_split(k, 2, -1)
+      split = Native.random_split(worker(), k, 2)
       assert Native.shape(split) == [2, 2]
     end
   end
@@ -871,16 +880,16 @@ defmodule Emily.NativeTest do
     test "fftn ∘ ifftn round-trips within tolerance" do
       x = f32([1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0], [8])
       # Cast to complex64 for FFT.
-      xc = Native.astype(x, {:c, 64}, -1)
-      fwd = Native.fftn(xc, [8], [0], -1)
-      inv = Native.ifftn(fwd, [8], [0], -1)
-      back = Native.astype(Native.real(inv, -1), {:f, 32}, -1)
+      xc = Native.astype(worker(), x, {:c, 64})
+      fwd = Native.fftn(worker(), xc, [8], [0])
+      inv = Native.ifftn(worker(), fwd, [8], [0])
+      back = Native.astype(worker(), Native.real(worker(), inv), {:f, 32})
       assert_close(to_f32_list(back), [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0], 1.0e-4)
     end
 
     test "rfftn produces (n/2 + 1) frequency bins" do
       x = f32([1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0], [8])
-      r = Native.rfftn(x, [8], [0], -1)
+      r = Native.rfftn(worker(), x, [8], [0])
       assert Native.shape(r) == [5]
       assert Native.dtype(r) == {:c, 64}
     end

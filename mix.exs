@@ -3,7 +3,6 @@ defmodule Emily.MixProject do
 
   @app :emily
   @version "0.1.0"
-  @mlx_version "0.25.1"
   @source_url "https://github.com/ausimian/emily"
 
   require Logger
@@ -33,7 +32,7 @@ defmodule Emily.MixProject do
 
   def application do
     [
-      extra_applications: [:logger, :inets, :ssl, :public_key, :crypto],
+      extra_applications: [:logger],
       mod: {Emily.Application, []}
     ]
   end
@@ -83,7 +82,7 @@ defmodule Emily.MixProject do
         "credo --strict",
         "test"
       ],
-      "compile.emily_mlx": &fetch_mlx/1
+      "compile.emily_mlx": &build_mlx/1
     ]
   end
 
@@ -99,26 +98,20 @@ defmodule Emily.MixProject do
     [
       licenses: ["MIT"],
       links: %{"GitHub" => @source_url},
-      files: ~w(lib c_src Makefile mix.exs README.md CHANGELOG.md LICENSE)
+      files:
+        ~w(lib c_src vendor/mlx/mlx vendor/mlx/cmake vendor/mlx/CMakeLists.txt vendor/mlx/LICENSE Makefile mix.exs README.md CHANGELOG.md LICENSE)
     ]
   end
 
-  # ---------- MLX fetching ----------
-
-  @target_triples %{
-    {:unix, :darwin, "aarch64"} => "arm64-apple-darwin",
-    {:unix, :darwin, "arm64"} => "arm64-apple-darwin",
-    {:unix, :darwin, "x86_64"} => "x86_64-apple-darwin"
-  }
+  # ---------- MLX from source ----------
 
   defp make_env do
-    dir = mlx_dir()
+    dir = mlx_install_dir()
 
     %{
       "MLX_DIR" => dir,
       "MLX_INCLUDE_DIR" => Path.join(dir, "include"),
       "MLX_LIB_DIR" => Path.join(dir, "lib"),
-      "MLX_VERSION" => @mlx_version,
       "FINE_INCLUDE_DIR" => Fine.include_dir(),
       "EMILY_CACHE_DIR" => cache_dir(),
       "EMILY_VERSION" => @version
@@ -132,137 +125,135 @@ defmodule Emily.MixProject do
     end
   end
 
-  defp mlx_dir do
-    Path.join(cache_dir(), "mlx-#{@mlx_version}-#{current_target!()}")
-  end
+  @mlx_source_dir Path.expand("vendor/mlx", __DIR__)
 
-  defp current_target! do
-    {family, name} = :os.type()
-    arch = :erlang.system_info(:system_architecture) |> to_string() |> arch_prefix()
-
-    case Map.fetch(@target_triples, {family, name, arch}) do
-      {:ok, triple} ->
-        triple
-
-      :error ->
-        Mix.raise("""
-        emily currently supports macOS (arm64 or x86_64) only.
-        Detected: family=#{family} name=#{name} arch=#{arch}
-        """)
+  defp mlx_cache_key do
+    # In a git checkout the submodule commit is the best cache key.
+    # In a Hex install (no .git), hash the top-level CMakeLists.txt.
+    case System.cmd("git", ["-C", @mlx_source_dir, "rev-parse", "--short", "HEAD"],
+           stderr_to_stdout: true
+         ) do
+      {hash, 0} -> String.trim(hash)
+      _ -> cmake_hash()
     end
   end
 
-  defp arch_prefix(sysarch) do
-    sysarch |> String.split("-", parts: 2) |> hd()
+  defp cmake_hash do
+    @mlx_source_dir
+    |> Path.join("CMakeLists.txt")
+    |> File.read!()
+    |> then(&:crypto.hash(:sha256, &1))
+    |> Base.encode16(case: :lower)
+    |> binary_part(0, 12)
   end
 
-  defp fetch_mlx(args) do
-    dir = mlx_dir()
+  defp mlx_install_dir do
+    Path.join(cache_dir(), "mlx-#{mlx_cache_key()}")
+  end
+
+  defp build_mlx(args) do
+    dir = mlx_install_dir()
 
     if "--force" in args do
       File.rm_rf!(dir)
     end
 
-    cond do
-      File.dir?(dir) ->
-        {:ok, []}
-
-      true ->
-        do_fetch_mlx(dir)
-        {:ok, []}
+    if File.dir?(dir) do
+      {:ok, []}
+    else
+      do_build_mlx(dir)
+      {:ok, []}
     end
   end
 
-  defp do_fetch_mlx(dir) do
+  defp do_build_mlx(install_dir) do
     File.mkdir_p!(cache_dir())
+    build_dir = install_dir <> "-build"
+    File.rm_rf!(build_dir)
+    File.mkdir_p!(build_dir)
 
-    target = current_target!()
-    archive = Path.join(cache_dir(), "mlx-#{@mlx_version}-#{target}.tar.gz")
+    ncpu =
+      case :os.type() do
+        {:unix, :darwin} ->
+          {n, 0} = System.cmd("sysctl", ["-n", "hw.ncpu"])
+          String.trim(n)
 
-    unless File.exists?(archive) do
-      url =
-        "https://github.com/cocoa-xu/mlx-build/releases/download/" <>
-          "v#{@mlx_version}/mlx-#{target}.tar.gz"
+        _ ->
+          {n, 0} = System.cmd("nproc", [])
+          String.trim(n)
+      end
 
-      Mix.shell().info("Fetching MLX #{@mlx_version} for #{target}")
-      Mix.shell().info("  from #{url}")
-      download!(url, archive)
-
-      sha_url = url <> ".sha256"
-      verify_sha256!(archive, sha_url)
-    end
-
-    parent = Path.join(Path.dirname(dir), "mlx-extract-#{@mlx_version}")
-    File.rm_rf!(parent)
-    File.mkdir_p!(parent)
-
-    :ok = :erl_tar.extract(archive, [:compressed, {:cwd, String.to_charlist(parent)}])
-    File.rename!(parent, dir)
-    :ok
-  end
-
-  defp verify_sha256!(archive, sha_url) do
-    expected =
-      sha_url
-      |> download!()
-      |> String.split(" ", parts: 2, trim: true)
-      |> hd()
-
-    actual =
-      archive
-      |> File.read!()
-      |> then(&:crypto.hash(:sha256, &1))
-      |> Base.encode16(case: :lower)
-
-    if actual != expected do
-      File.rm_rf!(archive)
-
-      Mix.raise("""
-      MLX archive checksum mismatch.
-        archive:  #{archive}
-        expected: #{expected}
-        actual:   #{actual}
-      """)
-    end
-
-    :ok
-  end
-
-  defp download!(url, save_as \\ nil) do
-    :inets.start()
-    :ssl.start()
-
-    https_opts = [
-      ssl:
-        [
-          verify: :verify_peer,
-          depth: 5,
-          customize_hostname_check: [
-            match_fun: :public_key.pkix_verify_hostname_match_fun(:https)
-          ]
-        ] ++ cacerts_options()
+    cmake_args = [
+      "-S",
+      @mlx_source_dir,
+      "-B",
+      build_dir,
+      "-DCMAKE_BUILD_TYPE=Release",
+      "-DCMAKE_INSTALL_PREFIX=#{install_dir}",
+      "-DBUILD_SHARED_LIBS=OFF",
+      "-DMLX_BUILD_TESTS=OFF",
+      "-DMLX_BUILD_EXAMPLES=OFF",
+      "-DMLX_BUILD_BENCHMARKS=OFF",
+      "-DMLX_BUILD_PYTHON_BINDINGS=OFF",
+      "-DMLX_BUILD_SAFETENSORS=OFF",
+      "-DMLX_BUILD_GGUF=OFF",
+      "-DMLX_BUILD_METAL_TESTS=OFF"
     ]
 
-    request = {String.to_charlist(url), []}
+    # When xcode-select points at CommandLineTools (the default on fresh
+    # macOS), xcrun cannot find the Metal toolchain. If Xcode.app is
+    # installed we set DEVELOPER_DIR so cmake and its custom commands
+    # (make_compiled_preamble.sh) can resolve `xcrun -sdk macosx metal`.
+    build_env = developer_dir_env()
 
-    case :httpc.request(:get, request, https_opts, body_format: :binary) do
-      {:ok, {{_, 200, _}, _headers, body}} ->
-        if save_as, do: File.write!(save_as, body)
-        body
+    Mix.shell().info("Building MLX from source (#{mlx_cache_key()})...")
 
-      {:ok, {{_, code, _}, _headers, _body}} ->
-        Mix.raise("HTTP #{code} fetching #{url}")
+    run!("cmake", cmake_args, "cmake configure", build_env)
+    run!("cmake", ["--build", build_dir, "--parallel", ncpu], "cmake build", build_env)
+    run!("cmake", ["--install", build_dir], "cmake install", build_env)
 
-      other ->
-        Mix.raise("Failed to fetch #{url}: #{inspect(other)}")
+    # Clean up the build directory — only the install prefix is needed.
+    File.rm_rf!(build_dir)
+    :ok
+  end
+
+  @xcode_developer_dir "/Applications/Xcode.app/Contents/Developer"
+
+  defp developer_dir_env do
+    case System.cmd("xcrun", ["-sdk", "macosx", "metal", "--version"], stderr_to_stdout: true) do
+      {_, 0} ->
+        # Metal toolchain reachable from the default developer directory.
+        []
+
+      _ ->
+        if File.dir?(@xcode_developer_dir) do
+          Mix.shell().info("  Using Xcode.app for Metal toolchain (DEVELOPER_DIR)")
+          [{"DEVELOPER_DIR", @xcode_developer_dir}]
+        else
+          Mix.raise("""
+          Metal toolchain not found. MLX requires the Metal compiler.
+
+          Install Xcode from the App Store and run:
+            sudo xcode-select -s #{@xcode_developer_dir}
+
+          Or, if Xcode is installed but the Metal Toolchain component is
+          missing, run:
+            xcodebuild -downloadComponent MetalToolchain
+          """)
+        end
     end
   end
 
-  defp cacerts_options do
-    try do
-      [cacerts: :public_key.cacerts_get()]
-    rescue
-      _ -> []
+  defp run!(cmd, args, label, env) do
+    case System.cmd(cmd, args, stderr_to_stdout: true, env: env) do
+      {_output, 0} ->
+        :ok
+
+      {output, code} ->
+        Mix.raise("""
+        #{label} failed (exit #{code}):
+        #{output}
+        """)
     end
   end
 end

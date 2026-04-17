@@ -47,7 +47,7 @@ defmodule Emily.Soak.QuantizedMemoryTest do
     # the lazy graph would just compose nodes without hitting the
     # allocator the way a real forward pass does.
     %Nx.Tensor{data: %Emily.Backend{ref: r}} = y
-    :ok = Native.eval(r)
+    :ok = Native.eval(Emily.MlxStream.worker(Emily.MlxStream.Default), r)
     :ok
   end
 
