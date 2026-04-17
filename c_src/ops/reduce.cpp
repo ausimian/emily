@@ -2,6 +2,7 @@
 // argmax/argmin (axis, keepdims); logsumexp; var/std (axes, keepdims, ddof).
 
 #include "../emily/tensor.hpp"
+#include "../emily/worker.hpp"
 
 #include <fine.hpp>
 #include <mlx/mlx.h>
@@ -11,6 +12,7 @@
 
 namespace mx = mlx::core;
 using emily::Tensor;
+using emily::WorkerThread;
 using emily::to_int_vec;
 using emily::wrap;
 
@@ -19,13 +21,13 @@ namespace {
 #define EMILY_REDUCE(nif_name, mlx_fn)                                         \
   fine::ResourcePtr<Tensor> nif_name(                                          \
       ErlNifEnv *,                                                             \
+      fine::ResourcePtr<WorkerThread> w,                                       \
       fine::ResourcePtr<Tensor> a,                                             \
       std::vector<int64_t> axes,                                               \
-      bool keepdims,                                                           \
-      int64_t s) {                                                             \
-    return wrap(                                                               \
-        mlx_fn(a->array, to_int_vec(axes), keepdims,                           \
-               emily::resolve_stream(s)));                                     \
+      bool keepdims) {                                                         \
+    return w->run_sync([&](mx::Stream &s) {                                    \
+      return wrap(mlx_fn(a->array, to_int_vec(axes), keepdims, s));            \
+    });                                                                        \
   }                                                                            \
   FINE_NIF(nif_name, 0);
 
@@ -40,18 +42,18 @@ EMILY_REDUCE(logsumexp, mx::logsumexp)
 
 #undef EMILY_REDUCE
 
-// var/std take an extra ddof parameter.
 #define EMILY_VARSTD(nif_name, mlx_fn)                                         \
   fine::ResourcePtr<Tensor> nif_name(                                          \
       ErlNifEnv *,                                                             \
+      fine::ResourcePtr<WorkerThread> w,                                       \
       fine::ResourcePtr<Tensor> a,                                             \
       std::vector<int64_t> axes,                                               \
       bool keepdims,                                                           \
-      int64_t ddof,                                                            \
-      int64_t s) {                                                             \
-    return wrap(mlx_fn(a->array, to_int_vec(axes), keepdims,                   \
-                       static_cast<int>(ddof),                                 \
-                       emily::resolve_stream(s)));                             \
+      int64_t ddof) {                                                          \
+    return w->run_sync([&](mx::Stream &s) {                                    \
+      return wrap(mlx_fn(a->array, to_int_vec(axes), keepdims,                 \
+                         static_cast<int>(ddof), s));                          \
+    });                                                                        \
   }                                                                            \
   FINE_NIF(nif_name, 0);
 
@@ -60,40 +62,42 @@ EMILY_VARSTD(std, mx::std)
 
 #undef EMILY_VARSTD
 
-// argmax / argmin reduce a single axis.
 fine::ResourcePtr<Tensor> argmax(
     ErlNifEnv *,
+    fine::ResourcePtr<WorkerThread> w,
     fine::ResourcePtr<Tensor> a,
     int64_t axis,
-    bool keepdims,
-    int64_t s) {
-  return wrap(mx::argmax(a->array, static_cast<int>(axis), keepdims,
-                         emily::resolve_stream(s)));
+    bool keepdims) {
+  return w->run_sync([&](mx::Stream &s) {
+    return wrap(mx::argmax(a->array, static_cast<int>(axis), keepdims, s));
+  });
 }
 FINE_NIF(argmax, 0);
 
 fine::ResourcePtr<Tensor> argmin(
     ErlNifEnv *,
+    fine::ResourcePtr<WorkerThread> w,
     fine::ResourcePtr<Tensor> a,
     int64_t axis,
-    bool keepdims,
-    int64_t s) {
-  return wrap(mx::argmin(a->array, static_cast<int>(axis), keepdims,
-                         emily::resolve_stream(s)));
+    bool keepdims) {
+  return w->run_sync([&](mx::Stream &s) {
+    return wrap(mx::argmin(a->array, static_cast<int>(axis), keepdims, s));
+  });
 }
 FINE_NIF(argmin, 0);
 
-// cumulative reductions: axis, reverse, inclusive.
 #define EMILY_CUM(nif_name, mlx_fn)                                            \
   fine::ResourcePtr<Tensor> nif_name(                                          \
       ErlNifEnv *,                                                             \
+      fine::ResourcePtr<WorkerThread> w,                                       \
       fine::ResourcePtr<Tensor> a,                                             \
       int64_t axis,                                                            \
       bool reverse,                                                            \
-      bool inclusive,                                                          \
-      int64_t s) {                                                             \
-    return wrap(mlx_fn(a->array, static_cast<int>(axis), reverse, inclusive,   \
-                       emily::resolve_stream(s)));                             \
+      bool inclusive) {                                                         \
+    return w->run_sync([&](mx::Stream &s) {                                    \
+      return wrap(mlx_fn(a->array, static_cast<int>(axis), reverse,            \
+                         inclusive, s));                                        \
+    });                                                                        \
   }                                                                            \
   FINE_NIF(nif_name, 0);
 

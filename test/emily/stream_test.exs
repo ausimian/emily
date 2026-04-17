@@ -2,16 +2,15 @@ defmodule Emily.StreamTest do
   use ExUnit.Case, async: false
 
   describe "Emily.Stream" do
-    test "new/1 creates a stream with a valid index" do
+    test "new/1 creates a stream with a worker reference" do
       stream = Emily.Stream.new(:gpu)
-      assert is_integer(stream.index)
-      assert stream.device == :gpu
+      assert is_reference(stream.worker)
     end
 
     test "new/1 creates distinct streams" do
       s1 = Emily.Stream.new(:gpu)
       s2 = Emily.Stream.new(:gpu)
-      assert s1.index != s2.index
+      assert s1.worker != s2.worker
     end
 
     test "with_stream/2 scopes stream to block" do
@@ -27,15 +26,15 @@ defmodule Emily.StreamTest do
     end
 
     test "with_stream/2 stores and restores process dictionary" do
-      assert Process.get(:emily_stream) == nil
+      assert Process.get(:emily_worker) == nil
 
       stream = Emily.Stream.new(:gpu)
 
       Emily.Stream.with_stream(stream, fn ->
-        assert Process.get(:emily_stream) == stream.index
+        assert Process.get(:emily_worker) == stream.worker
       end)
 
-      assert Process.get(:emily_stream) == nil
+      assert Process.get(:emily_worker) == nil
     end
 
     test "nested with_stream restores correctly" do
@@ -43,16 +42,16 @@ defmodule Emily.StreamTest do
       s2 = Emily.Stream.new(:gpu)
 
       Emily.Stream.with_stream(s1, fn ->
-        assert Process.get(:emily_stream) == s1.index
+        assert Process.get(:emily_worker) == s1.worker
 
         Emily.Stream.with_stream(s2, fn ->
-          assert Process.get(:emily_stream) == s2.index
+          assert Process.get(:emily_worker) == s2.worker
         end)
 
-        assert Process.get(:emily_stream) == s1.index
+        assert Process.get(:emily_worker) == s1.worker
       end)
 
-      assert Process.get(:emily_stream) == nil
+      assert Process.get(:emily_worker) == nil
     end
 
     test "with_stream/2 restores on exception" do
@@ -64,17 +63,7 @@ defmodule Emily.StreamTest do
         end)
       end
 
-      assert Process.get(:emily_stream) == nil
-    end
-
-    test "synchronize/1 completes without error" do
-      stream = Emily.Stream.new(:gpu)
-
-      Emily.Stream.with_stream(stream, fn ->
-        _t = Nx.tensor([1.0, 2.0], backend: Emily.Backend) |> Nx.multiply(2.0)
-      end)
-
-      assert :ok == Emily.Stream.synchronize(stream)
+      assert Process.get(:emily_worker) == nil
     end
 
     test "computation on a stream produces correct results" do

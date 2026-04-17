@@ -4,6 +4,7 @@
 // defined here via emily/tensor.hpp.
 
 #include "emily/tensor.hpp"
+#include "emily/worker.hpp"
 
 #include <fine.hpp>
 #include <mlx/mlx.h>
@@ -17,6 +18,7 @@
 
 namespace mx = mlx::core;
 using emily::Tensor;
+using emily::WorkerThread;
 using emily::from_mlx_dtype;
 using emily::to_mlx_dtype;
 using emily::to_mlx_shape;
@@ -66,24 +68,17 @@ fine::ResourcePtr<Tensor> from_binary(
 }
 FINE_NIF(from_binary, 0);
 
-// to_binary/1 — materialize the array and return its bytes as a BEAM
+// to_binary/2 — materialize the array and return its bytes as a BEAM
 // resource binary aliasing MLX storage (no memcpy). The binary pins a
 // Tensor resource → mx::array → MLX buffer; the buffer survives until
 // the BEAM binary is GC'd.
-//
-// We route through mx::contiguous() so views with non-standard strides
-// produce the correct in-memory layout. A handful of MLX ops (notably
-// cumulative reductions on interior axes of some 4-D shapes) raise
-// "Unable to safely factor shape" here; the Backend layer routes the
-// known cases around us.
-fine::Term to_binary(ErlNifEnv *env, fine::ResourcePtr<Tensor> tensor, int64_t s) {
-  auto stream = emily::resolve_stream(s);
-  auto materialized = mx::contiguous(tensor->array, false, stream);
-  emily::safe_eval(materialized);
+fine::Term to_binary(ErlNifEnv *env, fine::ResourcePtr<WorkerThread> w, fine::ResourcePtr<Tensor> tensor) {
+  auto materialized = w->run_sync([&](mx::Stream &s) {
+    auto c = mx::contiguous(tensor->array, false, s);
+    mx::eval(c);
+    return c;
+  });
 
-  // Defensive: mx::contiguous is supposed to give a row-contiguous
-  // layout. If it ever doesn't, we'd be aliasing a strided buffer and
-  // lying about its layout. Throw rather than silently corrupt.
   if (!materialized.flags().row_contiguous) {
     throw std::runtime_error(
         "to_binary: array is not row-contiguous after mx::contiguous");
@@ -110,10 +105,12 @@ std::tuple<fine::Atom, int64_t> dtype(ErlNifEnv *, fine::ResourcePtr<Tensor> ten
 }
 FINE_NIF(dtype, 0);
 
-// eval/1 — force evaluation of the lazy graph rooted at this tensor.
+// eval/2 — force evaluation of the lazy graph rooted at this tensor.
 // Dirty CPU: waits for MLX to finish.
-fine::Ok<> eval(ErlNifEnv *, fine::ResourcePtr<Tensor> tensor) {
-  emily::safe_eval(tensor->array);
+fine::Ok<> eval(ErlNifEnv *, fine::ResourcePtr<WorkerThread> w, fine::ResourcePtr<Tensor> tensor) {
+  w->run_sync([&](mx::Stream &) {
+    mx::eval(tensor->array);
+  });
   return fine::Ok<>{};
 }
 FINE_NIF(eval, ERL_NIF_DIRTY_JOB_CPU_BOUND);

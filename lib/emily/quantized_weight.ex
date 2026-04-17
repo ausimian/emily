@@ -90,7 +90,7 @@ defmodule Emily.QuantizedWeight do
     %T{data: %B{ref: w_ref}} = w
 
     {q_ref, s_ref, b_ref} =
-      Native.quantize(w_ref, group_size, bits, Process.get(:emily_stream, -1))
+      Native.quantize(Emily.MlxStream.default_worker(), w_ref, group_size, bits)
 
     %__MODULE__{
       value: ref_to_tensor(q_ref),
@@ -117,7 +117,7 @@ defmodule Emily.QuantizedWeight do
         group_size: group_size,
         bits: bits
       }) do
-    ref = Native.dequantize(q, s, b, group_size, bits, Process.get(:emily_stream, -1))
+    ref = Native.dequantize(Emily.MlxStream.default_worker(), q, s, b, group_size, bits)
     ref_to_tensor(ref)
   end
 

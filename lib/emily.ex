@@ -45,7 +45,9 @@ defmodule Emily do
   is ready.
   """
   @spec to_binary(t()) :: binary()
-  def to_binary(tensor), do: Native.to_binary(tensor, Process.get(:emily_stream, -1))
+  def to_binary(tensor) do
+    Native.to_binary(Emily.MlxStream.default_worker(), tensor)
+  end
 
   @doc "Return the tensor's shape as a list of non-negative ints."
   @spec shape(t()) :: [non_neg_integer()]
@@ -62,5 +64,7 @@ defmodule Emily do
   observing side effects. `to_binary/1` implicitly evaluates.
   """
   @spec eval(t()) :: :ok
-  defdelegate eval(tensor), to: Native
+  def eval(tensor) do
+    Native.eval(Emily.MlxStream.default_worker(), tensor)
+  end
 end

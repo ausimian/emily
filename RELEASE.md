@@ -2,39 +2,50 @@
 
 ## Fixed
 
-- **Fix SIGABRT/SIGSEGV from concurrent `mx::eval` dispatch.** MLX's
-  Metal `CommandEncoder` is not thread-safe (ml-explore/mlx#2133).
-  Concurrent `mx::eval` calls from BEAM dirty-CPU scheduler threads
-  triggered `"A command encoder is already encoding"` assertions or
-  SIGSEGV from corrupted encoder state. Fixed by serialising all
-  `mx::eval` calls through `emily::safe_eval()` (mutex in
-  `c_src/emily/tensor.hpp`). Also removed `set_default_stream` calls
-  from `with_stream/2` — the NIF mutated MLX thread-local state which
-  is unreliable under BEAM process migration. Hardened
-  `resolve_stream(-1)` to avoid reading the thread-local default.
 - Relax MNIST convergence canary threshold from 97% to 96% to eliminate
   stochastic flaps (observed 96.99% on occasional runs). The test is a
   sanity gate, not a performance benchmark.
 
 ## Added
 
-- M14 — Serving concurrency: stream-per-process. `Emily.Stream` lets
-  each BEAM process use its own Metal command queue for concurrent
-  inference. `Emily.Stream.new/1` creates a stream,
-  `Emily.Stream.with_stream/2` scopes all ops in a block to that
-  stream, and `Emily.Stream.synchronize/1` waits for completion.
-  The stream index is passed explicitly to every op NIF (no
-  thread-local race) via a `-1` sentinel for "use default stream"
-  (backwards-compatible). `Emily.Compiler.__partitions_options__/1`
-  error message now points to `Emily.Stream`.
-  - **New files**: `c_src/stream.cpp` (4 stream management NIFs),
-    `lib/emily/stream.ex` (`Emily.Stream` struct + API),
-    `test/emily/stream_test.exs`, `test/soak/stream_concurrency_test.exs`.
-  - **Modified**: every op NIF gained a trailing `int64_t s` stream
-    parameter; `Emily.Native` stubs, `Emily.Backend`, and all test
-    files updated accordingly.
-  - README now documents both concurrency patterns (stream-per-process
-    and pooled servings).
+- M14.5 — Worker-thread dispatch for vendored MLX. Replaces the
+  stream-index NIF convention (M14) and the `safe_eval` mutex with a
+  proper per-stream dedicated OS thread. Each `WorkerThread` (C++ class
+  in `c_src/emily/worker.hpp`) owns an MLX stream and its Metal
+  `CommandEncoder` on a single thread; NIFs dispatch work via
+  `run_sync` (promise/future, blocks caller for ~1-10 µs). This
+  eliminates the thread-local `CommandEncoder` mismatch that caused
+  SIGABRT/SIGSEGV under BEAM process migration, and removes the global
+  eval mutex that serialised all GPU work.
+  - **MLX built from source.** MLX is vendored as a git submodule
+    (`vendor/mlx`, pinned to commit `8e649be4`). The Makefile builds
+    `libmlx.a` via cmake and statically links it into the NIF. The
+    Metal shader library (`mlx.metallib`) is staged into `priv/` at
+    compile time. No prebuilt download step.
+  - **`Emily.MlxStream`** GenServer owns the default `WorkerThread`
+    resource under the application supervisor. `default_worker/0`
+    caches the worker ref in the process dictionary to avoid per-op
+    GenServer calls. User-created streams (`Emily.Stream.new/1`)
+    allocate their own worker; `enif_monitor_process` stops the thread
+    when the creating process exits.
+  - **NIF signature change**: every op NIF takes a worker ref as its
+    first parameter (after env) instead of a stream index as its last.
+    `Emily.Native`, `Emily.Backend`, and all test files updated
+    accordingly. `c_src/stream.cpp` (old stream management NIFs)
+    deleted.
+  - **Concurrent Metal dispatch.** Multiple `WorkerThread`s =
+    multiple MLX streams = concurrent Metal command queues. Model
+    weights (`mx::array`) are shared across threads (refcounted,
+    thread-safe reads). Shared data must be materialised before
+    passing across workers (lazy tensors are bound to their creating
+    worker's stream).
+  - **New files**: `c_src/emily/worker.hpp` (WorkerThread class),
+    `c_src/worker_nif.cpp` (resource registration with `down`
+    callback), `lib/emily/mlx_stream.ex` (GenServer),
+    `test/soak/eval_concurrency_test.exs`.
+  - **`Emily.Stream`** rewritten: struct holds a `worker` ref instead
+    of an integer index; `with_stream/2` stores it in the process
+    dictionary under `:emily_worker`; `synchronize/1` removed.
 
 - M13 — EXLA gradient conformance. Adds a third gradient oracle —
   EXLA (XLA CPU backend) — to catch bugs where Emily and BinaryBackend

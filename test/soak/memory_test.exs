@@ -52,9 +52,10 @@ defmodule Emily.Soak.MemoryTest do
   @tolerance_bytes 4 * 1024 * 1024
 
   defp workload(data) do
+    w = Emily.MlxStream.worker(Emily.MlxStream.Default)
     a = Native.from_binary(data, [@tensor_elems], {:f, 32})
-    b = Native.multiply(a, a, -1)
-    _ = Native.to_binary(b, -1)
+    b = Native.multiply(w, a, a)
+    _ = Native.to_binary(w, b)
     :ok
   end
 
