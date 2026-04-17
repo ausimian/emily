@@ -75,6 +75,37 @@ defmodule Emily.TrainingHelper do
     {new_params, loss}
   end
 
+  # -------------------- Mixed-precision MLP --------------------
+
+  defn mlp_mp_step_with_loss(params, x, y, lr, loss_scale) do
+    loss = mlp_mp_loss(params, x, y)
+    grads = grad(params, fn p -> mlp_mp_loss(p, x, y) * loss_scale end)
+
+    inv_scale = 1.0 / loss_scale
+
+    new_params = %{
+      w1: params.w1 - lr * (grads.w1 * inv_scale),
+      b1: params.b1 - lr * (grads.b1 * inv_scale),
+      w2: params.w2 - lr * (grads.w2 * inv_scale),
+      b2: params.b2 - lr * (grads.b2 * inv_scale)
+    }
+
+    {new_params, loss}
+  end
+
+  defnp mlp_mp_loss(params, x, y) do
+    w1 = Nx.as_type(params.w1, {:bf, 16})
+    b1 = Nx.as_type(params.b1, {:bf, 16})
+    w2 = Nx.as_type(params.w2, {:bf, 16})
+    b2 = Nx.as_type(params.b2, {:bf, 16})
+
+    z1 = Nx.dot(x, w1) + b1
+    a1 = Nx.max(z1, 0.0)
+    z2 = Nx.dot(a1, w2) + b2
+    diff = z2 - y
+    Nx.mean(diff * diff)
+  end
+
   # -------------------- Transformer block --------------------
 
   @doc "Init the transformer-block parameters for `{embed_dim, ff_dim}`."

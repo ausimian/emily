@@ -809,6 +809,31 @@ Promotes "mixed-precision master weights" out of v1 non-goals.
 0.5% of the f32 baseline; loss-scaling primitives documented with a
 worked example in the moduledoc.
 
+**Shipped.**
+
+- `Emily.MixedPrecision` (`lib/emily/mixed_precision.ex`) — `cast_params/2`,
+  `accumulate_grad/2`, `loss_scale/1`, `scale_loss/2`, `unscale/2`,
+  `update/2`, `has_overflow?/1`. Nested `LossScaler` struct with dynamic
+  scaling (halve on overflow, double every N successful steps, floor at
+  `min_scale`). Moduledoc includes a complete mixed-precision training
+  step as a worked example. Traversal covers maps, tuples, lists, and
+  `%Nx.Tensor{}` leaves; `Nx.Container` structs (e.g. `Axon.ModelState`)
+  are not traversed — documented.
+- bf16 grad equivalence (`test/emily/grad/bf16_grad_equivalence_test.exs`)
+  — all 8 zoo functions pass under Emily.Compiler vs BinaryBackend
+  Evaluator, both in bf16, within 1e-2 tolerance.
+- Mixed-precision MLP curve-matching
+  (`test/emily/training/bf16_mlp_curve_test.exs`) — 50-step training
+  loop with f32 master weights, bf16 forward pass, loss scaling, and f32
+  gradient accumulation. Emily vs BinaryBackend within rtol 5e-2.
+- bf16 MNIST convergence canary
+  (`test/emily/training/mnist_bf16_full_test.exs`) — `:training_full`,
+  uses `Axon.MixedPrecision.create_policy`. Target ≥ 95.5%.
+- Backend `coerce` fix: `Emily.Backend.wrap` now checks `Native.dtype(ref)`
+  and casts if the MLX buffer dtype disagrees with the declared Nx output
+  type. Previously only handled pred→u8; now handles all type mismatches
+  (e.g. bf16 buffer with f32 metadata from `Nx.Defn.grad` type promotion).
+
 ### M17 — Conv-pool training (was M10)
 
 Originally scoped as M10 in the pre-review plan. Re-prioritized below

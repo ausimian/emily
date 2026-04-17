@@ -163,6 +163,17 @@ defmodule Emily.GradZoo do
     ]
   end
 
+  @doc """
+  Returns bf16 versions of `fixed_inputs/1`. Float tensors are cast to
+  `{:bf, 16}`; non-float tensors (e.g. s32 indices) are left as-is.
+  """
+  def fixed_inputs_bf16(name) do
+    Enum.map(fixed_inputs(name), fn
+      %Nx.Tensor{type: {:f, _}} = t -> Nx.as_type(t, {:bf, 16})
+      t -> t
+    end)
+  end
+
   # -------------------- Internal --------------------
 
   # Same deterministic init as TrainingHelper.det_weights/3 but always

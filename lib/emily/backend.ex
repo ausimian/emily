@@ -55,8 +55,12 @@ defmodule Emily.Backend do
     %{out | data: %B{ref: coerce(ref, type, w)}}
   end
 
-  defp coerce(ref, {:u, 8}, w), do: Native.astype(w, ref, {:u, 8})
-  defp coerce(ref, _, _w), do: ref
+  defp coerce(ref, type, w) do
+    case Native.dtype(ref) do
+      ^type -> ref
+      _ -> Native.astype(w, ref, type)
+    end
+  end
 
   defp shape_list(shape) when is_tuple(shape), do: Tuple.to_list(shape)
 
