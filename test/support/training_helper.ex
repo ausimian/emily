@@ -75,6 +75,37 @@ defmodule Emily.TrainingHelper do
     {new_params, loss}
   end
 
+  # -------------------- Mixed-precision MLP --------------------
+
+  defn mlp_mp_step_with_loss(params, x, y, lr, loss_scale) do
+    loss = mlp_mp_loss(params, x, y)
+    grads = grad(params, fn p -> mlp_mp_loss(p, x, y) * loss_scale end)
+
+    inv_scale = 1.0 / loss_scale
+
+    new_params = %{
+      w1: params.w1 - lr * (grads.w1 * inv_scale),
+      b1: params.b1 - lr * (grads.b1 * inv_scale),
+      w2: params.w2 - lr * (grads.w2 * inv_scale),
+      b2: params.b2 - lr * (grads.b2 * inv_scale)
+    }
+
+    {new_params, loss}
+  end
+
+  defnp mlp_mp_loss(params, x, y) do
+    w1 = Nx.as_type(params.w1, {:bf, 16})
+    b1 = Nx.as_type(params.b1, {:bf, 16})
+    w2 = Nx.as_type(params.w2, {:bf, 16})
+    b2 = Nx.as_type(params.b2, {:bf, 16})
+
+    z1 = Nx.dot(x, w1) + b1
+    a1 = Nx.max(z1, 0.0)
+    z2 = Nx.dot(a1, w2) + b2
+    diff = z2 - y
+    Nx.mean(diff * diff)
+  end
+
   # -------------------- Transformer block --------------------
 
   @doc "Init the transformer-block parameters for `{embed_dim, ff_dim}`."
@@ -165,6 +196,28 @@ defmodule Emily.TrainingHelper do
       end)
 
     Enum.reverse(losses_rev)
+  end
+
+  # -------------------- Curve-matching assertions --------------------
+
+  @doc """
+  Returns true if `a` and `b` are within `atol + rtol * abs(b)`.
+  """
+  def close?(a, b, atol, rtol), do: abs(a - b) <= atol + rtol * abs(b)
+
+  @doc """
+  Flunks with a trajectory diff when per-step losses diverge.
+  """
+  def flunk_trajectory(i, le, lb, losses_emily, losses_bin) do
+    preview_e = losses_emily |> Enum.take(min(i + 3, length(losses_emily)))
+    preview_b = losses_bin |> Enum.take(min(i + 3, length(losses_bin)))
+
+    ExUnit.Assertions.flunk("""
+    per-step loss diverged at step #{i}:
+      emily=#{le} bin=#{lb} reldiff=#{abs(le - lb) / abs(lb)}
+    emily trajectory (first #{length(preview_e)} steps): #{inspect(preview_e)}
+    bin   trajectory (first #{length(preview_b)} steps): #{inspect(preview_b)}
+    """)
   end
 
   # -------------------- Internal --------------------

@@ -8,6 +8,24 @@
 
 ## Added
 
+- M16 — Mixed-precision training. `Emily.MixedPrecision` delivers the
+  standard bf16 recipe: `cast_params/2` (downcast f32 → bf16 for the
+  forward pass), `accumulate_grad/2` (upcast bf16 grads → f32 for the
+  optimizer), `loss_scale/1` / `scale_loss/2` / `unscale/2` / `update/2`
+  (dynamic loss scaling with overflow detection). `LossScaler` struct
+  halves the scale on inf/nan overflow, doubles every N successful steps,
+  floors at a configurable minimum. Moduledoc includes a complete
+  worked example.
+  - **Backend `coerce` fix**: `Emily.Backend.wrap` now checks
+    `Native.dtype(ref)` and casts when the MLX buffer dtype disagrees
+    with the declared Nx output type. Fixes bf16 grads where
+    `Nx.Defn.grad` promotes the output type metadata to f32 but the
+    MLX buffer stays bf16.
+  - **Tests**: `mixed_precision_test.exs` (33 unit tests), bf16 grad
+    equivalence for all 8 zoo functions, bf16 mixed-precision MLP
+    curve-matching (50 steps, rtol 5e-2), bf16 MNIST convergence canary
+    (`:training_full`, target ≥ 95.5%).
+
 - M15 — Native linalg. `lu`, `svd`, `qr` (reduced), `cholesky`, `eigh`,
   `solve`, and `triangular_solve` now dispatch directly to
   `mx::linalg::*` instead of round-tripping through `Nx.BinaryBackend`.

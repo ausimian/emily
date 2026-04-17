@@ -40,6 +40,10 @@ defmodule Emily.BackendGenerators do
     |> map(&Nx.reshape(&1, shape))
   end
 
+  def tensor(shape, {kind, 16} = type) when kind in [:bf, :f] do
+    tensor(shape, {:f, 32}) |> map(&Nx.as_type(&1, type))
+  end
+
   def tensor(shape, {:s, bits}) do
     max = min(100, Bitwise.bsl(1, bits - 1) - 1)
     min = -max
