@@ -10,6 +10,25 @@ defmodule Emily.ExlaGoldenData do
   Backend: EXLA (CPU)
   """
 
+  @functions_with_goldens ~w(
+    grad_sum_op
+    grad_dot_left
+    grad_reshape_transpose
+    grad_broadcast
+    grad_gather
+    grad_indexed_add
+    grad_gather_dot_softmax
+    grad_attention
+  )a
+
+  @doc """
+  Returns true if an EXLA golden has been generated for the given zoo
+  function. New zoo entries (e.g. M17's window ops) land in the
+  BinaryBackend grad-equivalence test first; run `mix run
+  bench/exla_golden_gen.exs` to add them here.
+  """
+  def has_golden?(name), do: name in @functions_with_goldens
+
   def golden(:grad_sum_op) do
     %{
       expected: [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0],

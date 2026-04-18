@@ -396,6 +396,115 @@ defmodule Emily.Native do
   @spec scatter_add(worker(), tensor(), [tensor()], tensor(), [integer()]) :: tensor()
   def scatter_add(_w, _a, _indices, _updates, _axes), do: nif()
 
+  # --- Window / pooling reductions ---------------------------------
+
+  # Composed via MLX's pad + as_strided + reduce (MLX has no native
+  # window_* primitives — mirrors nn/layers/pooling.py). Elixir side
+  # resolves :valid/:same padding to {lo, hi} pairs, and supplies the
+  # dtype-specific identity (`init_value`) as the padding fill.
+
+  @spec window_sum(
+          worker(),
+          tensor(),
+          [non_neg_integer()],
+          [non_neg_integer()],
+          [non_neg_integer()],
+          [non_neg_integer()],
+          [non_neg_integer()],
+          tensor()
+        ) :: tensor()
+  def window_sum(_w, _t, _window, _strides, _pad_lo, _pad_hi, _dilations, _init),
+    do: nif()
+
+  @spec window_max(
+          worker(),
+          tensor(),
+          [non_neg_integer()],
+          [non_neg_integer()],
+          [non_neg_integer()],
+          [non_neg_integer()],
+          [non_neg_integer()],
+          tensor()
+        ) :: tensor()
+  def window_max(_w, _t, _window, _strides, _pad_lo, _pad_hi, _dilations, _init),
+    do: nif()
+
+  @spec window_min(
+          worker(),
+          tensor(),
+          [non_neg_integer()],
+          [non_neg_integer()],
+          [non_neg_integer()],
+          [non_neg_integer()],
+          [non_neg_integer()],
+          tensor()
+        ) :: tensor()
+  def window_min(_w, _t, _window, _strides, _pad_lo, _pad_hi, _dilations, _init),
+    do: nif()
+
+  @spec window_product(
+          worker(),
+          tensor(),
+          [non_neg_integer()],
+          [non_neg_integer()],
+          [non_neg_integer()],
+          [non_neg_integer()],
+          [non_neg_integer()],
+          tensor()
+        ) :: tensor()
+  def window_product(_w, _t, _window, _strides, _pad_lo, _pad_hi, _dilations, _init),
+    do: nif()
+
+  # --- Window scatters (MaxPool/MinPool backward) ------------------
+
+  # pad(source) -> as_strided -> argmax-with-last-occurrence-tie-break
+  # -> scatter_add into full(init_value) -> slice. No dilation — Nx's
+  # scatter variants don't accept :window_dilations.
+
+  @spec window_scatter_max(
+          worker(),
+          tensor(),
+          tensor(),
+          tensor(),
+          [non_neg_integer()],
+          [non_neg_integer()],
+          [non_neg_integer()],
+          [non_neg_integer()]
+        ) :: tensor()
+  def window_scatter_max(
+        _w,
+        _t,
+        _source,
+        _init,
+        _window,
+        _strides,
+        _pad_lo,
+        _pad_hi
+      ),
+      do: nif()
+
+  @spec window_scatter_min(
+          worker(),
+          tensor(),
+          tensor(),
+          tensor(),
+          [non_neg_integer()],
+          [non_neg_integer()],
+          [non_neg_integer()],
+          [non_neg_integer()]
+        ) :: tensor()
+  def window_scatter_min(
+        _w,
+        _t,
+        _source,
+        _init,
+        _window,
+        _strides,
+        _pad_lo,
+        _pad_hi
+      ),
+      do: nif()
+
   # --- Convolution -------------------------------------------------
 
   @spec conv_general(

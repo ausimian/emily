@@ -71,6 +71,31 @@ defmodule Emily.GradZoo do
     end)
   end
 
+  # M17 window zoo — exercise native window_sum, window_max, and the
+  # grad-of-maxpool path which Nx rewrites to window_scatter_max.
+
+  defn grad_window_sum(x) do
+    grad(x, fn z -> z |> Nx.window_sum({1, 1, 2, 2}, strides: [1, 1, 1, 1]) |> Nx.sum() end)
+  end
+
+  defn grad_window_max_pool(x) do
+    # 2x2 max-pool with stride 2 — the canonical CNN head.
+    # Nx's grad walks through window_scatter_max here.
+    grad(x, fn z -> z |> Nx.window_max({1, 1, 2, 2}, strides: [1, 1, 2, 2]) |> Nx.sum() end)
+  end
+
+  defn grad_window_avg_pool(x) do
+    # Average pooling via window_sum / kernel_size — same grad shape as
+    # avg-pool even though Nx doesn't expose a dedicated window_mean
+    # primitive to Axon.
+    grad(x, fn z ->
+      z
+      |> Nx.window_sum({1, 1, 2, 2}, strides: [1, 1, 2, 2])
+      |> Nx.divide(4.0)
+      |> Nx.sum()
+    end)
+  end
+
   defn softmax_last(t) do
     m = Nx.reduce_max(t, axes: [-1], keep_axes: true)
     e = Nx.exp(t - m)
@@ -137,6 +162,14 @@ defmodule Emily.GradZoo do
     ]
   end
 
+  # Window zoo — NCHW-shaped so the window is on the spatial axes and
+  # the batch/channel dims pass through. Size chosen to exercise both
+  # stride-1 (sum) and stride-2 (pool) grad paths on a tensor small
+  # enough for property coverage.
+  def fixed_inputs(:grad_window_sum), do: [det_weights({2, 3, 4, 4}, 10)]
+  def fixed_inputs(:grad_window_max_pool), do: [det_weights({2, 3, 4, 4}, 11)]
+  def fixed_inputs(:grad_window_avg_pool), do: [det_weights({2, 3, 4, 4}, 12)]
+
   @doc """
   Returns the function capture for the named zoo function.
   """
@@ -148,6 +181,9 @@ defmodule Emily.GradZoo do
   def grad_function(:grad_indexed_add), do: &grad_indexed_add/3
   def grad_function(:grad_gather_dot_softmax), do: &grad_gather_dot_softmax/3
   def grad_function(:grad_attention), do: &grad_attention/5
+  def grad_function(:grad_window_sum), do: &grad_window_sum/1
+  def grad_function(:grad_window_max_pool), do: &grad_window_max_pool/1
+  def grad_function(:grad_window_avg_pool), do: &grad_window_avg_pool/1
 
   @doc "All zoo function identifiers, in order."
   def all_functions do
@@ -159,7 +195,10 @@ defmodule Emily.GradZoo do
       :grad_gather,
       :grad_indexed_add,
       :grad_gather_dot_softmax,
-      :grad_attention
+      :grad_attention,
+      :grad_window_sum,
+      :grad_window_max_pool,
+      :grad_window_avg_pool
     ]
   end
 

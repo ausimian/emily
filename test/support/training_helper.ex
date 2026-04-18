@@ -106,6 +106,84 @@ defmodule Emily.TrainingHelper do
     Nx.mean(diff * diff)
   end
 
+  # -------------------- Small CNN (M17 curve test) --------------------
+
+  @doc """
+  Deterministic parameter init for a tiny LeNet-style CNN:
+  conv(1->4, 3x3) → maxpool(2x2) → conv(4->8, 3x3) → maxpool(2x2) →
+  dense(8*out_h*out_w -> classes).
+
+  `input_shape` = `{channels=1, h, w}`. `classes` is the output logit
+  count. Returns a params map including the computed flatten size so
+  the forward pass stays defn-compatible without introspection.
+  """
+  def init_cnn({_ch_in, h, w}, classes, seed, backend) do
+    # After conv(3x3,valid) + maxpool(2,stride 2) twice:
+    # h1 = h - 2; h_after_pool1 = div(h1, 2)
+    # h2 = h_after_pool1 - 2; h_after_pool2 = div(h2, 2)
+    h_out = div(div(h - 2, 2) - 2, 2)
+    w_out = div(div(w - 2, 2) - 2, 2)
+    flatten_size = 8 * h_out * w_out
+
+    %{
+      k1: det_weights({4, 1, 3, 3}, seed * 17 + 1, backend),
+      b1: Nx.broadcast(0.0, {4}) |> Nx.backend_transfer(backend),
+      k2: det_weights({8, 4, 3, 3}, seed * 17 + 2, backend),
+      b2: Nx.broadcast(0.0, {8}) |> Nx.backend_transfer(backend),
+      w_fc: det_weights({flatten_size, classes}, seed * 17 + 3, backend),
+      b_fc: Nx.broadcast(0.0, {classes}) |> Nx.backend_transfer(backend)
+    }
+  end
+
+  @doc """
+  Synthetic CNN training batch. `x` shape = `{batch, 1, h, w}`,
+  `y` shape = `{batch, classes}` (soft targets).
+  """
+  def cnn_batch({batch, h, w}, classes, backend) do
+    x = det_weights({batch, 1, h, w}, 2001, backend)
+    y = det_weights({batch, classes}, 2003, backend)
+    {x, y}
+  end
+
+  defn cnn_forward(params, x) do
+    # Block 1: conv → relu → maxpool.
+    h1 = Nx.conv(x, params.k1) + Nx.reshape(params.b1, {1, 4, 1, 1})
+    h1 = Nx.max(h1, 0.0)
+    h1 = Nx.window_max(h1, {1, 1, 2, 2}, strides: [1, 1, 2, 2])
+
+    # Block 2: conv → relu → maxpool.
+    h2 = Nx.conv(h1, params.k2) + Nx.reshape(params.b2, {1, 8, 1, 1})
+    h2 = Nx.max(h2, 0.0)
+    h2 = Nx.window_max(h2, {1, 1, 2, 2}, strides: [1, 1, 2, 2])
+
+    # Flatten + FC head.
+    batch = Nx.axis_size(h2, 0)
+    flat = Nx.reshape(h2, {batch, :auto})
+    Nx.dot(flat, params.w_fc) + params.b_fc
+  end
+
+  defn cnn_loss(params, x, y) do
+    logits = cnn_forward(params, x)
+    diff = logits - y
+    Nx.mean(diff * diff)
+  end
+
+  defn cnn_step_with_loss(params, x, y, lr) do
+    loss = cnn_loss(params, x, y)
+    grads = grad(params, fn p -> cnn_loss(p, x, y) end)
+
+    new_params = %{
+      k1: params.k1 - lr * grads.k1,
+      b1: params.b1 - lr * grads.b1,
+      k2: params.k2 - lr * grads.k2,
+      b2: params.b2 - lr * grads.b2,
+      w_fc: params.w_fc - lr * grads.w_fc,
+      b_fc: params.b_fc - lr * grads.b_fc
+    }
+
+    {new_params, loss}
+  end
+
   # -------------------- Transformer block --------------------
 
   @doc "Init the transformer-block parameters for `{embed_dim, ff_dim}`."

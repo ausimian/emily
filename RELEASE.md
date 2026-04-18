@@ -8,6 +8,37 @@
 
 ## Added
 
+- M17 — Conv-pool training (native window ops). Lifted `window_sum`,
+  `window_max`, `window_min`, `window_product`, `window_scatter_max`,
+  and `window_scatter_min` off the `via_binary` fallback onto native
+  MLX. No direct MLX primitives exist — each op is composed as
+  `mx::pad` → `mx::as_strided` (sliding-window view) → reduce (for
+  the four reductions) or → argmax-with-last-occurrence-tie-break →
+  `mx::scatter_add` (for the two scatters). Mirrors MLX's own
+  `nn/layers/pooling.py` but generalised to N-D so Nx's per-axis
+  window/stride/padding/dilation all lower cleanly.
+  - **Closes the training primitive set** — Nx rewrites
+    `grad(window_max)` to `window_scatter_max`, so every CNN with
+    MaxPool2d lands on the new scatter path on its backward pass. No
+    more `via_binary` round-trips during CNN training.
+  - **Tie-break** — Nx picks the last-occurrence argmax/min inside a
+    window; MLX's `argmax` is first-occurrence. The scatter path
+    uses a `mask * arange(K)` trick to recover last-occurrence.
+  - **New NIFs** in `c_src/ops/pooling.cpp`: `window_sum`,
+    `window_max`, `window_min`, `window_product`,
+    `window_scatter_max`, `window_scatter_min`. Corresponding
+    stubs in `Emily.Native`; `Emily.Backend` resolves `:valid`/`:same`
+    padding and dtype-specific identity values (0/1/±∞ or integer
+    min/max) in Elixir before dispatch.
+  - **Tests**: `backend_window_test.exs` (19 unit tests —
+    reductions × shape × stride × padding × dilation × f32/bf16/s32/u8),
+    `backend_window_scatter_test.exs` (11 unit tests — overlapping
+    windows + tie-break + non-zero init + 1-D/3-D), grad-equivalence
+    extensions for `window_sum`, `window_max` (max-pool grad),
+    `window_avg` (3 new zoo fns), `cnn_curve_test.exs` (handwritten
+    2-conv + max-pool CNN, 30 steps, per-step loss match), LeNet
+    MNIST canary (`:training_full`, target ≥ 97%).
+
 - M16 — Mixed-precision training. `Emily.MixedPrecision` delivers the
   standard bf16 recipe: `cast_params/2` (downcast f32 → bf16 for the
   forward pass), `accumulate_grad/2` (upcast bf16 grads → f32 for the
