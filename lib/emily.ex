@@ -9,6 +9,43 @@ defmodule Emily do
   The M0 surface is intentionally tiny: build a tensor from a binary,
   round-trip it back, and inspect shape/dtype. This is the narrowest
   slice that proves the NIF + MLX linking is healthy.
+
+  ## Debug assertions
+
+  Emily supports two compile-time flags that enable runtime assertions
+  on hot paths. Both default to `false` with zero runtime cost — the
+  guarded branches are dead-code-eliminated by the Elixir compiler
+  when the flag is `false`.
+
+      # config/dev.exs  (opt in only in development / CI)
+      import Config
+      config :emily,
+        debug_bounds_check: true,
+        debug_detect_nan_inf: true
+
+    * `:debug_bounds_check` — assert indices are in range for
+      `gather`, `take`, `take_along_axis`, `indexed_add`, and
+      `indexed_put`. Raises `ArgumentError` on out-of-range or
+      negative indices. GPU backends (Emily, EXLA, Torch-CUDA,
+      JAX-GPU) don't bounds-check by default — an OOB index gets
+      whatever bytes happen to live at that memory address, which
+      can silently produce `NaN` scores that propagate through
+      softmax. Turning this on in CI catches the bug class at the
+      offending op.
+
+    * `:debug_detect_nan_inf` — scan results of `matmul`,
+      `fast_rms_norm`, `fast_layer_norm`, and the two
+      `fast_scaled_dot_product_attention` variants for NaN/Inf.
+      Raises `ArgumentError` on detection. Useful during training
+      so numerics failures surface at the op that produced them
+      rather than downstream as `loss = NaN`. Standalone softmax
+      has no backend callback in Emily (it's Axon-composed from
+      `exp` / `sum` / `divide`); only the fused SDPA softmax is
+      scanned.
+
+  Each assertion forces a small MLX reduction plus a scalar readback
+  on the worker — a sync point that breaks lazy-graph fusion and
+  adds noticeable overhead. Leave the flags off in release builds.
   """
 
   alias Emily.Native
