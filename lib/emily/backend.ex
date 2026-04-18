@@ -45,6 +45,17 @@ defmodule Emily.Backend do
   @typep tensor :: T.t()
   @typep ref :: reference()
 
+  # The four callbacks below are genuinely unimplementable on MLX and
+  # exist solely to raise — dialyzer's `:error_handling` flag would
+  # otherwise flag every one as "only terminates with explicit exception".
+  @dialyzer {:nowarn_function,
+             [
+               from_pointer: 5,
+               to_pointer: 2,
+               count_leading_zeros: 2,
+               population_count: 2
+             ]}
+
   # =================================================================
   # Helpers
   # =================================================================
@@ -58,8 +69,8 @@ defmodule Emily.Backend do
   defp ref(%T{} = t), do: t |> Nx.backend_transfer(Emily.Backend) |> ref()
 
   @spec wrap(ref(), tensor(), reference()) :: tensor()
-  defp wrap(ref, %T{type: type} = out, w) do
-    %{out | data: %B{ref: coerce(ref, type, w)}}
+  defp wrap(ref, %T{} = out, w) do
+    %{out | data: %B{ref: coerce(ref, out.type, w)}}
   end
 
   # Fast path: pred→u8 is the most common mismatch (MLX comparison/logical
@@ -647,6 +658,11 @@ defmodule Emily.Backend do
   end
 
   @impl true
+  # `{:pred, 1}` is Nx's 1-bit boolean dtype, mapped to `mx::bool_` in
+  # `c_src/emily/dtype.hpp`. Not listed in `Nx.Type.t()` so
+  # `Native.astype/3`'s spec is too narrow — suppress here rather than
+  # widen the Native dtype type (that pollutes every wrapped tensor).
+  @dialyzer {:nowarn_function, select: 4}
   def select(%T{} = out, pred, on_true, on_false) do
     w = worker()
     cond_ref = Native.astype(w, ref(pred), {:pred, 1})

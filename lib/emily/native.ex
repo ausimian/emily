@@ -20,7 +20,7 @@ defmodule Emily.Native do
 
   @type tensor :: reference()
   @type worker :: reference()
-  @type dtype :: {atom(), non_neg_integer()}
+  @type dtype :: Nx.Type.t()
 
   defp nif, do: :erlang.nif_error(:nif_not_loaded)
 

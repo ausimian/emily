@@ -115,13 +115,14 @@ defmodule Emily.Telemetry do
   def init_dedup_table do
     case :ets.whereis(@dedup_table) do
       :undefined ->
-        :ets.new(@dedup_table, [
-          :set,
-          :public,
-          :named_table,
-          read_concurrency: true,
-          write_concurrency: true
-        ])
+        _ =
+          :ets.new(@dedup_table, [
+            :set,
+            :public,
+            :named_table,
+            read_concurrency: true,
+            write_concurrency: true
+          ])
 
         :ok
 
