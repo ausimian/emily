@@ -122,8 +122,16 @@ defmodule Emily.Backend do
   defp ensure_binary(bs) when is_bitstring(bs), do: :erlang.list_to_bitstring([bs])
 
   @impl true
-  def to_binary(%T{data: %B{ref: r}, type: {_, bits}} = tensor, limit) do
-    bin = Native.to_binary(worker(), r)
+  def to_binary(%T{data: %B{ref: r}, shape: shape, type: type} = tensor, limit) do
+    metadata = %{shape: shape, dtype: type}
+
+    bin =
+      :telemetry.span([:emily, :to_binary], metadata, fn ->
+        bytes = Native.to_binary(worker(), r)
+        {bytes, Map.put(metadata, :byte_size, byte_size(bytes))}
+      end)
+
+    {_, bits} = type
     elem_bits = effective_elem_bits(bits)
     size = Nx.size(tensor)
 
@@ -668,7 +676,7 @@ defmodule Emily.Backend do
         Native.reshape(w, r, Tuple.to_list(out.shape)) |> wrap(out, w)
 
       true ->
-        via_binary(out, [input, indices], &Nx.gather(&1, &2, opts))
+        via_binary(:gather, out, [input, indices], &Nx.gather(&1, &2, opts))
     end
   end
 
@@ -753,7 +761,7 @@ defmodule Emily.Backend do
         Native.unquote(native_name)(w, ref(t), axis, reverse, true) |> wrap(out, w)
       else
         nx_fun = unquote(nx_name)
-        via_binary(out, [t], &apply(Nx, nx_fun, [&1, opts]))
+        via_binary(nx_fun, out, [t], &apply(Nx, nx_fun, [&1, opts]))
       end
     end
   end
@@ -779,7 +787,7 @@ defmodule Emily.Backend do
     if float_like?(type) do
       batched_matmul(out, a, contract_a, batch_a, b, contract_b, batch_b)
     else
-      via_binary(out, [a, b], &Nx.dot(&1, contract_a, batch_a, &2, contract_b, batch_b))
+      via_binary(:dot, out, [a, b], &Nx.dot(&1, contract_a, batch_a, &2, contract_b, batch_b))
     end
   end
 
@@ -990,10 +998,10 @@ defmodule Emily.Backend do
   def conv(out, input, kernel, opts) do
     cond do
       opts[:batch_group_size] > 1 ->
-        via_binary(out, [input, kernel], &Nx.conv(&1, &2, opts))
+        via_binary(:conv, out, [input, kernel], &Nx.conv(&1, &2, opts))
 
       match?({:c, _}, out.type) ->
-        via_binary(out, [input, kernel], &Nx.conv(&1, &2, opts))
+        via_binary(:conv, out, [input, kernel], &Nx.conv(&1, &2, opts))
 
       true ->
         w = worker()
@@ -1062,28 +1070,50 @@ defmodule Emily.Backend do
   # those scalars land on the current global default — which is
   # `Emily.Backend` during conformance tests — and the resulting
   # mixed-backend operand list crashes inside BinaryBackend's op.
-  defp via_binary(%T{} = out, tensors, fun) when is_list(tensors) do
-    result =
-      Nx.with_default_backend(Nx.BinaryBackend, fn ->
-        tensors |> transfer_all() |> then(&apply(fun, &1))
-      end)
+  defp via_binary(op, %T{} = out, tensors, fun) when is_atom(op) and is_list(tensors) do
+    metadata = fallback_metadata(op, tensors)
+    Emily.Telemetry.maybe_warn_fallback(op, metadata.input_shapes)
 
-    from_binary(out, Nx.to_binary(result), [])
+    :telemetry.span([:emily, :fallback], metadata, fn ->
+      result =
+        Nx.with_default_backend(Nx.BinaryBackend, fn ->
+          tensors |> transfer_all() |> then(&apply(fun, &1))
+        end)
+
+      {from_binary(out, Nx.to_binary(result), []), metadata}
+    end)
   end
 
   # Same pattern, but the op returns a tuple of tensors. `outs` is a
   # tuple of output templates matching arity; positions are zipped.
-  defp via_binary_tuple(outs, tensors, fun) when is_tuple(outs) and is_list(tensors) do
-    result_tuple =
-      Nx.with_default_backend(Nx.BinaryBackend, fn ->
-        tensors |> transfer_all() |> then(&apply(fun, &1))
-      end)
+  defp via_binary_tuple(op, outs, tensors, fun)
+       when is_atom(op) and is_tuple(outs) and is_list(tensors) do
+    metadata = fallback_metadata(op, tensors)
+    Emily.Telemetry.maybe_warn_fallback(op, metadata.input_shapes)
 
-    outs
-    |> Tuple.to_list()
-    |> Enum.zip(Tuple.to_list(result_tuple))
-    |> Enum.map(fn {out, r} -> from_binary(out, Nx.to_binary(r), []) end)
-    |> List.to_tuple()
+    :telemetry.span([:emily, :fallback], metadata, fn ->
+      result_tuple =
+        Nx.with_default_backend(Nx.BinaryBackend, fn ->
+          tensors |> transfer_all() |> then(&apply(fun, &1))
+        end)
+
+      result =
+        outs
+        |> Tuple.to_list()
+        |> Enum.zip(Tuple.to_list(result_tuple))
+        |> Enum.map(fn {out, r} -> from_binary(out, Nx.to_binary(r), []) end)
+        |> List.to_tuple()
+
+      {result, metadata}
+    end)
+  end
+
+  defp fallback_metadata(op, tensors) do
+    %{
+      op: op,
+      input_shapes: Enum.map(tensors, & &1.shape),
+      input_dtypes: Enum.map(tensors, & &1.type)
+    }
   end
 
   defp transfer_all(tensors),
@@ -1091,11 +1121,17 @@ defmodule Emily.Backend do
 
   @impl true
   def reduce(out, t, acc, opts, fun),
-    do: via_binary(out, [t, acc], &Nx.reduce(&1, &2, opts, fun))
+    do: via_binary(:reduce, out, [t, acc], &Nx.reduce(&1, &2, opts, fun))
 
   @impl true
   def window_reduce(out, t, acc, window_shape, opts, fun),
-    do: via_binary(out, [t, acc], &Nx.window_reduce(&1, &2, window_shape, opts, fun))
+    do:
+      via_binary(
+        :window_reduce,
+        out,
+        [t, acc],
+        &Nx.window_reduce(&1, &2, window_shape, opts, fun)
+      )
 
   # M17: window reductions lifted off via_binary. MLX has no native
   # window_* primitive — each op is composed as pad → as_strided
@@ -1234,15 +1270,33 @@ defmodule Emily.Backend do
   # indices; correctness on duplicates with indexed_put is best-effort.
   @impl true
   def indexed_add(out, t, indices, updates, opts) do
-    apply_scatter(out, t, indices, updates, opts, :scatter_add, &Nx.indexed_add(&1, &2, &3, opts))
+    apply_scatter(
+      :indexed_add,
+      out,
+      t,
+      indices,
+      updates,
+      opts,
+      :scatter_add,
+      &Nx.indexed_add(&1, &2, &3, opts)
+    )
   end
 
   @impl true
   def indexed_put(out, t, indices, updates, opts) do
-    apply_scatter(out, t, indices, updates, opts, :scatter, &Nx.indexed_put(&1, &2, &3, opts))
+    apply_scatter(
+      :indexed_put,
+      out,
+      t,
+      indices,
+      updates,
+      opts,
+      :scatter,
+      &Nx.indexed_put(&1, &2, &3, opts)
+    )
   end
 
-  defp apply_scatter(out, t, indices, updates, opts, native_fun, fallback) do
+  defp apply_scatter(op, out, t, indices, updates, opts, native_fun, fallback) do
     axes = opts[:axes] || Enum.to_list(0..(tuple_size(t.shape) - 1))
     indices_shape = Tuple.to_list(indices.shape)
 
@@ -1255,7 +1309,7 @@ defmodule Emily.Backend do
       apply(Native, native_fun, [w, ref(t), idx_refs, updates_ref, axes])
       |> wrap(out, w)
     else
-      via_binary(out, [t, indices, updates], fallback)
+      via_binary(op, out, [t, indices, updates], fallback)
     end
   end
 
@@ -1388,7 +1442,7 @@ defmodule Emily.Backend do
         {wrap(q_ref, q_out, w), wrap(r_ref, r_out, w)}
 
       :complete ->
-        via_binary_tuple({q_out, r_out}, [t], &Nx.LinAlg.qr(&1, opts))
+        via_binary_tuple(:qr, {q_out, r_out}, [t], &Nx.LinAlg.qr(&1, opts))
     end
   end
 
