@@ -1,0 +1,100 @@
+# DistilBERT question answering on Emily
+
+```elixir
+Mix.install(
+  [
+    {:emily, "~> 0.1"},
+    {:bumblebee,
+     github: "elixir-nx/bumblebee", ref: "273805e95507dc7866b958d90e0012a3abad1761"},
+    {:tokenizers, "~> 0.5"},
+    {:nx, "~> 0.10"},
+    {:kino, "~> 0.14"}
+  ],
+  config: [
+    nx: [default_backend: Emily.Backend]
+  ]
+)
+```
+
+## Overview
+
+This notebook runs a DistilBERT question-answering pipeline on
+`Emily.Backend`. The backend is installed as the Nx global default by
+the `Mix.install/2` config above, so every subsequent `Nx` call
+dispatches to MLX without further setup.
+
+The featurizer, tokenizer, and model all come from Bumblebee. The
+only integration with Emily is the `Mix.install` config line and,
+optionally, the `Emily.Compiler` attachment further down.
+
+## Loading the model
+
+```elixir
+{:ok, model_info} =
+  Bumblebee.load_model({:hf, "distilbert-base-uncased-distilled-squad"})
+
+{:ok, tokenizer} =
+  Bumblebee.load_tokenizer({:hf, "distilbert-base-uncased-distilled-squad"})
+```
+
+The checkpoint is ~250 MB on first fetch; subsequent runs use the
+Bumblebee cache at `~/.cache/bumblebee`.
+
+## Building a serving
+
+```elixir
+serving =
+  Bumblebee.Text.question_answering(model_info, tokenizer,
+    defn_options: [compiler: Emily.Compiler]
+  )
+```
+
+`Emily.Compiler` forwards the walk to `Nx.Defn.Evaluator` with two
+adjustments: it pins the result backend to `Emily.Backend`, and it
+caps partition concurrency at 1 (use `Emily.Stream` for per-process
+concurrency — see the other notebook).
+
+## Running a query
+
+```elixir
+context =
+  "Elixir is a dynamic, functional programming language that runs on the Erlang VM. " <>
+    "It was created by José Valim in 2011."
+
+question = "Who created Elixir?"
+
+Nx.Serving.run(serving, %{question: question, context: context})
+```
+
+The expected output is a map shaped like
+
+```elixir
+%{
+  predictions: [
+    %{text: "José Valim", start: _, end: _, score: _}
+  ]
+}
+```
+
+## Telemetry
+
+Emily emits `:telemetry` events at the evaluation boundary. Attach
+a handler to sample timing for each forward pass:
+
+```elixir
+:telemetry.attach(
+  "distilbert-qa-eval",
+  [:emily, :eval, :stop],
+  fn _event, %{duration: duration}, _meta, _config ->
+    ms = System.convert_time_unit(duration, :native, :millisecond)
+    IO.puts("eval #{ms} ms")
+  end,
+  nil
+)
+
+Nx.Serving.run(serving, %{question: question, context: context})
+```
+
+See `Emily.Telemetry` for the full event catalogue, including the
+`[:emily, :fallback, *]` span that fires whenever an op routes
+through `Nx.BinaryBackend`.

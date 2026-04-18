@@ -14,8 +14,8 @@ defmodule Emily.Telemetry do
   The `:stop` event carries `:duration` (monotonic native units).
 
   `[:emily, :to_binary, :start | :stop | :exception]` — fires for both
-  `Emily.to_binary/1` and the `Emily.Backend.to_binary/2` path used by
-  `Nx.to_binary/1`. Metadata: `:byte_size`, `:shape`, `:dtype`.
+  `Emily.to_binary/1` and the `Nx.to_binary/1` path on `Emily.Backend`.
+  Metadata: `:byte_size`, `:shape`, `:dtype`.
 
   ### Fallback entry
 
@@ -70,6 +70,13 @@ defmodule Emily.Telemetry do
 
   Returns the measurements map so callers can also log or plot
   inline.
+
+  ## Examples
+
+      iex> stats = Emily.Telemetry.memory_stats()
+      iex> Map.keys(stats) |> Enum.sort()
+      [:active, :cache, :peak]
+
   """
   @spec memory_stats() :: %{
           active: non_neg_integer(),

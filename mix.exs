@@ -102,7 +102,28 @@ defmodule Emily.MixProject do
     [
       main: "readme",
       source_url_pattern: "#{@source_url}/blob/v#{@version}/%{path}#L%{line}",
-      extras: ["README.md", "PLAN.md", "CHANGELOG.md"]
+      extras: [
+        "README.md",
+        "CHANGELOG.md",
+        "notebooks/distilbert_qa.livemd",
+        "notebooks/qwen3_quantized.livemd"
+      ],
+      groups_for_extras: [
+        README: ~r{README.md},
+        Notebooks: ~r{^notebooks/}
+      ],
+      groups_for_modules: [
+        Core: [Emily, Emily.Backend, Emily.Compiler],
+        Concurrency: [Emily.Stream],
+        Quantization: [
+          Emily.Quantization,
+          Emily.Quantization.Layers,
+          Emily.QuantizedWeight
+        ],
+        Training: [Emily.MixedPrecision, Emily.MixedPrecision.LossScaler],
+        Performance: [Emily.Fast],
+        Observability: [Emily.Telemetry]
+      ]
     ]
   end
 

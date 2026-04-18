@@ -1,28 +1,63 @@
 defmodule Emily.Backend do
   @moduledoc """
-  `Nx.Backend` implementation backed by Apple's MLX via `Emily.Native`.
+  `Nx.Backend` implementation backed by Apple's MLX.
 
-  ## Usage
+  ## Public API
 
-      Nx.global_default_backend(Emily.Backend)
-      Nx.tensor([[1.0, 2.0], [3.0, 4.0]]) |> Nx.sum()
+  Users rarely call functions on this module directly. Install it as
+  the default backend (or the per-tensor `backend:` opt) and `Nx` does
+  the dispatch:
 
-  ## Deliberate divergences from Nx defaults
+      Nx.global_default_backend({Emily.Backend, device: :gpu})
 
-    * `{:f, 64}` is not supported — Metal cannot execute f64. Operations
-      that would allocate an f64 tensor raise `ArgumentError` with a
-      message pointing to f32.
-    * `from_pointer`, `to_pointer`, `population_count`, and
-      `count_leading_zeros` raise `ArgumentError` — MLX has no primitive.
-    * `qr` with `mode: :complete` falls back to `via_binary` (MLX only
-      supports reduced QR). `determinant` uses Nx's default
-      implementation, which calls `lu` (native via MLX) for matrices
+      Nx.tensor([[1.0, 2.0], [3.0, 4.0]])
+      |> Nx.sum()
+      |> Nx.to_flat_list()
+      # => [10.0]
+
+  Every function defined here implements a callback from the
+  `Nx.Backend` behaviour (see `@impl true` in the source); they form
+  the Nx dispatch table, not a user-facing API. The handful of
+  `fast_*` functions are the dispatch targets for optional-expression
+  nodes emitted by `Emily.Fast` — again internal.
+
+  ## Options
+
+    * `:device` — `:gpu` (default) or `:cpu`. Stored per-tensor; MLX
+      dispatches the computation on that device.
+
+  ## Divergences from `Nx.BinaryBackend`
+
+    * `{:f, 64}` is not supported — Metal cannot execute f64.
+      Allocations at f64 raise `ArgumentError`; cast to f32 instead.
+    * `from_pointer`, `to_pointer`, `population_count`,
+      `count_leading_zeros`, and interior-padding `pad` raise —
+      MLX has no primitive.
+    * `qr` with `mode: :complete` falls back to `Nx.BinaryBackend`
+      (MLX only supports reduced QR). `determinant` uses Nx's default
+      implementation, which calls the native `lu` for matrices
       larger than 3×3.
-    * `quotient` uses MLX `floor_divide` semantics (floor toward -inf
+    * `quotient` uses MLX `floor_divide` semantics (floor toward -∞
       rather than Nx's truncate-toward-zero). For non-negative integer
-      operands the results agree; mixed-sign inputs diverge by one. We
-      accept the divergence rather than paying for a software fixup on
-      every int-division.
+      operands the results agree; mixed-sign inputs diverge by one.
+    * Duplicate-index `indexed_put`: MLX's underlying scatter is
+      unordered on duplicates, while `Nx.BinaryBackend` is
+      deterministic last-write. `indexed_add` is commutative so
+      duplicates accumulate identically on both backends.
+
+  ## Fallbacks
+
+  A handful of ops have no direct MLX primitive and fall back to
+  `Nx.BinaryBackend` via a transparent round-trip
+  (`from_pointer`-free, one memcpy each way). The fallback emits
+  `[:emily, :fallback, *]` telemetry spans; see `Emily.Telemetry` for
+  the full catalogue and for opt-in one-shot warnings.
+
+  ## Debug assertions
+
+  Compile-time flags `:debug_bounds_check` and `:debug_detect_nan_inf`
+  re-enable runtime assertions on hot paths. Both default to `false`
+  with zero cost. See `Emily` moduledoc for details.
   """
 
   @behaviour Nx.Backend

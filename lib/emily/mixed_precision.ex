@@ -51,6 +51,19 @@ defmodule Emily.MixedPrecision do
   `Axon.ModelState`, access the `.data` field first:
 
       MP.cast_params(model_state.data, {:bf, 16})
+
+  ## Examples
+
+      iex> params = %{w: Nx.tensor([1.0, 2.0], type: :f32)}
+      iex> Emily.MixedPrecision.cast_params(params, {:bf, 16}).w.type
+      {:bf, 16}
+
+      iex> scaler = Emily.MixedPrecision.loss_scale(scale: 1024.0)
+      iex> scaler.scale
+      1024.0
+      iex> Emily.MixedPrecision.update(scaler, true).scale
+      512.0
+
   """
 
   defmodule LossScaler do

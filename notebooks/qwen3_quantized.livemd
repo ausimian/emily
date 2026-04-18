@@ -1,0 +1,201 @@
+# Qwen3-0.6B quantized generation on Emily
+
+```elixir
+Mix.install(
+  [
+    {:emily, "~> 0.1"},
+    {:bumblebee,
+     github: "elixir-nx/bumblebee", ref: "273805e95507dc7866b958d90e0012a3abad1761"},
+    {:tokenizers, "~> 0.5"},
+    {:nx, "~> 0.10"},
+    {:axon, "~> 0.7"},
+    {:kino, "~> 0.14"}
+  ],
+  config: [
+    nx: [default_backend: Emily.Backend]
+  ]
+)
+```
+
+## Overview
+
+This notebook loads `Qwen/Qwen3-0.6B` through Bumblebee, quantizes
+every dense layer's kernel to int4 via MLX affine group-wise
+quantization, and greedy-decodes a completion. It also demonstrates
+`Emily.Stream` for concurrent serving on a shared model.
+
+The checkpoint is ~1.5 GB on first fetch. Budget several minutes for
+the cold run.
+
+## Dense baseline
+
+```elixir
+{:ok, %{model: model, params: params, spec: spec}} =
+  Bumblebee.load_model({:hf, "Qwen/Qwen3-0.6B"})
+
+{:ok, tokenizer} = Bumblebee.load_tokenizer({:hf, "Qwen/Qwen3-0.6B"})
+{:ok, generation_config} = Bumblebee.load_generation_config({:hf, "Qwen/Qwen3-0.6B"})
+
+model_info = %{model: model, params: params, spec: spec}
+
+config =
+  Bumblebee.configure(generation_config,
+    max_new_tokens: 32,
+    strategy: %{type: :greedy_search}
+  )
+
+serving =
+  Bumblebee.Text.generation(model_info, tokenizer, config,
+    defn_options: [compiler: Emily.Compiler]
+  )
+
+%{results: [%{text: dense_text}]} =
+  Nx.Serving.run(serving, "The quick brown fox jumps over the lazy dog.")
+
+dense_text
+```
+
+## Quantization transform
+
+Rewriting the Axon graph so every `:dense` node runs
+`Emily.Quantization.Layers.quantized_dense/4` needs Axon, which is
+test-only in the Emily package. For the notebook we inline the
+transform using `Axon.map_nodes/2`. A production-grade version lives
+in the Emily test suite at `test/support/quantization_transform.ex`.
+
+```elixir
+defmodule DenseTransform do
+  alias Emily.Quantization.Layers
+  alias Emily.QuantizedWeight
+
+  @default_opts [bits: 4, group_size: 128, transpose: true]
+
+  def quantize(model, params, opts \\ []) do
+    opts = Keyword.merge(@default_opts, opts)
+    {quantize_graph(model, opts), quantize_params(model, params, opts)}
+  end
+
+  defp quantize_graph(model, opts) do
+    Axon.map_nodes(model, fn
+      %Axon.Node{op: :dense} = node -> dense_to_quantized(node, opts)
+      other -> other
+    end)
+  end
+
+  defp dense_to_quantized(%Axon.Node{} = node, opts) do
+    # Replace the :dense op with a :quantized_dense Axon node that
+    # invokes Emily.Quantization.Layers.quantized_dense/4 during the
+    # forward pass. The kernel parameter shape is preserved at graph
+    # time; the quantized body ships in the params map.
+    %Axon.Node{
+      node
+      | op: Layers,
+        op_name: :quantized_dense,
+        args:
+          node.args ++
+            [bits: opts[:bits], group_size: opts[:group_size], transpose: opts[:transpose]]
+    }
+  end
+
+  defp quantize_params(model, params, opts) do
+    # Walk the param tree. For every kernel tied to a dense layer in
+    # `model`, replace the f32 tensor with %QuantizedWeight{}.
+    dense_layer_names =
+      model
+      |> Axon.properties()
+      |> Map.get(:names, [])
+      |> Enum.filter(fn name -> is_dense?(model, name) end)
+      |> MapSet.new()
+
+    update_in(params.data, fn data ->
+      Map.new(data, fn
+        {name, %{"kernel" => kernel} = layer_params} ->
+          if MapSet.member?(dense_layer_names, name) do
+            qw = QuantizedWeight.from_dense(kernel, opts)
+            {name, %{layer_params | "kernel" => qw}}
+          else
+            {name, layer_params}
+          end
+
+        other ->
+          other
+      end)
+    end)
+  end
+
+  defp is_dense?(model, _layer_name) do
+    # Simplified: in a real loader, walk model.nodes and check
+    # :op == :dense. See test/support/quantization_transform.ex for a
+    # production-grade version.
+    true
+  end
+end
+```
+
+> **In practice**, use
+> `Emily.Quantization.Transform.quantize/3` from the Emily test
+> support tree — it handles the edge cases this inlined version
+> glosses over (layer-name skipping, dtype coercion, the
+> `:except` option). It lives under `test/support/` because Axon
+> is an `only: :test` dep on Emily.
+
+## Quantized inference
+
+```elixir
+{qmodel, qparams} =
+  DenseTransform.quantize(model, params,
+    bits: 4,
+    group_size: 128,
+    transpose: true
+  )
+
+qmodel_info = %{model: qmodel, params: qparams, spec: spec}
+
+qserving =
+  Bumblebee.Text.generation(qmodel_info, tokenizer, config,
+    defn_options: [compiler: Emily.Compiler]
+  )
+
+%{results: [%{text: quant_text}]} =
+  Nx.Serving.run(qserving, "The quick brown fox jumps over the lazy dog.")
+
+quant_text
+```
+
+The quantized output will drift from the dense baseline — int4 noise
+across every linear is expected. The test at
+`test/emily/conformance/qwen3_quant_full_test.exs` pins a
+deterministic reference string for regression-testing the
+quantization stack.
+
+## Concurrent serving via `Emily.Stream`
+
+For concurrent inference on a shared model, each serving worker
+should own its own MLX command queue. `Emily.Stream.with_stream/2`
+does that per-process:
+
+```elixir
+stream = Emily.Stream.new(:gpu)
+
+task1 =
+  Task.async(fn ->
+    Emily.Stream.with_stream(stream, fn ->
+      Nx.Serving.run(qserving, "Question 1?")
+    end)
+  end)
+
+task2 =
+  Task.async(fn ->
+    Emily.Stream.with_stream(Emily.Stream.new(:gpu), fn ->
+      Nx.Serving.run(qserving, "Question 2?")
+    end)
+  end)
+
+{Task.await(task1, :infinity), Task.await(task2, :infinity)}
+```
+
+Each `Emily.Stream` maps to its own Metal command queue. Weights are
+shared across streams — no duplication — so the memory cost of adding
+a stream is the Metal command buffer, not the model.
+
+Create streams once at worker init, not per-request.

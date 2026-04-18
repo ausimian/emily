@@ -7,54 +7,68 @@ defmodule Emily.Compiler do
   through the active backend — exactly what `Nx.Defn.Evaluator` already
   does — with two adjustments specific to Emily:
 
-    * `c:__to_backend__/1` returns `{Emily.Backend, [device: …]}` so
+    * `__to_backend__/1` returns `{Emily.Backend, [device: …]}` so
       `Nx.Defn.to_backend/1` (and the callers that consult it, including
       `Nx.Serving`) allocate inputs and outputs on Emily rather than the
       process-default backend.
-    * `c:__partitions_options__/1` always returns a single partition.
-      MLX's Metal runtime is not safe for concurrent kernel dispatch
-      from multiple OS threads (see `test/soak/backend_concurrency_test.exs`
-      for the SIGSEGV story); a multi-partition serving would race the
-      driver. `:max_concurrency` is accepted for API compatibility with
-      `Nx.Serving` but capped at 1.
+    * `__partitions_options__/1` always returns a single partition.
+      MLX's Metal runtime was historically unsafe for concurrent kernel
+      dispatch from multiple OS threads. `:max_concurrency` is accepted
+      for API compatibility with `Nx.Serving` but capped at 1. For
+      concurrent inference on a shared model use `Emily.Stream`.
 
-  ## Why this is so thin
+  ## Public API
 
-  M5 deliberately avoids two pieces of complexity:
+  Users do not call this module directly. Install it as the default
+  compiler and `Nx.Serving` / Bumblebee picks it up:
 
-    1. **No external cache.** `__compile__/4` walks the expression once
-       and returns a closure that captures the walked plan; the closure
-       *is* the cache. Callers that want reuse across invocations use
-       `Nx.Defn.compile/3` and hold the returned function (Bumblebee /
-       `Nx.Serving` already do this on warmup). The PLAN.md note about
-       caching the walk in ETS was rejected once we accounted for the
-       per-call ETS deep-copy cost on a Qwen3-sized expression tree.
+      Nx.Defn.global_default_options(compiler: Emily.Compiler)
 
-    2. **No `mlx::core::compile` wrapping.** Lazy evaluation at the
-       Backend layer is the shipping story. Wrapping
-       `mlx::core::compile` was scoped as M6 and then dropped after a
-       pure-C++ microbenchmark showed the fusion win on transformer
-       workloads is below the PLAN's 1.20× gate (GPU ~1.04–1.07×; CPU
-       regresses). The bench harness remains in `bench/native/` for
-       re-measurement against future MLX releases; see
-       `bench/compile_microbench.md` for the numbers and reasoning.
+  Or attach it per-call:
 
-  Concretely, `__jit__/5` and `__compile__/4` delegate to
-  `Nx.Defn.Evaluator` after option validation. The Evaluator dispatches
-  every op via `Nx.Shared.list_impl!/1`, which finds `Emily.Backend`
-  whenever the operands carry it — and `c:__to_backend__/1` ensures the
-  operands do.
+      Nx.Defn.jit(&my_fn/1, compiler: Emily.Compiler).(input)
+
+  The four callbacks on `Nx.Defn.Compiler` (`__jit__/5`,
+  `__compile__/4`, `__partitions_options__/1`, `__to_backend__/1`)
+  are invoked by `Nx.Defn` on your behalf.
+
+  ## Design notes
+
+  `__jit__/5` and `__compile__/4` delegate to `Nx.Defn.Evaluator`
+  after option validation. There is no external JIT cache beyond the
+  closure `Nx.Defn.compile/3` already returns: Bumblebee and
+  `Nx.Serving` hold that closure on warmup, so subsequent calls skip
+  the walk.
+
+  The compiler does not wrap `mlx::core::compile`. The bench harness
+  under `bench/native/` measured the fusion win at <1.2× on
+  transformer-shaped workloads — below the threshold that justified
+  the integration cost.
 
   ## Options
 
-    * `:device` — `:gpu` (default) or `:cpu`. Forwarded to `Emily.Backend`
-      via the `c:__to_backend__/1` callback.
-    * `:hooks`, `:debug_options`, `:garbage_collect` — passed through to
-      `Nx.Defn.Evaluator` unchanged. See its moduledoc.
-    * `:max_concurrency` — accepted for `Nx.Serving` compatibility, but
-      multi-partition serving is rejected because MLX kernel dispatch
-      isn't thread-safe. Pass `1` (the default) to silence. For
-      concurrent inference see `Emily.Stream`.
+    * `:device` — `:gpu` (default) or `:cpu`. Forwarded to
+      `Emily.Backend` via the `__to_backend__/1` callback.
+    * `:hooks`, `:debug_options`, `:garbage_collect` — passed through
+      to `Nx.Defn.Evaluator` unchanged. See its moduledoc.
+    * `:max_concurrency` — accepted for `Nx.Serving` compatibility,
+      but multi-partition serving is rejected because MLX kernel
+      dispatch isn't thread-safe. Pass `1` (the default) to silence.
+      For concurrent inference see `Emily.Stream`.
+
+  ## Examples
+
+  Process-global installation (typical for `Nx.Serving` / Bumblebee):
+
+      Nx.global_default_backend(Emily.Backend)
+      Nx.Defn.global_default_options(compiler: Emily.Compiler)
+
+  Per-call:
+
+      add_one = Nx.Defn.jit(fn x -> Nx.add(x, 1) end, compiler: Emily.Compiler)
+      add_one.(Nx.tensor([1.0, 2.0]))
+      # => #Nx.Tensor<f32[2] [2.0, 3.0]> on Emily.Backend
+
   """
 
   @behaviour Nx.Defn.Compiler

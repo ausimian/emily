@@ -2,24 +2,29 @@ defmodule Emily.Quantization do
   @moduledoc """
   Quantized inference primitives.
 
-  Two entry points:
+  ## Public API
 
-    * `quantized_matmul/2` — eager-mode fused kernel (materialized
-      tensors only). Extracts refs from a `%QuantizedWeight{}` and
-      calls `Native.quantized_matmul/7`.
+    * `quantized_matmul/2` — eager-mode fused kernel over a
+      materialized `%Emily.QuantizedWeight{}` and an `Nx.Tensor`.
+      Calls the MLX `quantized_matmul` C++ kernel directly;
+      produces `Nx.dot(x, to_dense(qw) |> Nx.transpose())` within
+      quantization tolerance.
     * `dequantize_defn/1` — defn-native analogue of
-      `QuantizedWeight.to_dense/1`, composed from `Nx.right_shift` /
-      `Nx.bitwise_and` / multiply / add. Use inside `Nx.Defn.jit`-traced
-      Axon forward passes; `Nx.dot(x, dequantize_defn(qw))` replaces
-      the fused `quantized_matmul` kernel with two dispatches — M11's
-      fast-kernel work closes that gap.
+      `Emily.QuantizedWeight.to_dense/1`, composed from
+      `Nx.right_shift` / `Nx.bitwise_and` / multiply / add. Use inside
+      `Nx.Defn.jit`-traced Axon forward passes where a fused
+      `quantized_matmul` node isn't available; `Nx.dot(x,
+      dequantize_defn(qw))` runs in two kernels (dequantize then
+      dense matmul) instead of one.
+    * `defn_supported_bits/0` — enumerates the bit widths the
+      defn-native path supports (`#{inspect([2, 4, 8])}`).
 
-  `dequantize_defn/1` supports `bits ∈ #{inspect([2, 4, 8])}`;
-  `bits ∈ {3, 6}` use cross-u32 lane packing (out of scope here — use
-  `QuantizedWeight.to_dense/1`).
+  `bits ∈ {3, 6}` use cross-u32 lane packing; only
+  `Emily.QuantizedWeight.to_dense/1` (the native-NIF path) handles
+  them.
 
-  See `Emily.Quantization.Layers.quantized_dense/4` for the
-  Axon-compatible layer op built on `dequantize_defn/1`.
+  See `Emily.QuantizedWeight` for the container struct and
+  `Emily.QuantizedWeight.from_dense/2` for building one.
   """
 
   import Nx.Defn
@@ -58,11 +63,13 @@ defmodule Emily.Quantization do
 
   ## Examples
 
-      w = Nx.iota({4, 128}, backend: Emily.Backend, type: :f32)
-      qw = Emily.QuantizedWeight.from_dense(w)
-      x = Nx.iota({3, 128}, backend: Emily.Backend, type: :f32)
-      y = Emily.Quantization.quantized_matmul(x, qw)
-      # y :: f32[3][4]
+      iex> w = Nx.iota({4, 128}, backend: Emily.Backend, type: :f32)
+      iex> qw = Emily.QuantizedWeight.from_dense(w)
+      iex> x = Nx.iota({3, 128}, backend: Emily.Backend, type: :f32)
+      iex> y = Emily.Quantization.quantized_matmul(x, qw)
+      iex> Nx.shape(y)
+      {3, 4}
+
   """
   @spec quantized_matmul(Nx.Tensor.t(), QuantizedWeight.t()) :: Nx.Tensor.t()
   def quantized_matmul(%T{} = x, %QuantizedWeight{} = qw) do
