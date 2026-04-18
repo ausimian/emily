@@ -9,6 +9,8 @@ defmodule Emily.Native do
   # thread that owns the MLX stream. Core NIFs (from_binary, shape,
   # dtype) and memory introspection NIFs don't take a worker.
 
+  alias Emily.Native.Async
+
   @on_load :__on_load__
   @compile {:autoload, false}
 
@@ -38,8 +40,12 @@ defmodule Emily.Native do
   @spec dtype(tensor()) :: dtype()
   def dtype(_tensor), do: nif()
 
+  @doc false
+  @spec eval_nif(worker(), tensor()) :: reference()
+  def eval_nif(_w, _tensor), do: nif()
+
   @spec eval(worker(), tensor()) :: :ok
-  def eval(_w, _tensor), do: nif()
+  def eval(w, tensor), do: Async.call(eval_nif(w, tensor))
 
   # --- Worker ------------------------------------------------------
 

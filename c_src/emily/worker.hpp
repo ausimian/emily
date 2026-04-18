@@ -3,7 +3,9 @@
 // MLX uses thread-local CommandEncoders — a stream's encoder only
 // exists on the thread that created it. BEAM processes migrate
 // between OS threads, so we pin each MLX stream to a dedicated
-// thread and dispatch work to it via run_sync (promise/future).
+// thread and dispatch work to it via run_sync (promise/future) or
+// run_async (fire-and-forget, with the task posting its own reply
+// via enif_send — see emily/async.hpp).
 
 #pragma once
 
@@ -31,6 +33,29 @@ public:
   }
 
   ~WorkerThread() { stop(); }
+
+  // Enqueue a task without blocking. The caller is responsible for
+  // whatever side-effect the task performs (typically enif_send back
+  // to a caller PID captured at NIF entry; see emily/async.hpp).
+  // Exceptions thrown by the task are swallowed — the task owns
+  // error propagation because there is no future to carry an
+  // exception through.
+  template <typename F>
+  void run_async(F &&f) {
+    {
+      std::lock_guard<std::mutex> lock(mtx_);
+      if (stop_)
+        throw std::runtime_error("worker thread has been stopped");
+      queue_.push([f = std::forward<F>(f), this]() mutable {
+        try {
+          f(stream_);
+        } catch (...) {
+          // Swallow — the task owns error propagation.
+        }
+      });
+    }
+    cv_.notify_one();
+  }
 
   template <typename F>
   auto run_sync(F &&f) -> decltype(f(std::declval<mx::Stream &>())) {

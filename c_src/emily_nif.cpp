@@ -3,6 +3,7 @@
 // Op NIFs live in c_src/ops/*.cpp; they share the Tensor resource
 // defined here via emily/tensor.hpp.
 
+#include "emily/async.hpp"
 #include "emily/tensor.hpp"
 #include "emily/worker.hpp"
 
@@ -105,14 +106,24 @@ std::tuple<fine::Atom, int64_t> dtype(ErlNifEnv *, fine::ResourcePtr<Tensor> ten
 }
 FINE_NIF(dtype, 0);
 
-// eval/2 — force evaluation of the lazy graph rooted at this tensor.
-// Dirty CPU: waits for MLX to finish.
-fine::Ok<> eval(ErlNifEnv *, fine::ResourcePtr<WorkerThread> w, fine::ResourcePtr<Tensor> tensor) {
-  w->run_sync([&](mx::Stream &) {
-    mx::eval(tensor->array);
-  });
-  return fine::Ok<>{};
+// eval_nif/2 — force evaluation of the lazy graph rooted at this
+// tensor. Async: the NIF enqueues the eval onto the worker and
+// returns a ref synchronously; the worker posts {ref, {:ok, :ok}}
+// back once eval completes. The Elixir wrapper `Emily.Native.eval/2`
+// awaits via `Emily.Native.Async.call/1`.
+//
+// Runs on a regular scheduler — enqueueing is sub-microsecond and
+// the scheduler is never blocked on MLX work.
+fine::Term eval_nif(ErlNifEnv *env,
+                    fine::ResourcePtr<WorkerThread> w,
+                    fine::ResourcePtr<Tensor> tensor) {
+  return emily::async_reply(
+      env, w,
+      [tensor](mx::Stream &, ErlNifEnv *msg_env) {
+        mx::eval(tensor->array);
+        return enif_make_atom(msg_env, "ok");
+      });
 }
-FINE_NIF(eval, ERL_NIF_DIRTY_JOB_CPU_BOUND);
+FINE_NIF(eval_nif, 0);
 
 FINE_INIT("Elixir.Emily.Native");
