@@ -224,6 +224,28 @@ If mailbox grows, we have an ordering bug — the receive's `^ref` pin
 should make this impossible, but if the worker ever sends out-of-order
 we'd see it.
 
+**Findings (run on branch `spike-cd-mailbox-liveness`, commit `4c0f08e`,
+OTP 28.3):**
+
+- **Passes.** Three sub-tests green: 1k sequential dispatch+receive
+  (mailbox stays at 0), 1k batched then drained (peak mailbox
+  observed >0, drains to 0 at end), 5k batched drain runs in
+  ~linear time (<100 µs per receive).
+- **Receive-with-`^ref` optimisation works as expected.** The
+  batched-drain test fires 5k async requests, lets them pile up in
+  the mailbox, then drains via `receive do {^ref, _} -> ... end`
+  in the order the refs were generated. Total drain time is linear
+  — a quadratic scan would take multiple seconds for 5k messages
+  and blow the budget.
+- **Ordering in practice:** replies arrive in roughly FIFO order
+  (worker processes its queue in order), but the test doesn't rely
+  on it — each `^ref` pin pulls exactly the matching message
+  regardless of mailbox position. Out-of-order worker replies would
+  not manifest as a bug.
+
+No changes to the plan required; the async model's mailbox
+semantics scale.
+
 ### Spike D — Queue depth and PID liveness
 
 **What to prove:** `enif_send` to a dead PID is a silent no-op;
@@ -236,6 +258,31 @@ mid-flight. Confirm:
   released when the ResourcePtr in the worker's lambda-captured state
   goes out of scope (automatic via RAII).
 - No growth in `mx::get_active_memory()` after `:erlang.garbage_collect/1`.
+
+**Findings (run on branch `spike-cd-mailbox-liveness`, commit `4c0f08e`,
+OTP 28.3):**
+
+- **Passes.** Two sub-tests green: 500-process dead-sender race
+  (each process enqueues one call and exits immediately — no MLX
+  allocator growth after drain), stream-dropped-mid-flight
+  (enqueue 200 items, receive one, let the stream go out of scope
+  — WorkerThread destructor drains the queue and joins cleanly,
+  no hang).
+- **`enif_send` to dead PID behaves as documented:** silent drop.
+  No crash, no error return visible to C++. The worker continues
+  processing subsequent items.
+- **Worker shutdown drains:** `WorkerThread::stop()` (current
+  implementation) leaves `stop_ = true` and the condvar wakes the
+  worker; the worker processes anything still in the queue before
+  breaking out. In-flight items complete; `enif_send` to the
+  (still-live) caller fires normally; lambdas release their
+  captured `ResourcePtr<Tensor>` on return. No leaks observed.
+- **Spike A + B already covered the simplest dead-sender case**
+  (sender grabs a tensor/binary then exits). Spike D adds the
+  race and shutdown scenarios; all pass.
+
+No changes to the plan required; the async model is robust to
+caller death and stream lifetime.
 
 ---
 
