@@ -20,6 +20,15 @@ defmodule Emily.Conformance.DistilbertTest do
   (`~/.cache/bumblebee`). Invoke explicitly:
 
       mix test --only conformance
+
+  The single `Nx.Serving.batched_run` test is additionally tagged
+  `:distilbert_full` because it needs a real QA checkpoint
+  (`distilbert-base-uncased-distilled-squad`, ~250 MB) — the tiny-
+  random model's 1124-row embedding can't be driven by the full
+  tokenizer without relying on backend-specific OOB-gather behaviour.
+  Run explicitly:
+
+      mix test --only distilbert_full
   """
 
   use ExUnit.Case, async: false
@@ -200,18 +209,20 @@ defmodule Emily.Conformance.DistilbertTest do
   end
 
   describe "Nx.Serving.batched_run" do
-    # Exercises Bumblebee's question-answering serving end-to-end:
-    # tokenizer, forward pass, postprocess, and Nx.Serving's batching
-    # pipeline. The tiny-random model produces meaningless answers, so
-    # we assert structure rather than content — the point is that the
-    # batched path runs cleanly against Emily.Backend.
+    # Exercises Bumblebee's question-answering serving end-to-end on a
+    # real SQuAD-fine-tuned DistilBERT checkpoint: tokenizer, forward
+    # pass, postprocess, and Nx.Serving's batching pipeline. A real
+    # model is required here — pairing the full uncased tokenizer
+    # (vocab 30522) with a tiny-random model (1124-row embedding)
+    # feeds out-of-range token ids into gather and relies on backend
+    # OOB behaviour, which is how we originally hit a :nan score.
+    @tag :distilbert_full
     test "batched_run drives DistilBERT-QA through Nx.Serving" do
       {:ok, model_info} =
-        Bumblebee.load_model(
-          {:hf, "hf-internal-testing/tiny-random-DistilBertForQuestionAnswering"}
-        )
+        Bumblebee.load_model({:hf, "distilbert-base-uncased-distilled-squad"})
 
-      {:ok, tokenizer} = Bumblebee.load_tokenizer({:hf, "distilbert-base-uncased"})
+      {:ok, tokenizer} =
+        Bumblebee.load_tokenizer({:hf, "distilbert-base-uncased-distilled-squad"})
 
       serving = Bumblebee.Text.question_answering(model_info, tokenizer)
 
@@ -224,15 +235,17 @@ defmodule Emily.Conformance.DistilbertTest do
 
       results = Nx.Serving.batched_run(__MODULE__.Serving, inputs)
 
-      assert length(results) == 2
+      assert [
+               %{results: [%{text: t1, score: sc1, start: s1, end: e1}]},
+               %{results: [%{text: t2, score: sc2, start: s2, end: e2}]}
+             ] = results
 
-      for result <- results do
-        assert %{results: [%{text: text, score: score, start: s, end: e}]} = result
-        assert is_binary(text)
-        assert is_float(score)
-        assert is_integer(s)
-        assert is_integer(e)
-      end
+      assert t1 =~ ~r/sarah/i
+      assert t2 =~ ~r/london/i
+      assert is_float(sc1) and sc1 > 0.0
+      assert is_float(sc2) and sc2 > 0.0
+      assert is_integer(s1) and is_integer(e1) and s1 < e1
+      assert is_integer(s2) and is_integer(e2) and s2 < e2
     end
   end
 end

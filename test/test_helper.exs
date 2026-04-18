@@ -9,9 +9,10 @@
 # conformance variants that download full-size weight checkpoints, so
 # they are excluded even from `--only conformance`; run explicitly:
 #
-#     mix test --only qwen3_full      # ~1.5 GB checkpoint
-#     mix test --only vit_full        # ~330 MB checkpoint
-#     mix test --only whisper_full    # ~150 MB checkpoint
+#     mix test --only qwen3_full         # ~1.5 GB checkpoint
+#     mix test --only vit_full           # ~330 MB checkpoint
+#     mix test --only whisper_full       # ~150 MB checkpoint
+#     mix test --only distilbert_full    # ~250 MB checkpoint
 #
 # (Soak tests deliberately stay in the default suite; see
 # `test/soak/memory_test.exs` for the rationale.)
@@ -51,6 +52,7 @@ ExUnit.start(
     :qwen3_quant_full,
     :vit_full,
     :whisper_full,
+    :distilbert_full,
     :training_full,
     :fast_kernels_full
   ]
