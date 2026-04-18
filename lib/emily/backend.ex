@@ -14,11 +14,10 @@ defmodule Emily.Backend do
       message pointing to f32.
     * `from_pointer`, `to_pointer`, `population_count`, and
       `count_leading_zeros` raise `ArgumentError` — MLX has no primitive.
-    * Window operations (`window_sum`, `window_scatter_max`, etc.) fall
-      back to Nx's default `optional/3` implementation — correct but slow.
-      `qr` with `mode: :complete` also falls back (MLX only supports
-      reduced QR). `determinant` uses Nx's default implementation, which
-      calls `lu` (native via MLX) for matrices larger than 3×3.
+    * `qr` with `mode: :complete` falls back to `via_binary` (MLX only
+      supports reduced QR). `determinant` uses Nx's default
+      implementation, which calls `lu` (native via MLX) for matrices
+      larger than 3×3.
     * `quotient` uses MLX `floor_divide` semantics (floor toward -inf
       rather than Nx's truncate-toward-zero). For non-negative integer
       operands the results agree; mixed-sign inputs diverge by one. We
@@ -1098,29 +1097,128 @@ defmodule Emily.Backend do
   def window_reduce(out, t, acc, window_shape, opts, fun),
     do: via_binary(out, [t, acc], &Nx.window_reduce(&1, &2, window_shape, opts, fun))
 
-  for {nx_name, nx_fun} <- [
-        window_sum: :window_sum,
-        window_product: :window_product,
-        window_max: :window_max,
-        window_min: :window_min
+  # M17: window reductions lifted off via_binary. MLX has no native
+  # window_* primitive — each op is composed as pad → as_strided
+  # (sliding-window view) → reduce in C++ (c_src/ops/pooling.cpp),
+  # mirroring MLX's own nn/layers/pooling.py pattern.
+  #
+  # Nx passes padding already resolved to a list of `{lo, hi}` pairs
+  # (Nx.Shape.pool runs upstream of the backend callback), plus per-axis
+  # `:strides` and `:window_dilations`. We split the pairs and pass the
+  # dtype-specific identity (0 for sum, 1 for product, ±∞ for max/min)
+  # as the fill value — the reduce over the padded view then sees a
+  # correct identity at the boundary.
+  for {nx_name, native_name, identity} <- [
+        {:window_sum, :window_sum, :zero},
+        {:window_product, :window_product, :one},
+        {:window_max, :window_max, :neg_inf},
+        {:window_min, :window_min, :pos_inf}
       ] do
     @impl true
-    def unquote(nx_name)(out, t, window_shape, opts) do
-      via_binary(out, [t], &apply(Nx, unquote(nx_fun), [&1, window_shape, opts]))
+    def unquote(nx_name)(%T{} = out, t, window_shape, opts) do
+      apply_window_reduce(
+        out,
+        t,
+        window_shape,
+        opts,
+        unquote(native_name),
+        unquote(identity)
+      )
     end
   end
 
-  for {nx_name, nx_fun} <- [
-        window_scatter_max: :window_scatter_max,
-        window_scatter_min: :window_scatter_min
-      ] do
-    @impl true
-    def unquote(nx_name)(out, t, source, init, window_shape, opts) do
-      via_binary(
-        out,
-        [t, source, init],
-        &apply(Nx, unquote(nx_fun), [&1, &2, &3, window_shape, opts])
-      )
+  # M17: window scatter variants lifted off via_binary — these are the
+  # backward pass of window_max/window_min (Nx's grad rule rewrites
+  # grad(window_max) into window_scatter_max), so lifting them is what
+  # makes small-CNN training converge on MLX rather than spending every
+  # backward in BinaryBackend.
+  @impl true
+  def window_scatter_max(%T{} = out, t, source, init, window_shape, opts) do
+    apply_window_scatter(out, t, source, init, window_shape, opts, :window_scatter_max)
+  end
+
+  @impl true
+  def window_scatter_min(%T{} = out, t, source, init, window_shape, opts) do
+    apply_window_scatter(out, t, source, init, window_shape, opts, :window_scatter_min)
+  end
+
+  defp apply_window_reduce(%T{} = out, t, window_shape, opts, native_fun, identity) do
+    w = worker()
+    rank = tuple_size(t.shape)
+    window = Tuple.to_list(window_shape)
+    strides = normalize_per_axis(opts[:strides], rank, 1)
+    dilations = normalize_per_axis(opts[:window_dilations], rank, 1)
+    {pad_lo, pad_hi} = split_padding(opts[:padding], rank)
+    init_ref = identity_ref(identity, t.type)
+
+    apply(Native, native_fun, [w, ref(t), window, strides, pad_lo, pad_hi, dilations, init_ref])
+    |> wrap(out, w)
+  end
+
+  defp apply_window_scatter(%T{} = out, t, source, init, window_shape, opts, native_fun) do
+    w = worker()
+    rank = tuple_size(t.shape)
+    window = Tuple.to_list(window_shape)
+    strides = normalize_per_axis(opts[:strides], rank, 1)
+    {pad_lo, pad_hi} = split_padding(opts[:padding], rank)
+    init_ref = coerce_scalar_ref(init, out.type, w)
+
+    apply(Native, native_fun, [w, ref(t), ref(source), init_ref, window, strides, pad_lo, pad_hi])
+    |> wrap(out, w)
+  end
+
+  # Resolve `:strides` / `:window_dilations` options to a length-rank
+  # list. Nx normalises these upstream for the window ops (see
+  # `Nx.aggregate_window_op/4`) so we rarely see bare integers, but we
+  # stay defensive.
+  defp normalize_per_axis(nil, rank, default), do: List.duplicate(default, rank)
+  defp normalize_per_axis(n, rank, _default) when is_integer(n), do: List.duplicate(n, rank)
+  defp normalize_per_axis(list, _rank, _default) when is_list(list), do: list
+
+  # Split `[{lo, hi}, ...]` padding config into two lists. Nx always
+  # resolves `:valid`/`:same` to per-axis pairs before the backend
+  # callback, so we don't handle those atoms here.
+  defp split_padding(pairs, _rank) when is_list(pairs) do
+    pairs
+    |> Enum.map(fn {lo, hi} -> {lo, hi} end)
+    |> Enum.unzip()
+  end
+
+  defp split_padding(_, rank), do: {List.duplicate(0, rank), List.duplicate(0, rank)}
+
+  defp identity_ref(:zero, type), do: scalar_ref(0, type)
+  defp identity_ref(:one, type), do: scalar_ref(1, type)
+  defp identity_ref(:neg_inf, {:f, _} = type), do: scalar_ref(:neg_infinity, type)
+  defp identity_ref(:neg_inf, {:bf, _} = type), do: scalar_ref(:neg_infinity, type)
+
+  defp identity_ref(:neg_inf, {kind, bits} = type) when kind in [:s, :u] do
+    # Integer window_max: -inf doesn't exist, use the dtype's minimum.
+    # u* minimum is 0; s* minimum is -(2^(bits-1)).
+    value = if kind == :u, do: 0, else: -Bitwise.bsl(1, bits - 1)
+    scalar_ref(value, type)
+  end
+
+  defp identity_ref(:pos_inf, {:f, _} = type), do: scalar_ref(:infinity, type)
+  defp identity_ref(:pos_inf, {:bf, _} = type), do: scalar_ref(:infinity, type)
+
+  defp identity_ref(:pos_inf, {kind, bits} = type) when kind in [:s, :u] do
+    # Integer window_min: use the dtype's maximum.
+    value =
+      if kind == :u,
+        do: Bitwise.bsl(1, bits) - 1,
+        else: Bitwise.bsl(1, bits - 1) - 1
+
+    scalar_ref(value, type)
+  end
+
+  # Coerce an already-provided scalar tensor (e.g. window_scatter's
+  # `init_value`) to the target dtype and return its ref.
+  defp coerce_scalar_ref(%T{} = init, type, w) do
+    init_ref = ref(init)
+
+    case Native.dtype(init_ref) do
+      ^type -> init_ref
+      _ -> Native.astype(w, init_ref, type)
     end
   end
 

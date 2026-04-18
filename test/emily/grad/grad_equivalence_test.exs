@@ -154,6 +154,39 @@ defmodule Emily.Grad.EquivalenceTest do
     end
   end
 
+  # ---------------- Window ops (M17) ----------------
+
+  describe "window_sum grad" do
+    property "grad matches BinaryBackend" do
+      check all(x <- tensor({2, 3, 4, 4}, {:f, 32}), max_runs: @max_runs) do
+        {emily, ref} = through_both(&grad_window_sum/1, [x])
+        assert_close(emily, ref, tol: grad_tol({:f, 32}))
+      end
+    end
+  end
+
+  describe "window_max grad — lands on window_scatter_max" do
+    # Nx's grad rule rewrites grad(window_max) into window_scatter_max.
+    # This property test is the structural proof that the whole
+    # grad-of-maxpool chain (pad → as_strided → argmax → scatter_add)
+    # is numerically equivalent to the BinaryBackend reference.
+    property "grad matches BinaryBackend" do
+      check all(x <- tensor({2, 3, 4, 4}, {:f, 32}), max_runs: @max_runs) do
+        {emily, ref} = through_both(&grad_window_max_pool/1, [x])
+        assert_close(emily, ref, tol: grad_tol({:f, 32}))
+      end
+    end
+  end
+
+  describe "window_avg grad (sum / kernel_size)" do
+    property "grad matches BinaryBackend" do
+      check all(x <- tensor({2, 3, 4, 4}, {:f, 32}), max_runs: @max_runs) do
+        {emily, ref} = through_both(&grad_window_avg_pool/1, [x])
+        assert_close(emily, ref, tol: grad_tol({:f, 32}))
+      end
+    end
+  end
+
   describe "composition: attention-shaped block" do
     # Mini attention: Q/K/V projections, scaled dot-product, softmax,
     # output projection, sum. Grad w.r.t. input x exercises dot,

@@ -49,6 +49,13 @@ defmodule Emily.Grad.ExlaOracleTest do
     grad_indexed_add: {1.0e-6, 1.0e-5},
     grad_gather_dot_softmax: {5.0e-5, 5.0e-4},
     grad_attention: {1.0e-4, 1.0e-3},
+    # M17 window ops. grad_window_sum and grad_window_avg_pool are
+    # integer/rational-valued (window counts / 0.25) so they bit-match;
+    # grad_window_max_pool is a one-hot scatter — also bit-exact unless
+    # EXLA and MLX disagree on tie-break direction.
+    grad_window_sum: {1.0e-6, 1.0e-5},
+    grad_window_max_pool: {1.0e-6, 1.0e-5},
+    grad_window_avg_pool: {1.0e-6, 1.0e-5},
     block_step_loss: {1.0e-4, 1.0e-3},
     block_step_params: {1.0e-4, 1.0e-3}
   }

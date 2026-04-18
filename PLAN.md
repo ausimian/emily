@@ -855,6 +855,43 @@ cover the new ops, plus a small-CNN MNIST run in `:training_full`.
 **Exit:** grad-equivalence on window ops green; small-CNN MNIST
 training converges in `:training_full`.
 
+**Shipped.**
+
+- `c_src/ops/pooling.cpp` — six new NIFs. Reductions composed as
+  `mx::pad` → `mx::as_strided` (sliding-window view) → reduce, mirroring
+  `vendor/mlx/python/mlx/nn/layers/pooling.py` generalised to N-D.
+  Scatter variants add argmax-with-last-occurrence-tie-break
+  (`mask * arange(K)` + argmax, since MLX's native argmax is
+  first-occurrence) → per-axis absolute-index computation →
+  `mx::scatter_add` into a `mx::full(init_value)` padded buffer →
+  slice back to the input shape.
+- `Emily.Native`: 6 new NIF stubs
+  (`window_sum`/`max`/`min`/`product`/`scatter_max`/`scatter_min`).
+- `Emily.Backend` (`backend.ex:1101-1225`): `apply_window_reduce/5` and
+  `apply_window_scatter/6` helpers; `:valid`/`:same` padding resolution
+  and dtype-specific identity (0/1/±∞, plus `{:s, _}` / `{:u, _}`
+  min/max) done in Elixir before the NIF.
+- Forward-parity coverage:
+  `test/emily/backend_window_test.exs` (19 unit tests across shape ×
+  stride × padding × dilation × f32/bf16/s32/u8),
+  `test/emily/backend_window_scatter_test.exs` (11 tests including
+  overlapping windows, tie-break, non-zero `init_value`, 1-D/3-D).
+- Grad-equivalence extensions (`test/support/grad_zoo.ex` +
+  `test/emily/grad/grad_equivalence_test.exs`): three new zoo fns —
+  `grad_window_sum`, `grad_window_max_pool` (lands on
+  `window_scatter_max` via Nx's grad rule), and `grad_window_avg_pool`.
+  `bf16_grad_equivalence_test.exs` auto-picks-up the new zoo entries.
+  The EXLA oracle skips un-regenerated zoo entries via
+  `ExlaGoldenData.has_golden?/1` — run `mix run
+  bench/exla_golden_gen.exs` to add window goldens in a follow-up.
+- `test/emily/training/cnn_curve_test.exs` — handwritten 2-conv +
+  max-pool CNN, 30-step SGD, per-step loss trajectory match vs
+  BinaryBackend within rtol 1e-2 (looser than the MLP curve test
+  because the CNN stacks four reductions).
+- `test/emily/training/mnist_cnn_full_test.exs` — `:training_full`
+  LeNet-style Axon CNN on MNIST, ≥ 97% test accuracy. Validated:
+  5-epoch loss 1.60 → 0.12, test accuracy ≥ 97% on a 64-batch run.
+
 ### M18 — Observability & fallback telemetry
 
 Hitting `via_binary` is ~100× slower than native and emits no signal.

@@ -1,12 +1,12 @@
 defmodule Emily.MnistHelper do
   @moduledoc false
 
-  def load_mnist(batch_size) do
+  def load_mnist(batch_size, shape \\ :mlp) do
     {train_images_raw, train_labels_raw} = Scidata.MNIST.download()
 
     train_images =
       train_images_raw
-      |> mnist_images_to_tensor()
+      |> mnist_images_to_tensor(shape)
       |> Nx.to_batched(batch_size)
 
     train_labels =
@@ -18,7 +18,7 @@ defmodule Emily.MnistHelper do
 
     {test_images_raw, test_labels_raw} = Scidata.MNIST.download_test()
 
-    test_images = mnist_images_to_tensor(test_images_raw)
+    test_images = mnist_images_to_tensor(test_images_raw, shape)
     test_labels = mnist_labels_to_tensor(test_labels_raw)
 
     {train_batches, test_images, test_labels}
@@ -36,11 +36,22 @@ defmodule Emily.MnistHelper do
     |> Nx.to_number()
   end
 
-  defp mnist_images_to_tensor({bin, type, shape}) do
+  defp mnist_images_to_tensor({bin, type, shape}, :mlp) do
     bin
     |> Nx.from_binary(type)
     |> Nx.reshape(shape)
     |> Nx.reshape({elem(shape, 0), 784})
+    |> Nx.divide(255.0)
+  end
+
+  # CNN shape: `{N, 28, 28, 1}` — Axon's default conv layout
+  # (channels-last / NHWC). Keeps the CNN test aligned with idiomatic
+  # Axon usage; Emily's Backend handles layout permutation internally.
+  defp mnist_images_to_tensor({bin, type, shape}, :cnn) do
+    bin
+    |> Nx.from_binary(type)
+    |> Nx.reshape(shape)
+    |> Nx.reshape({elem(shape, 0), 28, 28, 1})
     |> Nx.divide(255.0)
   end
 
