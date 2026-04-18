@@ -110,6 +110,40 @@ the BEAM VM with matching flags, which is not practical here. Drive
   as a plain term. Spike confirms which atoms the Elixir-side
   `raise_error_with_message` equivalent translates to.
 
+**Findings (run on branch `spike-a-enif-send`, commit `c119819`,
+OTP 28.3):**
+
+- **Passes.** All four sub-tests green: single call, 50 sequential
+  calls from one process (mailbox stays empty — ref pattern-match
+  pulls exactly one reply per call), 16-process × 10k stress
+  (160k round-trips in ~500 ms, no MLX or BEAM growth), and
+  dead-sender (100 fire-and-forget from a process that exits
+  before receiving — worker drains, no MLX leak).
+- **`enif_send` env ownership:** it does NOT transfer ownership.
+  `enif_free_env(msg_env)` is required after the send call (both
+  on success and when the target PID is dead). Skipping it leaks
+  the env. Confirmed on OTP 28.3.
+- **`enif_self` placement:** called in the NIF on the scheduler
+  thread, `ErlNifPid` captured by value into the worker lambda.
+  Worked as documented.
+- **Error term encoding:** a plain tuple `{ref, {:error, binary}}`
+  built via `enif_make_new_binary` + `enif_make_tuple2` transports
+  fine. No need for `enif_raise_exception` on the async path — the
+  receive site re-raises in Elixir.
+- **Memory invariant holds:** `Tensor` ResourcePtr built on the
+  worker thread, encoded with `enif_make_resource(msg_env, ptr)`,
+  sent via `enif_send`. Receiver's term holds one ref; worker's
+  ResourcePtr releases as the lambda unwinds; refcount nets to 1
+  on the receiver and 0 after the receiver GCs the term.
+- **Worker `run_async` shape:** `template<typename F> void run_async(F&& f)`
+  added to `WorkerThread` (c_src/emily/worker.hpp). Catches
+  exceptions inside the queued task — the task owns error
+  propagation. Non-blocking enqueue; `cv_.notify_one()` after
+  releasing the mutex.
+
+No changes to the plan required; Phase 1 can proceed using exactly
+this substrate.
+
 ### Spike B — Resource binaries across env boundaries
 
 **What to prove:** `enif_make_resource_binary` can be called from a
