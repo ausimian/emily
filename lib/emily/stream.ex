@@ -2,49 +2,61 @@ defmodule Emily.Stream do
   @moduledoc """
   Per-process MLX stream management for concurrent inference.
 
-  MLX dispatches GPU work through Metal command queues. By default all
-  operations share a single command queue (the default worker thread).
+  MLX dispatches GPU work through Metal command queues. By default
+  every op shares a single command queue (the default worker thread).
   `Emily.Stream` lets each BEAM process use its own worker thread —
-  its own Metal command queue — so multiple processes can run inference
-  concurrently on the same model without crashing.
+  its own Metal command queue — so multiple processes can run
+  inference concurrently on a shared model.
 
-  ## Usage
+  ## Public API
 
-      stream = Emily.Stream.new(:gpu)
-
-      Emily.Stream.with_stream(stream, fn ->
-        # All Emily ops in this block dispatch on `stream`
-        model.(input)
-      end)
+    * `new/1` — create a stream on `:gpu` or `:cpu`. Each stream
+      allocates a dedicated OS thread that owns the MLX stream object;
+      the thread is joined when the stream reference is garbage
+      collected.
+    * `with_stream/2` — install a stream for the current process for
+      the duration of a function call, then restore the previous
+      stream (or the default) on exit. Nesting is safe.
 
   ## How it works
 
-  `with_stream/2` stores the worker reference in the process dictionary.
-  `Emily.Backend` reads it via `Process.get(:emily_worker)` and passes
-  it as an explicit argument to every NIF call. Each NIF dispatches
-  work to the worker's dedicated OS thread where the MLX stream lives.
+  `with_stream/2` stores the worker reference in the process
+  dictionary under `:emily_worker`. `Emily.Backend` reads it and
+  passes it to every NIF call. Each NIF dispatches its work to the
+  worker's dedicated OS thread where the MLX stream lives. Tensors
+  allocated by one stream can be read by another (MLX arrays are
+  refcounted and thread-safe for reads), but lazy tensors must be
+  evaluated on the stream that created them.
 
   ## Concurrent serving patterns
 
   **Stream-per-process** (shared model, per-process queues):
 
-      # Each serving process wraps its work in with_stream.
-      # Weights are shared — no duplication.
       stream = Emily.Stream.new(:gpu)
       Emily.Stream.with_stream(stream, fn ->
         Nx.Serving.batched_run(my_serving, input)
       end)
 
+  Each serving worker allocates its own stream once at init. Weights
+  are shared — no duplication.
+
   **Pooled servings** (K instances behind a pool):
 
-      # Each pool member loads its own weights and runs on the
-      # default stream. No Emily.Stream needed — just start K
-      # Nx.Serving instances behind poolboy / Registry / etc.
-      # Trade-off: each instance holds its own weight copy.
+  Start K `Nx.Serving` instances behind poolboy / Registry / etc.
+  Each loads its own weights and runs on the default stream. No
+  `Emily.Stream` needed. Trade-off: each pool member holds its own
+  weight copy, so memory scales with K.
 
   For small models the pool approach is simpler. For large models
   (Qwen3-7B+) where duplicating weights is impractical, use
   stream-per-process.
+
+  ## Examples
+
+      iex> stream = Emily.Stream.new(:gpu)
+      iex> Emily.Stream.with_stream(stream, fn -> 42 end)
+      42
+
   """
 
   @enforce_keys [:worker]

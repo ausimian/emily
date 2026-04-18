@@ -25,6 +25,7 @@ emily-*.tar
 # Native build artefacts
 /priv/libemily.*
 /priv/mlx/
+/priv/mlx.metallib
 
 # Dialyzer PLTs
 /priv/plts/

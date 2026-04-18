@@ -2,48 +2,63 @@ defmodule Emily.Fast do
   @moduledoc """
   Fused transformer kernels as `defn`-callable helpers.
 
-  Each function here emits a `Nx.Defn.Expr.optional/3` node whose op
-  name matches a custom callback on `Emily.Backend`. Under Emily the
-  Evaluator dispatches directly to the MLX `mx::fast::*` kernel; under
-  any other backend the defn-composed fallback runs and produces a
-  mathematically equivalent result. That means Bumblebee models that
-  replace their own RMSNorm / attention / RoPE / LayerNorm
-  implementations with these helpers (via
-  `Emily.Bumblebee.FastKernels`) keep running on BinaryBackend / EXLA
-  for conformance work — just without the fusion speedup.
+  Each function here emits an optional-expression node whose op name
+  matches a custom callback on `Emily.Backend`. Under Emily the
+  Defn evaluator dispatches directly to the MLX `mx::fast::*`
+  kernel; under any other backend the defn-composed fallback runs
+  and produces a mathematically equivalent result. That means
+  Bumblebee models rewritten to use these helpers (via the test-only
+  `Emily.Bumblebee.FastKernels` shim) keep running on
+  `Nx.BinaryBackend` / EXLA for conformance — just without the
+  fusion speedup.
 
   ## Hook mechanism
 
-  `Nx.Defn.Expr.optional(name, in_args, fallback)` creates an
-  `:optional` Expr node. At eval time,
-  `Nx.Defn.Evaluator.eval_apply/4` looks for
-  `function_exported?(backend, name, length(in_args) + 1)` and, if
-  present, calls `backend.name(out, args...)` directly. Otherwise the
-  fallback defn runs. This is Nx's documented extension point for
-  vendor-fused kernels (the same pattern EXLA uses for its native ops).
+  Each helper wraps `Nx.Defn.Expr.optional(name, in_args, fallback)`,
+  which creates an `:optional` Expr node. At eval time the Nx
+  evaluator looks for `function_exported?(backend, name,
+  length(in_args) + 1)` on the active backend and, if present, calls
+  `backend.name(out, args...)` directly. Otherwise the fallback defn
+  runs. This is Nx's extension point for vendor-fused kernels (the
+  same pattern EXLA uses for its native ops).
 
   ## Tensor vs option arguments
 
-  `Nx.Defn.Expr.optional/3` splits `in_args` at the first list: every
-  leading non-list argument is treated as a tensor param; the list
-  (typically a keyword list) is passed through as opts. We follow that
-  contract — every `Emily.Fast.*` function's final argument is a
-  keyword list of scalars (dims, epsilons, flags), and all tensor
-  inputs come before it.
+  The optional-expression contract splits `in_args` at the first
+  list: every leading non-list argument is treated as a tensor param;
+  the list (typically a keyword list) is passed through as opts. Every
+  `Emily.Fast.*` function's final argument is a keyword list of
+  scalars (dims, epsilons, flags), and all tensor inputs come before
+  it.
 
   ## Covered kernels
 
-    * `rms_norm/3` — `mx::fast::rms_norm`
-    * `layer_norm/4` — `mx::fast::layer_norm`
-    * `rope/3` — `mx::fast::rope` (standard base / theta)
+    * `rms_norm/3` — `mx::fast::rms_norm`.
+    * `layer_norm/4` — `mx::fast::layer_norm`.
+    * `rope/3` — `mx::fast::rope` with the standard geometric-progression
+      theta schedule.
     * `rope_with_freqs/4` — `mx::fast::rope` with a precomputed
       inverse-frequency table (for Llama-3 / LongRoPE / linear /
-      dynamic scaling)
-    * `scaled_dot_product_attention/4` — `mx::fast::sdpa` without
-      mask or with causal mask
+      dynamic scaling).
+    * `scaled_dot_product_attention/4` — `mx::fast::sdpa`, without
+      mask or with causal mask.
     * `scaled_dot_product_attention_with_mask/5` — the same with an
-      additive bias tensor (Bumblebee's
-      `select(mask, 0, -inf)` mask materialised)
+      additive bias tensor.
+
+  ## Usage
+
+  Call these from inside a `defn` or `Nx.Defn.jit`-traced function,
+  alongside regular `Nx` ops:
+
+      defn block(x, w, b) do
+        x
+        |> Emily.Fast.layer_norm(w, b, eps: 1.0e-5)
+        |> Nx.multiply(0.5)
+      end
+
+  Under `Emily.Compiler` the `layer_norm` node dispatches to
+  `mx::fast::layer_norm`; under `Nx.Defn.Evaluator` + any other
+  backend it runs the composed fallback.
   """
 
   alias Nx.Defn.Expr

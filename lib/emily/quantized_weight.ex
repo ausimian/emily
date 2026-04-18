@@ -24,20 +24,19 @@ defmodule Emily.QuantizedWeight do
 
   ## Dispatch
 
-  Use `Emily.Quantization.quantized_matmul/2` to run a fused quantized matmul
-  against a `QuantizedWeight`. `Nx.dot/2` itself cannot accept a
-  `QuantizedWeight` operand — `Nx` traverses containers expecting a single
-  tensor — so the direct-call helper is the supported path.
+  Use `Emily.Quantization.quantized_matmul/2` to run a fused quantized
+  matmul against a `QuantizedWeight`. `Nx.dot/2` itself cannot accept
+  a `QuantizedWeight` operand — `Nx` traverses containers expecting a
+  single tensor — so the direct-call helper is the supported path.
 
   > #### Defn-traced Axon forward passes {: .info}
-  > `Emily.Quantization.dequantize_defn/1` (M10.5) is the defn-native
-  > analogue of `to_dense/1`; pair it with
-  > `Emily.Quantization.Layers.quantized_dense/4` to splice a quantized
-  > linear into any `Nx.Defn.jit`-traced Axon forward pass. The layer
-  > performs `Nx.dot(x, dequantize_defn(qw))` instead of MLX's single
-  > fused `quantized_matmul` — two kernels vs. one, but fully
-  > integrated with the rest of Bumblebee's defn graph. M11's fast-kernel
-  > work will close the perf gap.
+  > `Emily.Quantization.dequantize_defn/1` is the defn-native analogue
+  > of `to_dense/1`; pair it with
+  > `Emily.Quantization.Layers.quantized_dense/4` to splice a
+  > quantized linear into any `Nx.Defn.jit`-traced Axon forward pass.
+  > The layer performs `Nx.dot(x, dequantize_defn(qw))` instead of
+  > the fused `quantized_matmul` kernel — two dispatches vs one, but
+  > fully integrated with the rest of Bumblebee's defn graph.
   """
 
   @derive {Nx.Container,
@@ -71,9 +70,21 @@ defmodule Emily.QuantizedWeight do
 
     * `:group_size` — default `64`. Elements per quantization group.
     * `:bits` — default `4`. One of `#{inspect(@valid_bits)}`.
-    * `:transpose` — default `true`. Layout flag threaded to
-      `Native.quantized_matmul/7`. Leave as `true` for weights produced
+    * `:transpose` — default `true`. Layout flag threaded to the
+      `quantized_matmul` kernel. Leave as `true` for weights produced
       here; set `false` when wrapping pre-packed external checkpoints.
+
+  ## Examples
+
+      iex> w = Nx.iota({4, 64}, backend: Emily.Backend, type: :f32)
+      iex> qw = Emily.QuantizedWeight.from_dense(w, bits: 4, group_size: 64)
+      iex> qw.bits
+      4
+      iex> qw.group_size
+      64
+      iex> Nx.shape(qw.value)
+      {4, 8}
+
   """
   @spec from_dense(Nx.Tensor.t(), keyword()) :: t()
   def from_dense(%T{} = w, opts \\ []) do
@@ -105,9 +116,17 @@ defmodule Emily.QuantizedWeight do
   @doc """
   Reconstruct a dense `Nx.Tensor` from a `QuantizedWeight`.
 
-  Useful for oracle comparisons and for transferring a quantized parameter
-  off `Emily.Backend` (backend transfer traverses each container tensor
-  individually; most consumers want the dense view).
+  Useful for oracle comparisons and for transferring a quantized
+  parameter off `Emily.Backend` (backend transfer traverses each
+  container tensor individually; most consumers want the dense view).
+
+  ## Examples
+
+      iex> w = Nx.iota({4, 64}, backend: Emily.Backend, type: :f32)
+      iex> dense = Emily.QuantizedWeight.from_dense(w) |> Emily.QuantizedWeight.to_dense()
+      iex> Nx.shape(dense)
+      {4, 64}
+
   """
   @spec to_dense(t()) :: Nx.Tensor.t()
   def to_dense(%__MODULE__{
