@@ -328,9 +328,9 @@ opt-in CI job.
 
 ### Post-M9 priority ordering
 
-The eleven milestones below were derived from a structured review of
-the post-M9 codebase (see PR discussion) and ordered by
-user-visible value, not difficulty. Headline rationale:
+The milestones below were derived from a structured review of the
+post-M9 codebase (see PR discussion) and ordered by user-visible
+value, not difficulty. Headline rationale:
 
 1. **Quantization, fast kernels, zero-copy** (M10–M12) move the needle
    most for the headline use case (Bumblebee Qwen3 on a MacBook).
@@ -341,7 +341,10 @@ user-visible value, not difficulty. Headline rationale:
 4. **Observability, errors, interop, doctor** (M18–M21) are the polish
    that turns a working library into one new users can actually adopt
    without hand-holding.
-5. **1.0 release** (M22) ships the result.
+5. **Debug flags and documentation** (M22–M23) close the last
+   pre-release gaps: caller-error detection and the HexDocs / worked-
+   example surface new users actually land on.
+6. **1.0 release** (M24) ships the result.
 
 ### M10 — Quantized inference primitives (partial)
 
@@ -988,48 +991,268 @@ convention).
 
 **Exit (deferred):** revisit at 2.0 planning.
 
-### M20 — GPU interop pointers
+### M20 — GPU interop pointers *(deferred — post-1.0)*
 
-`from_pointer` / `to_pointer` currently raise. Forecloses handing
-Emily tensors to user-owned native code (audio/vision pipelines,
-custom kernels, future DLPack interop). Lowest-priority of the eleven
-gaps — real but narrow.
+*Deferred — post-1.0.* The original scope — implementing
+`Nx.Backend.from_pointer/5` and `to_pointer/2` over MLX buffer pointers
+with caller-supplied deleters — remains reachable but is not the right
+shape for Emily's integration surface:
 
-- `to_pointer`: return the MLX buffer device pointer (Metal for GPU,
-  raw for CPU) plus a refcount handle the caller must release.
-  Document the lifetime contract loudly.
-- `from_pointer`: construct an MLX array from a user-owned pointer
-  with a caller-supplied deleter. Same lifetime contract.
-- DLPack export/import is the natural follow-on — same shape of
-  problem, broader audience. Out of scope for M20.
+1. **Elixir can't represent a raw pointer.** `Nx.Pointer.address` is a
+   uint; a user can't dereference it. The only thing they can do with a
+   `to_pointer` result is hand it to another NIF. Elixir is a passive
+   integer shuttle, not the real API.
+2. **Ecosystem parity.** Neither EMLX nor Torchx exposes pointer ops in
+   Elixir; `Nx.BinaryBackend` raises too. Emily is not worse than peers
+   today — raw `raise` with a clear message is the ecosystem
+   convention for backends that haven't implemented the callbacks.
+3. **MLX DLPack lives in the Python bindings**
+   (`vendor/mlx/python/src/convert.cpp`), not the C++ public API. No
+   clean capsule path to lift.
+4. **No concrete consumer.** The correct design is a public C++ header
+   (`include/emily.h`) exporting the Tensor resource type and opaque
+   `mlx::array` accessors so downstream NIFs can interop in C++ — a
+   library-packaging task needing ABI stability commitments. Designing
+   that speculatively risks shipping the wrong shape.
 
-**Testing**: round-trip via a tiny C harness in `test/c/`; assert
-no leak under valgrind.
+When we revisit — prompted by a real user with a native pipeline or a
+DLPack-importing tool — the plan is the one originally written for
+M20, restructured as a NIF-to-NIF contract rather than an Elixir
+surface:
 
-**Exit:** pointer ops documented with lifetime warnings; no segfaults
-in CI.
+- Public header `include/emily.h` exporting:
+  - `emily_tensor_resource_type(ErlNifEnv*)` — the `ErlNifResourceType*`
+    so downstream NIFs can `enif_get_resource` Emily tensors.
+  - `emily_array_from_term(ErlNifEnv*, ERL_NIF_TERM) -> mlx::array&` —
+    read access to the underlying array.
+  - `emily_array_to_term(ErlNifEnv*, mlx::array) -> ERL_NIF_TERM` —
+    wrap a caller-constructed `mlx::array` (including one built from a
+    user-owned pointer via MLX's `array::array(void*, shape, dtype,
+    Deleter)` constructor at `vendor/mlx/mlx/array.h:69`) as a Tensor
+    resource.
+- `Nx.Backend.from_pointer/5` and `to_pointer/2` continue to raise,
+  with messages pointing at the header-based interop path.
+- Lifetime contract documented explicitly: the `Deleter` closure owns
+  the backing buffer; the Tensor resource refcount gates the
+  `mlx::array` lifetime; downstream NIFs must hold the resource, not
+  the raw pointer.
+- Testing: a minimal downstream NIF harness in `test/c/` exercising
+  allocate-in-emily → borrow-pointer-in-foreign-NIF → release, under
+  AddressSanitizer (subject to the same macOS-SIP caveat recorded in
+  M12's exit notes).
 
-### M21 — `mix emily.doctor`
+**Exit (deferred):** revisit when a concrete downstream consumer asks
+for pointer interop.
 
-The MLX prebuilt fetch + checksum + `elixir_make` chain is what
-breaks on fresh macOS machines. A diagnostic Mix task pays back on
-day one of adoption.
+### M21 — `mix emily.doctor` *(deferred — post-1.0)*
 
-- Probes: Xcode CLT version, MLX prebuilt presence + checksum, NIF
-  load, trivial GPU dispatch, MLX version vs. expected, available
-  unified memory.
-- Output: a structured report with green/yellow/red per probe;
-  remediation hints per failure.
+*Deferred — post-1.0.* The original scope was a diagnostic Mix task
+covering the MLX prebuilt fetch + checksum + `elixir_make` chain —
+the failure surface on fresh macOS machines when Emily pinned the
+`cocoa-xu/mlx-build` prebuilt. M14.5 moved Emily to building MLX from
+source, which collapses most of that failure surface:
 
-**Testing**: snapshot test of the report on a known-good
-configuration; assert each probe surfaces a useful message on a
-deliberately-broken configuration (rename the prebuilt directory,
-revoke read on the cache, etc.).
+1. **No prebuilt fetch to probe.** Checksum mismatch, cache corruption,
+   and registry-unreachable paths no longer exist. The remaining build
+   failures (missing Xcode CLT, CMake version skew, out-of-disk)
+   surface as `elixir_make` errors during `mix compile` with messages
+   users can already read.
+2. **NIF-load and GPU-dispatch probes duplicate the test suite.** A
+   successful `mix test` already exercises both paths more thoroughly
+   than a single probe would. Users who can't run tests can't run
+   `mix emily.doctor` either.
+3. **No concrete adoption signal yet.** The task was motivated by
+   speculative day-one friction; we haven't seen the issues it
+   targets filed against the repo.
 
-**Exit:** task documented in the README setup section; surfaces clear
-errors for the three most common breakages.
+When we revisit — prompted by a real pattern of setup failures that
+`elixir_make` errors don't already explain — the plan is a narrower
+version of what was originally written:
 
-### M22 — 1.0 release (was M11)
+- Probe Xcode CLT version, CMake presence/version, MLX source-tree
+  checkout state, compiled NIF load, trivial GPU dispatch, and
+  available unified memory.
+- Drop the prebuilt-presence and prebuilt-checksum probes from the
+  original scope.
+- Structured report with green/yellow/red per probe and remediation
+  hints keyed to the observed failure modes.
+- Snapshot test on a known-good configuration; negative tests that
+  deliberately break one probe at a time.
+
+**Exit (deferred):** revisit if adoption-friction issues accumulate
+around the source-build path.
+
+### M22 — Compile-time debug flags
+
+Tracks [issue #32](https://github.com/ausimian/emily/issues/32). During
+DistilBERT-QA conformance testing we hit an intermittent `:nan` score
+when a vocab-30522 tokenizer was paired with a tiny-random model whose
+embedding table had only 1124 rows. The tokenizer emitted out-of-range
+token ids, and `Emily.Backend.gather/4` silently returned uninitialised
+memory for the OOB rows — sometimes benign floats, sometimes NaN that
+propagated through softmax. `Nx.BinaryBackend` raises on OOB gather
+because the check is free on CPU; GPU backends (Emily, EXLA,
+Torch-CUDA, JAX-GPU) dispatch to kernels that do not bounds-check.
+That's the GPU-backend norm, not an Emily bug — but it hides a real
+class of caller error.
+
+M22 lands a compile-time opt-in debug-assertion facility so users can
+re-enable these checks in CI / test / dev builds at zero default cost.
+
+**Mechanism.** `Application.compile_env(:emily, :<flag>, false)` module
+attribute + dead `if` branches. When the flag is `false` (default), the
+Elixir compiler eliminates the assertion branch — zero runtime cost,
+zero bytecode. Mix recompiles affected modules automatically when the
+flag flips. Verified by inspecting `.beam` disassembly for the
+default-off case, and by relying on `Application.compile_env/2`'s
+compile-vs-runtime divergence warning for the flip case.
+
+**Initial flag set** (coherent subset, not every flag from the issue):
+
+- `:debug_bounds_check` — assert indices in range for indexing ops:
+  `gather` / `take` on reads and `scatter` / `scatter_add` on writes.
+  One flag covers both because the failure class is identical (OOB
+  indexing into a resource tensor) and users almost always want both
+  — in inference `gather` is the hot path, in training `scatter`
+  fires through the grad of `gather`, and the DistilBERT-QA bug
+  class shows up via either. Can be split into per-op flags if a
+  real user later asks for cost-profile granularity.
+- `:debug_detect_nan_inf` — post-op NaN/Inf scan on the hot training
+  ops (matmul / softmax / layer-norm), so training-time numerics
+  failures surface at the op that produced them rather than as a
+  downstream `loss = NaN`.
+
+Deferred to follow-ups if demand materialises:
+
+- `:debug_assert_same_backend` — detect tensors that silently moved
+  between `Emily.Backend` and `Nx.BinaryBackend` mid-graph.
+- `:debug_strict_dtype` — raise on silent mixed-dtype promotion.
+
+**Naming and default.** `:debug_*` prefix across the set. Every flag
+defaults to `false` — explicit opt-in only, including in Emily's own
+`config/test.exs`. The per-flag unit tests (below) exercise the
+flag→assertion path; there's no value in Emily's CI paying GPU-sync
+cost on every `mix test` run, and running Emily's own tests in the
+same configuration users hit in production avoids masking perf
+regressions. Each flag documented in the `Emily` moduledoc under a
+"Debug assertions" heading with a worked `config/test.exs` snippet
+consumers can lift into their own projects.
+
+**Testing.**
+
+- Per-flag unit tests: flag off, OOB op succeeds silently (negative
+  control); flag on, OOB op raises with a message identifying op +
+  offending index / value. `:debug_bounds_check` gets coverage on
+  both a gather-family op (`gather` / `take`) and a scatter-family
+  op (`scatter` / `scatter_add`) since one flag now covers both.
+- Zero-cost verification: a single test that compiles with all flags
+  off and asserts the assertion-branch `fn` does not appear in the
+  module's `beam_disasm` output. Guards against accidental runtime
+  cost from a future refactor.
+- `:debug_detect_nan_inf` gets a training-loop test: inject a NaN
+  (divide-by-zero or overflow) into a known op, assert the flag
+  surfaces the failure at that op's boundary rather than at the
+  final loss.
+
+**Risks.**
+
+- Each assertion is a GPU sync (breaks lazy-graph fusion). Documented
+  loudly alongside each flag; the default-off story is the mitigation.
+- `:debug_detect_nan_inf` is a reduction per op — meaningful overhead
+  even off the hot path. Scope to a short allow-list of ops the
+  issue named (matmul / softmax / layer-norm), not every op.
+
+**Exit.** Two flags shipped with tests; all flags default-false,
+including in Emily's own `config/test.exs`; README and `Emily`
+moduledoc document the pattern with a worked opt-in snippet; zero-cost
+verification test asserts the assertion branches compile out when the
+flags are off.
+
+### M23 — Public documentation & examples review
+
+Pre-1.0 pass over the documentation surface users actually consume —
+ExDoc-rendered module docs on HexDocs, the README, and worked
+examples. Not a rewrite; a structured audit + gap-fill.
+
+**Current state** (surveyed pre-milestone):
+
+- All 9 public modules have moduledocs. Design rationale (Backend
+  divergences, Compiler cache story, Quantization dispatch, Stream
+  concurrency, MixedPrecision worked example) is explained where it
+  matters.
+- `Emily.Backend` exposes 83 public functions with only 6 `@doc`
+  attributes — the 77 undocumented are `Nx.Backend` callback
+  implementations users should not call directly.
+- `Emily.Compiler` exposes 4 public functions with 0 `@doc` — same
+  pattern, `Nx.Defn.Compiler` callbacks.
+- No `.livemd` notebooks, no `examples/` directory. `bench/` is
+  internal tooling. The README points onboarding readers at
+  `test/emily/conformance/` for worked model usage, which is awkward.
+- `mix.exs` `docs:` config is minimal: `main: "readme"`, three
+  extras. No `groups_for_modules`, no HexDocs link in the README.
+- `CHANGELOG.md` is a stub; `RELEASE.md` holds the working M13–M18
+  notes. Cutover process not documented.
+
+**Scope.**
+
+- **Partition `Emily.Backend` / `Emily.Compiler` callback
+  implementations from the public surface.** The 77 Backend + 4
+  Compiler callback functions get `@doc false` (Nx backend convention —
+  see `deps/nx/lib/nx/binary_backend.ex` for precedent). The six
+  functions genuinely intended for direct use keep their `@doc`. A
+  "Public API" section in each moduledoc enumerates what users call
+  directly vs what Nx dispatches to on their behalf.
+- **`mix.exs` `groups_for_modules`**: organise the nav by concern —
+  Core (`Emily`, `Emily.Backend`, `Emily.Compiler`), Concurrency
+  (`Emily.Stream`), Quantization (`Emily.Quantization`,
+  `Emily.QuantizedWeight`), Training (`Emily.MixedPrecision`),
+  Performance (`Emily.Fast`), Observability (`Emily.Telemetry`).
+- **README: add HexDocs link** (`https://hexdocs.pm/emily`) under a
+  "Documentation" heading. Link to the Livebook(s) below.
+- **`notebooks/` directory with at least two `.livemd` files**:
+  1. `notebooks/distilbert_qa.livemd` — smallest useful worked
+     example; mirrors the M3 conformance test without the test
+     harness. Telemetry-attach demonstrated inline.
+  2. `notebooks/qwen3_quantized.livemd` — the headline use case;
+     loads Qwen3-0.6B, quantizes via `Emily.Quantization.Transform`,
+     greedy-decodes under `Bumblebee.Text.generation/4`. Shows
+     `Emily.Stream` for concurrent serving.
+  Both use `Mix.install/2` at the top so they run standalone without
+  checking out the repo.
+- **Pass over each public moduledoc** for 1.0-readiness: stale
+  milestone references removed, examples run under the current API,
+  deliberate divergences from Nx documented as a consistent
+  "Divergences from `Nx.BinaryBackend`" subsection where applicable.
+- **CHANGELOG.md cutover**: move the M13–M18 entries from
+  `RELEASE.md` into `CHANGELOG.md` under a `0.1.0 (unreleased)`
+  heading during this milestone; document the expected cutover in
+  the release process so future milestones know which file to
+  touch.
+
+**Explicitly out of scope** (pattern reuse, not polish):
+
+- A full guides directory (`guides/*.md`). The moduledocs carry the
+  design material today; promoting them to separate guides is a 2.0
+  concern once the surface stabilises.
+- Contribution docs (`CONTRIBUTING.md`, issue/PR templates) beyond
+  whatever the `/adopt-build-conventions` skill already ships.
+
+**Testing.**
+
+- `mix docs` runs clean (no warnings about missing modules, broken
+  links, or unresolvable cross-refs).
+- Each `.livemd` file in `notebooks/` is executed end-to-end as a
+  smoke test (CI job or `mix test.notebooks` Mix task) against the
+  real Bumblebee models used in `:*_full` conformance. Gated the
+  same way as `:qwen3_full` — opt-in, not default CI.
+- A README link-check asserts no broken HexDocs / GitHub links.
+
+**Exit.** `mix docs` output reviewed module-by-module; two Livebooks
+land in `notebooks/` and execute cleanly; README has a Documentation
+section with working HexDocs + Livebook links; `CHANGELOG.md` holds
+the 0.1.0 draft; callback-impl noise removed from the HexDocs nav.
+
+### M24 — 1.0 release (was M11)
 
 - API docs, HexDocs, README with worked Bumblebee + quantized-Qwen3
   examples
