@@ -49,6 +49,13 @@ defmodule Emily.Grad.ExlaOracleTest do
     grad_indexed_add: {1.0e-6, 1.0e-5},
     grad_gather_dot_softmax: {5.0e-5, 5.0e-4},
     grad_attention: {1.0e-4, 1.0e-3},
+    # M17 window ops. grad_window_sum and grad_window_avg_pool are
+    # integer/rational-valued (window counts / 0.25) so they bit-match;
+    # grad_window_max_pool is a one-hot scatter — also bit-exact unless
+    # EXLA and MLX disagree on tie-break direction.
+    grad_window_sum: {1.0e-6, 1.0e-5},
+    grad_window_max_pool: {1.0e-6, 1.0e-5},
+    grad_window_avg_pool: {1.0e-6, 1.0e-5},
     block_step_loss: {1.0e-4, 1.0e-3},
     block_step_params: {1.0e-4, 1.0e-3}
   }
@@ -57,11 +64,7 @@ defmodule Emily.Grad.ExlaOracleTest do
 
   # -------------------- Zoo functions --------------------
 
-  # Zoo entries without a pre-generated EXLA golden (e.g. the M17
-  # window ops added after the last golden regen) skip here — their
-  # correctness is covered by the BinaryBackend grad-equivalence test.
-  # Run `mix run bench/exla_golden_gen.exs` to extend coverage.
-  for name <- GradZoo.all_functions(), ExlaGoldenData.has_golden?(name) do
+  for name <- GradZoo.all_functions() do
     describe "#{name}" do
       test "Emily grad matches EXLA golden" do
         name = unquote(name)

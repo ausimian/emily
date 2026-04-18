@@ -70,6 +70,25 @@ defmodule GoldenGen do
     e / Nx.sum(e, axes: [-1], keep_axes: true)
   end
 
+  # M17 window ops — kernel on spatial axes of an NCHW-shaped tensor.
+
+  defn grad_window_sum(x) do
+    grad(x, fn z -> z |> Nx.window_sum({1, 1, 2, 2}, strides: [1, 1, 1, 1]) |> Nx.sum() end)
+  end
+
+  defn grad_window_max_pool(x) do
+    grad(x, fn z -> z |> Nx.window_max({1, 1, 2, 2}, strides: [1, 1, 2, 2]) |> Nx.sum() end)
+  end
+
+  defn grad_window_avg_pool(x) do
+    grad(x, fn z ->
+      z
+      |> Nx.window_sum({1, 1, 2, 2}, strides: [1, 1, 2, 2])
+      |> Nx.divide(4.0)
+      |> Nx.sum()
+    end)
+  end
+
   # -------------------- Training step --------------------
   # Verbatim copies from Emily.TrainingHelper.
 
@@ -162,6 +181,10 @@ defmodule GoldenGen do
     ]
   end
 
+  defp fixed_inputs(:grad_window_sum), do: [det_weights({2, 3, 4, 4}, 10)]
+  defp fixed_inputs(:grad_window_max_pool), do: [det_weights({2, 3, 4, 4}, 11)]
+  defp fixed_inputs(:grad_window_avg_pool), do: [det_weights({2, 3, 4, 4}, 12)]
+
   defp grad_function(:grad_sum_op), do: &grad_sum_op/1
   defp grad_function(:grad_dot_left), do: &grad_dot_left/2
   defp grad_function(:grad_reshape_transpose), do: &grad_reshape_transpose/1
@@ -170,6 +193,9 @@ defmodule GoldenGen do
   defp grad_function(:grad_indexed_add), do: &grad_indexed_add/3
   defp grad_function(:grad_gather_dot_softmax), do: &grad_gather_dot_softmax/3
   defp grad_function(:grad_attention), do: &grad_attention/5
+  defp grad_function(:grad_window_sum), do: &grad_window_sum/1
+  defp grad_function(:grad_window_max_pool), do: &grad_window_max_pool/1
+  defp grad_function(:grad_window_avg_pool), do: &grad_window_avg_pool/1
 
   @zoo [
     :grad_sum_op,
@@ -179,7 +205,10 @@ defmodule GoldenGen do
     :grad_gather,
     :grad_indexed_add,
     :grad_gather_dot_softmax,
-    :grad_attention
+    :grad_attention,
+    :grad_window_sum,
+    :grad_window_max_pool,
+    :grad_window_avg_pool
   ]
 
   # -------------------- Generator --------------------
