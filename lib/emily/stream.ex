@@ -86,8 +86,7 @@ defmodule Emily.Stream do
   """
   @spec with_stream(t(), (-> result)) :: result when result: var
   def with_stream(%__MODULE__{worker: w}, fun) when is_function(fun, 0) do
-    prev = Process.get(:emily_worker)
-    Process.put(:emily_worker, w)
+    prev = Process.put(:emily_worker, w)
 
     try do
       fun.()
