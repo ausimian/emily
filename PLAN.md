@@ -952,28 +952,41 @@ warning behavior covered by tests.
   silence, `to_binary` span metadata, and `memory_stats/0` emission.
   `async: false` because the dedup table is global.
 
-### M19 — Error surfacing
+### M19 — Error surfacing *(deferred — post-1.0)*
 
-C++ exceptions propagate through `fine` and surface as
-`{:error, "raw MLX message"}` with no Elixir context. "Unable to
-safely factor shape" and "binary size mismatch" are common MLX
-strings but unhelpful as-is.
+*Deferred — post-1.0.* The original scope — typed exception hierarchy
+(`Emily.ShapeError`, `Emily.DtypeError`, `Emily.MLXError`) with
+per-NIF wrapping to carry op name + input shapes/dtypes — remains
+sound, but three factors argue for waiting:
 
-- Wrap each NIF entry to catch known MLX exception classes
-  (`std::invalid_argument`, `std::runtime_error`, MLX-specific) and
-  re-raise as tagged Elixir exceptions: `Emily.ShapeError`,
-  `Emily.DtypeError`, `Emily.MLXError`.
-- Each exception carries the op name, input shapes/dtypes, and the
-  raw MLX message. The Backend layer optionally annotates with the
-  originating Nx callback name.
-- Migrate existing raises (`f64` rejection, `count_leading_zeros`
-  unsupported, etc.) onto the same exception types for consistency.
+1. **Nx validates upfront.** Shape/dtype mismatches raise in
+   `Nx.Shape.*` / `Nx.Type.*` before dispatch hits `Emily.Backend`,
+   with structured messages. MLX's raw surface only leaks through for
+   direct `Emily.Native.*` callers (tests, `Emily.Quantization`) and
+   numerical failures Nx can't validate (singular matrix, SVD
+   non-convergence) — a narrow blast radius in practice.
+2. **Ecosystem parity.** No Nx backend (EXLA, BinaryBackend, EMLX,
+   Torchx) ships a typed exception hierarchy. Emily is not worse than
+   peers today; raw `ArgumentError` / `RuntimeError` with the vendor
+   message verbatim is the ecosystem convention.
+3. **Hot-path cost.** Per-NIF try/rescue wrapping adds ~70–100 ns per
+   call (extra function call + try frame). At transformer-inference
+   NIF counts (~10k calls per Qwen3 forward pass), that's ~1 ms of
+   trace-time tax for errors that mostly don't happen.
 
-**Testing**: deliberate failure for each exception class, assert the
-raised struct's fields.
+When we revisit — likely bundled with a 1.x → 2.0 bump, since
+introducing rescue-able exception types is a contract change users
+may come to depend on — the plan is the one originally written for
+M19: three `defexception` modules carrying `:op`, `:input_shapes`,
+`:input_dtypes`, `:message`, `:callback`; macro-generated wrappers
+over a renamed `Emily.Native.Nif`; a `wrap_callback/2` helper in
+`Emily.Backend`; migration of the ~13 existing `ArgumentError` raises
+in `lib/emily/backend.ex`, `lib/emily/quantized_weight.ex`,
+`lib/emily/quantization.ex` (keep API-misuse raises — device,
+`max_concurrency`, unknown options — as `ArgumentError` per Nx
+convention).
 
-**Exit:** all NIFs catch and translate; exception hierarchy
-documented.
+**Exit (deferred):** revisit at 2.0 planning.
 
 ### M20 — GPU interop pointers
 
