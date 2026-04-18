@@ -92,6 +92,27 @@ weight copy.
 
 See `Emily.Stream` moduledoc for details.
 
+## Observability
+
+Emily emits `:telemetry` events at the evaluation boundary
+(`[:emily, :eval, *]`, `[:emily, :to_binary, *]`) and at every
+`Nx.BinaryBackend` fallback (`[:emily, :fallback, *]`). Attach a
+handler to graph hotspots or detect silent performance cliffs —
+see `Emily.Telemetry` for the full event catalogue.
+
+When a backend callback has no native MLX path, Emily transparently
+falls back to `Nx.BinaryBackend`. The fallback is ~100× slower; to
+get a one-shot `Logger.warning` per `{op, input_shapes}` pair the
+first time each one fires (recommended during development):
+
+```elixir
+# config/dev.exs
+config :emily, :warn_on_fallback, true
+```
+
+The warning is off by default so library consumers and CI logs stay
+quiet. The telemetry event fires regardless.
+
 ## Milestones shipped
 
 - **M0** — NIF scaffold, MLX prebuilt fetch, tensor round-trip.

@@ -918,6 +918,40 @@ ops rotate on/off `via_binary` — make it observable.
 **Exit:** events documented in `Emily.Telemetry` moduledoc; fallback
 warning behavior covered by tests.
 
+**Shipped.**
+
+- `Emily.Telemetry` (`lib/emily/telemetry.ex`) — moduledoc enumerates
+  every event; `memory_stats/0` samples the MLX allocator and emits
+  `[:emily, :memory, :stats]`. `maybe_warn_fallback/2` and
+  `init_dedup_table/0` are the internal helpers; dedup state lives in
+  a named `:public` ETS table owned by `Emily.Application`.
+- Span events via `:telemetry.span/3`: `[:emily, :eval, *]` on
+  `Emily.eval/1`, `[:emily, :to_binary, *]` on both `Emily.to_binary/1`
+  and `Emily.Backend.to_binary/2` (the Nx.to_binary path) with
+  `:shape`/`:dtype`/`:byte_size` metadata, and
+  `[:emily, :fallback, *]` on every `via_binary` entry with
+  `:op`/`:input_shapes`/`:input_dtypes`.
+- One-shot `Logger.warning` per `{op, input_shapes}` pair. Opt-in via
+  `config :emily, :warn_on_fallback, true`; off by default so library
+  consumers and CI logs stay quiet. The telemetry event fires
+  regardless — the log is a dev-time convenience on top of it.
+- **Scope interpretation.** PLAN's "each Native dispatch" was read as
+  the evaluation boundary (`Native.eval` / `Native.to_binary`) rather
+  than wrapping 300+ graph-construction call sites in
+  `Emily.Backend`. Graph-construction NIFs are <10μs and do no work;
+  the evaluation boundary is where MLX actually runs kernels, and
+  it's the point every lazy tensor funnels through. If per-op
+  graph-construction histograms are ever needed, the right answer is
+  a centralised dispatch helper, not per-callback decoration.
+- **Op-name plumbing.** `via_binary/3` → `via_binary/4`;
+  `via_binary_tuple/3` → `via_binary_tuple/4`; `apply_scatter/7` →
+  `/8`. The op name propagates into both the `:telemetry` metadata
+  and the dedup key.
+- Tests: `test/emily/telemetry_test.exs` covers fallback start/stop
+  events, 100-call dedup via `capture_log`, `warn_on_fallback=false`
+  silence, `to_binary` span metadata, and `memory_stats/0` emission.
+  `async: false` because the dedup table is global.
+
 ### M19 — Error surfacing
 
 C++ exceptions propagate through `fine` and surface as

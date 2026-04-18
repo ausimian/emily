@@ -46,7 +46,12 @@ defmodule Emily do
   """
   @spec to_binary(t()) :: binary()
   def to_binary(tensor) do
-    Native.to_binary(Emily.MlxStream.default_worker(), tensor)
+    metadata = %{shape: Native.shape(tensor), dtype: Native.dtype(tensor)}
+
+    :telemetry.span([:emily, :to_binary], metadata, fn ->
+      bytes = Native.to_binary(Emily.MlxStream.default_worker(), tensor)
+      {bytes, Map.put(metadata, :byte_size, byte_size(bytes))}
+    end)
   end
 
   @doc "Return the tensor's shape as a list of non-negative ints."
@@ -65,6 +70,8 @@ defmodule Emily do
   """
   @spec eval(t()) :: :ok
   def eval(tensor) do
-    Native.eval(Emily.MlxStream.default_worker(), tensor)
+    :telemetry.span([:emily, :eval], %{}, fn ->
+      {Native.eval(Emily.MlxStream.default_worker(), tensor), %{}}
+    end)
   end
 end

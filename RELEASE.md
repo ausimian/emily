@@ -8,6 +8,39 @@
 
 ## Added
 
+- M18 — Observability & fallback telemetry. Makes silent
+  `via_binary` round-trips and long-running memory drift observable
+  without changing any op semantics.
+  - **`Emily.Telemetry`** (`lib/emily/telemetry.ex`) — moduledoc
+    enumerates every event, `memory_stats/0` samples the MLX
+    allocator and emits `[:emily, :memory, :stats]`.
+  - **Span events** via `:telemetry.span/3`:
+    `[:emily, :eval, *]` wraps `Emily.eval/1`;
+    `[:emily, :to_binary, *]` wraps both `Emily.to_binary/1` and
+    `Emily.Backend.to_binary/2` (the Nx.to_binary path) with
+    `:shape`, `:dtype`, `:byte_size` metadata;
+    `[:emily, :fallback, *]` wraps every `via_binary` / `via_binary_tuple`
+    entry with `:op`, `:input_shapes`, `:input_dtypes` metadata.
+  - **One-shot fallback warning** per `{op, input_shapes}` pair via
+    a `:public, :named_table` ETS dedup set owned by
+    `Emily.Application`. **Off by default** — library consumers and
+    CI logs stay quiet; opt in with
+    `config :emily, :warn_on_fallback, true` (typically in
+    `config/dev.exs`) when chasing the Whisper-before-M8 class of
+    bug where forward-pass time silently lands on BinaryBackend.
+    The telemetry event fires regardless of the config.
+  - **Op-name plumbing**: `via_binary/3` → `via_binary/4` and
+    `via_binary_tuple/3` → `via_binary_tuple/4` take a leading
+    op-name atom; `apply_scatter/7` → `/8` threads it through for
+    `indexed_add` / `indexed_put`. All call sites updated.
+  - **Tests** (`test/emily/telemetry_test.exs`): fallback start/stop
+    event with op+shape metadata (via `Nx.reduce`), 100-call dedup
+    capture_log assertion, `warn_on_fallback=false` silence path,
+    `to_binary` span metadata with byte_size, and `memory_stats/0`
+    emission. `async: false` because the ETS dedup is global.
+  - **No `mix.exs` change**: `:telemetry` is already a transitive dep
+    via Nx.
+
 - M17 — Conv-pool training (native window ops). Lifted `window_sum`,
   `window_max`, `window_min`, `window_product`, `window_scatter_max`,
   and `window_scatter_min` off the `via_binary` fallback onto native

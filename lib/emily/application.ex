@@ -4,6 +4,8 @@ defmodule Emily.Application do
 
   @impl true
   def start(_type, _args) do
+    Emily.Telemetry.init_dedup_table()
+
     children = [
       {Emily.MlxStream, name: Emily.MlxStream.Default}
     ]
