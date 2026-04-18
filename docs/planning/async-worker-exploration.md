@@ -172,6 +172,40 @@ with a memcpy. For model inference the hot `to_binary` calls are
 `Nx.to_binary(big_weight_tensor)` — would regress, and those aren't
 on any latency-critical path.
 
+**Findings (run on branch `spike-b-resource-binary`, commit `06eac7d`,
+OTP 28.3):**
+
+- **Passes.** All five sub-tests green: correctness (zeros / ones
+  byte patterns), same-tensor-many-binaries pinning (250 binaries
+  aliasing one MLX buffer read correctly even after source tensor
+  is dropped), distinct-tensor reclamation (250 × 4 MB → 1 GB of
+  transient MLX memory reclaims fully after GC + `clear_cache`),
+  sender-dies-holding-binary (no MLX leak).
+- **Option 3a is viable.** `fine::make_resource_binary` called on
+  a worker-allocated `msg_env` correctly pins the resource across
+  `enif_send`. No fallback to 3b/3c needed.
+- **Refcount arithmetic (confirmed by non-leaking stress test):**
+  - `fine::make_resource_binary` moves its `ResourcePtr` argument
+    into the parameter; `enif_make_resource_binary` internally
+    bumps the resource's refcount; the parameter destructs on
+    return. Net on the worker: binary carries one ref.
+  - `enif_send` transfers that ref to the receiver's heap fragment
+    (docs: "shallow copy that increases the refcount of the
+    resource").
+  - `enif_free_env(msg_env)` drops the msg_env's ref. Receiver
+    holds exactly one ref per binary until GC.
+- **MLX allocator caveat:** `mx::contiguous(arr, false, s)` on an
+  already-contiguous array returns a reference to the same
+  underlying buffer — many binaries to the same tensor all alias
+  one MLX buffer. Stress tests must use distinct tensors if they
+  want to measure cumulative memory growth.
+- **MLX cache masks small leaks during reclamation tests.** Call
+  `Emily.Native.clear_cache()` (→ `mx::clear_cache`) after GC
+  before measuring `get_active_memory()`; otherwise freed buffers
+  linger in the MLX arena.
+
+No changes to the plan required; Phase 3 can ship Option 3a.
+
 ### Spike C — Per-process mailbox hygiene under batched ops
 
 **What to prove:** the `receive do {^ref, r} -> r end` idiom scales
