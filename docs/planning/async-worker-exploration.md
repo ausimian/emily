@@ -81,11 +81,18 @@ Each spike is a <1-day throwaway branch.
 5. `enif_free_env(msg_env)` if ERTS did not take ownership.
 
 **Deliverable:** a minimal NIF `spike_async_tensor(w, shape)` that
-builds a `Tensor` on the worker and posts it back. Run under
-`valgrind --tool=helgrind` and ASan with a tight loop creating and
-discarding 1M tensors from 16 parallel processes. If refcounts
-converge to zero after `:erlang.garbage_collect/1` on every sender,
-the model is sound.
+builds a `Tensor` on the worker and posts it back. Verification is
+a stress test, not a sanitizer run — ASan/TSan require rebuilding
+the BEAM VM with matching flags, which is not practical here. Drive
+16 parallel processes through a tight loop creating and discarding
+1M tensors each. Success criteria:
+
+- No crashes or hangs over the full run.
+- `:erlang.memory(:total)` returns to baseline after
+  `:erlang.garbage_collect/0` on every sender.
+- `Emily.Native.get_active_memory()` (MLX allocator) returns to
+  baseline — proves no tensor-resource leaks.
+- Repeat the run N times; variance in end-state memory is zero.
 
 **Specific API questions to resolve in-spike:**
 - Does `enif_send(NULL, pid, msg_env, term)` transfer ownership of
