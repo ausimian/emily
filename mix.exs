@@ -21,6 +21,7 @@ defmodule Emily.MixProject do
       compilers: [:emily_mlx, :elixir_make] ++ Mix.compilers(),
       make_env: &make_env/0,
       test_coverage: test_coverage(),
+      dialyzer: dialyzer(),
       docs: docs(),
       package: package()
     ]
@@ -69,7 +70,18 @@ defmodule Emily.MixProject do
       {:scidata, "~> 0.1", only: :test},
       {:stream_data, "~> 1.1", only: [:dev, :test]},
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
+      {:dialyxir, "~> 1.4", only: [:dev], runtime: false},
       {:ex_doc, "~> 0.34", only: :docs, runtime: false}
+    ]
+  end
+
+  defp dialyzer do
+    [
+      plt_add_apps: [:mix, :ex_unit],
+      plt_file: {:no_warn, "priv/plts/dialyzer.plt"},
+      plt_core_path: "priv/plts/core.plt",
+      flags: [:error_handling, :unknown, :unmatched_returns, :extra_return],
+      ignore_warnings: ".dialyzer_ignore.exs"
     ]
   end
 

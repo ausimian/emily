@@ -54,7 +54,7 @@ defmodule Emily do
   @opaque t :: reference()
 
   @typedoc "An Nx-compatible dtype, e.g. `{:f, 32}` or `{:s, 64}`."
-  @type dtype :: {atom(), non_neg_integer()}
+  @type dtype :: Nx.Type.t()
 
   @doc """
   Build a lazy MLX tensor from a raw binary.

@@ -26,6 +26,9 @@ emily-*.tar
 /priv/libemily.*
 /priv/mlx/
 
+# Dialyzer PLTs
+/priv/plts/
+
 # Editor / tooling
 .DS_Store
 .elixir_ls/
