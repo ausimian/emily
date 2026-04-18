@@ -8,6 +8,57 @@
 
 ## Added
 
+- M22 — Compile-time debug flags. Two opt-in `Application.compile_env`
+  flags re-enable runtime assertions on hot paths that GPU backends
+  skip by default. Both default to `false` with zero runtime cost
+  when off — the gated branches are dead-code eliminated and no
+  `Emily.Backend.DebugHelpers` reference reaches the compiled BEAM.
+  - **`:debug_bounds_check`** — raises on out-of-range / negative
+    indices in `gather`, `take`, `take_along_axis`, `indexed_add`,
+    `indexed_put`. Catches the class of bug where a vocab-N
+    tokenizer paired with a smaller embedding table silently emits
+    garbage (sometimes NaN) through `mx::take` / `mx::gather`. One
+    gate each in `gather/4` (both branches), `take/3`,
+    `take_along_axis/3`, and `apply_scatter/8` — the shared
+    indexed_add/indexed_put helper.
+  - **`:debug_detect_nan_inf`** — scans results of `matmul`,
+    `fast_rms_norm`, `fast_layer_norm`, and both
+    `fast_scaled_dot_product_attention` variants for NaN / Inf.
+    Surfaces numerics failures at the producing op rather than
+    downstream as `loss = NaN`. Standalone softmax has no Backend
+    callback in Emily (Axon-composed); only fused SDPA softmax is
+    scanned. Documented alongside the flag.
+  - **Mechanism.** Module attributes bound via
+    `Application.compile_env/3` default to `false`; the `if @flag`
+    gates fold at compile time, and
+    `Emily.Backend.DebugHelpers.check_bounds!` /
+    `check_nan_inf!` are never referenced from
+    `Emily.Backend.beam`. A zero-cost verification test inspects
+    the disassembled BEAM (`:beam_disasm.file/1`) and asserts no
+    reference survives under the default-off build — guards
+    against a future refactor accidentally unconditionalising the
+    gate.
+  - **Each assertion is a GPU sync** (one reduction + scalar
+    readback per gated op). Breaks lazy-graph fusion; only enable
+    in dev / CI, never in release.
+  - **New files**: `lib/emily/backend/debug_helpers.ex` (assertion
+    bodies), `config/config.exs` + `config/test.exs` (first config
+    files in the project — previously no `config/` directory),
+    `test/support/debug_fixture.ex` (exercises the gate→helper
+    composition with its own fixture-only `compile_env` flags),
+    `test/emily/debug_flags_test.exs` (15 tests: direct helper,
+    production negative control, fixture composition, zero-cost
+    verification).
+  - **Emily's own `config/test.exs` keeps prod flags default-false**
+    so `mix test` doesn't pay the GPU-sync cost on every run and we
+    don't mask perf regressions. Fixture-only flags
+    (`test_fixture_debug_bounds_check`,
+    `test_fixture_debug_detect_nan_inf`) are set to `true` to drive
+    the composition tests.
+  - **Docs**: `Emily` moduledoc gains a "Debug assertions" section
+    with the worked opt-in snippet; README gets a matching brief
+    after `## Observability`.
+
 - M18 — Observability & fallback telemetry. Makes silent
   `via_binary` round-trips and long-running memory drift observable
   without changing any op semantics.

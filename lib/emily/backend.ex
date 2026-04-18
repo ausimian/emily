@@ -31,8 +31,16 @@ defmodule Emily.Backend do
   defstruct [:ref]
 
   alias Emily.Backend, as: B
+  alias Emily.Backend.DebugHelpers
   alias Emily.Native
   alias Nx.Tensor, as: T
+
+  # Compile-time debug flags (M22). Default `false` so the `if @flag`
+  # gates below fold at compile time — the `DebugHelpers.*` references
+  # never appear in this module's BEAM when the flags are off. See
+  # `Emily`'s moduledoc and `test/emily/debug_flags_test.exs`.
+  @debug_bounds_check Application.compile_env(:emily, :debug_bounds_check, false)
+  @debug_detect_nan_inf Application.compile_env(:emily, :debug_detect_nan_inf, false)
 
   @typep tensor :: T.t()
   @typep ref :: reference()
@@ -665,11 +673,19 @@ defmodule Emily.Backend do
       match?([_], axes) ->
         [axis] = axes
         idx_ref = Native.astype(w, ref(indices), {:s, 32})
+
+        if @debug_bounds_check,
+          do: DebugHelpers.check_bounds!(:gather, input.shape, [idx_ref], [axis], w)
+
         r = Native.take(w, ref(input), idx_ref, axis)
         Native.reshape(w, r, Tuple.to_list(out.shape)) |> wrap(out, w)
 
       scatter_gather_compatible?(indices_shape, axes) ->
         idx_refs = split_indices_per_axis(ref(indices), indices_shape, length(axes), w)
+
+        if @debug_bounds_check,
+          do: DebugHelpers.check_bounds!(:gather, input.shape, idx_refs, axes, w)
+
         slice_sizes = slice_sizes_for_gather(input.shape, axes)
 
         r = Native.gather(w, ref(input), idx_refs, axes, slice_sizes)
@@ -833,6 +849,7 @@ defmodule Emily.Backend do
     rb = Native.reshape(w, rb, [b_prod, k_prod, n])
 
     r = Native.matmul(w, ra, rb)
+    if @debug_detect_nan_inf, do: DebugHelpers.check_nan_inf!(:matmul, r, w)
     Native.reshape(w, r, shape_list(out_shape)) |> wrap(out, w)
   end
 
@@ -932,6 +949,10 @@ defmodule Emily.Backend do
     w = worker()
     axis = opts[:axis] || 0
     idx_ref = Native.astype(w, ref(indices), {:s, 32})
+
+    if @debug_bounds_check,
+      do: DebugHelpers.check_bounds!(:take, input.shape, [idx_ref], [axis], w)
+
     Native.take(w, ref(input), idx_ref, axis) |> wrap(out, w)
   end
 
@@ -940,6 +961,10 @@ defmodule Emily.Backend do
     w = worker()
     axis = opts[:axis] || 0
     idx_ref = Native.astype(w, ref(indices), {:s, 32})
+
+    if @debug_bounds_check,
+      do: DebugHelpers.check_bounds!(:take_along_axis, input.shape, [idx_ref], [axis], w)
+
     Native.take_along_axis(w, ref(input), idx_ref, axis) |> wrap(out, w)
   end
 
@@ -1303,6 +1328,7 @@ defmodule Emily.Backend do
     if scatter_gather_compatible?(indices_shape, axes) do
       w = worker()
       idx_refs = split_indices_per_axis(ref(indices), indices_shape, length(axes), w)
+      if @debug_bounds_check, do: DebugHelpers.check_bounds!(op, t.shape, idx_refs, axes, w)
       updates_shape = updates_shape_for_scatter(indices_shape, t.shape, axes)
       updates_ref = Native.reshape(w, ref(updates), updates_shape)
 
@@ -1482,13 +1508,17 @@ defmodule Emily.Backend do
   @doc false
   def fast_rms_norm(%T{} = out, x, weight, opts) do
     w = worker()
-    Native.fast_rms_norm(w, ref(x), ref(weight), opts[:eps] * 1.0) |> wrap(out, w)
+    r = Native.fast_rms_norm(w, ref(x), ref(weight), opts[:eps] * 1.0)
+    if @debug_detect_nan_inf, do: DebugHelpers.check_nan_inf!(:fast_rms_norm, r, w)
+    wrap(r, out, w)
   end
 
   @doc false
   def fast_layer_norm(%T{} = out, x, weight, bias, opts) do
     w = worker()
-    Native.fast_layer_norm(w, ref(x), ref(weight), ref(bias), opts[:eps] * 1.0) |> wrap(out, w)
+    r = Native.fast_layer_norm(w, ref(x), ref(weight), ref(bias), opts[:eps] * 1.0)
+    if @debug_detect_nan_inf, do: DebugHelpers.check_nan_inf!(:fast_layer_norm, r, w)
+    wrap(r, out, w)
   end
 
   @doc false
@@ -1534,31 +1564,41 @@ defmodule Emily.Backend do
     w = worker()
     mask_mode = if opts[:causal], do: "causal", else: ""
 
-    Native.fast_scaled_dot_product_attention(
-      w,
-      ref(q),
-      ref(k),
-      ref(v),
-      opts[:scale] * 1.0,
-      mask_mode,
-      []
-    )
-    |> wrap(out, w)
+    r =
+      Native.fast_scaled_dot_product_attention(
+        w,
+        ref(q),
+        ref(k),
+        ref(v),
+        opts[:scale] * 1.0,
+        mask_mode,
+        []
+      )
+
+    if @debug_detect_nan_inf,
+      do: DebugHelpers.check_nan_inf!(:fast_scaled_dot_product_attention, r, w)
+
+    wrap(r, out, w)
   end
 
   @doc false
   def fast_scaled_dot_product_attention_with_mask(%T{} = out, q, k, v, mask, opts) do
     w = worker()
 
-    Native.fast_scaled_dot_product_attention(
-      w,
-      ref(q),
-      ref(k),
-      ref(v),
-      opts[:scale] * 1.0,
-      "array",
-      [ref(mask)]
-    )
-    |> wrap(out, w)
+    r =
+      Native.fast_scaled_dot_product_attention(
+        w,
+        ref(q),
+        ref(k),
+        ref(v),
+        opts[:scale] * 1.0,
+        "array",
+        [ref(mask)]
+      )
+
+    if @debug_detect_nan_inf,
+      do: DebugHelpers.check_nan_inf!(:fast_scaled_dot_product_attention_with_mask, r, w)
+
+    wrap(r, out, w)
   end
 end

@@ -113,6 +113,33 @@ config :emily, :warn_on_fallback, true
 The warning is off by default so library consumers and CI logs stay
 quiet. The telemetry event fires regardless.
 
+## Debug assertions
+
+Two compile-time flags re-enable runtime checks that MLX (and every
+other GPU backend) skips by default. Both are off by default with
+zero runtime cost when off — the guarded branches are dead-code
+eliminated by the Elixir compiler.
+
+```elixir
+# config/dev.exs
+config :emily,
+  debug_bounds_check: true,
+  debug_detect_nan_inf: true
+```
+
+- `:debug_bounds_check` — raises on out-of-range / negative indices
+  in `gather` / `take` / `take_along_axis` / `indexed_add` /
+  `indexed_put`. Catches the silent-`NaN`-from-OOB-gather class of
+  bug (e.g. a vocab-30522 tokenizer paired with a tiny-random model
+  whose embedding table is smaller).
+- `:debug_detect_nan_inf` — scans results of `matmul`, the fused
+  `layer_norm` / `rms_norm`, and both fused SDPA variants. Surfaces
+  numerics failures at the producing op rather than downstream.
+
+Each check is a per-op MLX reduction plus a scalar readback — a
+worker sync that breaks lazy-graph fusion. Leave off in release
+builds. See the `Emily` moduledoc for the full opt-in snippet.
+
 ## Milestones shipped
 
 - **M0** — NIF scaffold, MLX prebuilt fetch, tensor round-trip.
