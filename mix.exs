@@ -52,20 +52,23 @@ defmodule Emily.MixProject do
       {:elixir_make, "~> 0.9"},
       {:fine, "~> 0.1"},
       {:nx, "~> 0.10"},
-      # Hex Bumblebee is the single source of truth for Emily's own
-      # tests and `mix docs`. The Qwen3-support gap in 0.6.3 is
-      # covered by `scripts/qwen3_conformance.exs`, a standalone
-      # Mix.install script that pulls the github ref on demand.
-      # Keeping the main mix.exs on Hex means the lockfile is stable
-      # across envs and the published package metadata matches what
-      # consumers see.
-      {:bumblebee, "~> 0.6", only: :test},
-      {:tokenizers, "~> 0.5", only: :test},
-      # Axon is already pulled in transitively by Bumblebee, but the M5
-      # exit-criterion test (Axon MLP forward under `Emily.Compiler`)
-      # reaches for it directly — pin it explicitly so the test isn't
-      # hostage to a Bumblebee dep change.
-      {:axon, "~> 0.7", only: :test},
+      # Bumblebee + Axon are declared `optional: true` because the
+      # only Emily module that touches either — `Emily.Bumblebee.FastKernels`
+      # — is wrapped in a `Code.ensure_loaded?/1` gate and elides when
+      # they are absent. Consumers who want the shim pull both in
+      # themselves; everyone else gets a clean build with no
+      # Bumblebee/Axon/Tokenizers in their deps tree.
+      #
+      # Crucially `optional: true` without an `only:` env filter is
+      # what makes the gate actually work. The optional relationship
+      # must be visible to Mix in the consumer's build env so
+      # Axon/Bumblebee get compiled *before* Emily — otherwise
+      # `Code.ensure_loaded?(Bumblebee.Layers)` at Emily's compile
+      # time returns false and the shim elides even when the consumer
+      # has both deps declared.
+      {:bumblebee, "~> 0.6", optional: true},
+      {:tokenizers, "~> 0.5", optional: true},
+      {:axon, "~> 0.7", optional: true},
       # `scidata` loads MNIST / CIFAR / etc. for the `:training_full`
       # opt-in convergence canary (M9). Kept test-only — Emily itself
       # doesn't depend on dataset loading.
@@ -126,7 +129,7 @@ defmodule Emily.MixProject do
           Emily.QuantizedWeight
         ],
         Training: [Emily.MixedPrecision, Emily.MixedPrecision.LossScaler],
-        Performance: [Emily.Fast],
+        Performance: [Emily.Fast, Emily.Bumblebee.FastKernels],
         Observability: [Emily.Telemetry]
       ]
     ]
