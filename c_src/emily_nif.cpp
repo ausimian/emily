@@ -69,29 +69,40 @@ fine::ResourcePtr<Tensor> from_binary(
 }
 FINE_NIF(from_binary, 0);
 
-// to_binary/2 — materialize the array and return its bytes as a BEAM
-// resource binary aliasing MLX storage (no memcpy). The binary pins a
-// Tensor resource → mx::array → MLX buffer; the buffer survives until
-// the BEAM binary is GC'd.
-fine::Term to_binary(ErlNifEnv *env, fine::ResourcePtr<WorkerThread> w, fine::ResourcePtr<Tensor> tensor) {
-  auto materialized = w->run_sync([&](mx::Stream &s) {
-    auto c = mx::contiguous(tensor->array, false, s);
-    mx::eval(c);
-    return c;
-  });
+// to_binary_nif/2 — materialize the array on the worker thread and
+// return its bytes as a BEAM resource binary aliasing MLX storage
+// (no memcpy). Async: the NIF returns a ref immediately; the worker
+// posts `{ref, {:ok, bin}}` back to the caller once `mx::contiguous +
+// mx::eval` completes. The Elixir wrapper `Emily.Native.to_binary/2`
+// awaits via `Emily.Native.Async.call/1`.
+//
+// Pinning: `fine::make_resource_binary` called on the worker-allocated
+// msg_env bumps the Tensor resource's refcount; the binary carries
+// that ref into the receiving process, where it stays alive until
+// the binary is GC'd. Validated by Spike B.
+fine::Term to_binary_nif(ErlNifEnv *env,
+                         fine::ResourcePtr<WorkerThread> w,
+                         fine::ResourcePtr<Tensor> tensor) {
+  return emily::async_reply(
+      env, w,
+      [tensor = std::move(tensor)](mx::Stream &s, ErlNifEnv *msg_env) {
+        auto materialized = mx::contiguous(tensor->array, false, s);
+        mx::eval(materialized);
 
-  if (!materialized.flags().row_contiguous) {
-    throw std::runtime_error(
-        "to_binary: array is not row-contiguous after mx::contiguous");
-  }
+        if (!materialized.flags().row_contiguous) {
+          throw std::runtime_error(
+              "to_binary: array is not row-contiguous after mx::contiguous");
+        }
 
-  auto nbytes = materialized.nbytes();
-  auto data = reinterpret_cast<const char *>(materialized.data<void>());
+        auto nbytes = materialized.nbytes();
+        auto data = reinterpret_cast<const char *>(materialized.data<void>());
 
-  auto pin = wrap(std::move(materialized));
-  return fine::make_resource_binary(env, std::move(pin), data, nbytes);
+        auto pin = wrap(std::move(materialized));
+        return fine::Term(
+            fine::make_resource_binary(msg_env, std::move(pin), data, nbytes));
+      });
 }
-FINE_NIF(to_binary, ERL_NIF_DIRTY_JOB_CPU_BOUND);
+FINE_NIF(to_binary_nif, 0);
 
 // shape/1 — return the array's shape as a list of ints.
 std::vector<int64_t> shape(ErlNifEnv *, fine::ResourcePtr<Tensor> tensor) {
