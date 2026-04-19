@@ -58,12 +58,13 @@ dense_text
 ## Quantization transform
 
 Rewriting the Axon graph so every `:dense` node runs through
-`Emily.Quantization.Layers.quantized_dense/4` needs Axon, which is
-test-only in the Emily package — so we inline the transform here. A
-production-grade version with extra options (`:except`, dtype
-coercion, stricter validation) lives in the Emily test suite at
-`test/support/quantization_transform.ex`; this cell is a trimmed
-version of the same pattern.
+`Emily.Quantization.Layers.quantized_dense/4` needs Axon, which is a
+test-only dep on the Emily package — Emily itself stays Axon-free so
+library consumers don't pull it transitively. The transform below is
+the recommended starting point: copy it into your own project
+alongside an Axon dep, and extend it as you need (a per-layer
+`:except` filter, stricter opts validation, different group sizes
+per layer).
 
 Two steps:
 
@@ -155,11 +156,13 @@ defmodule DenseTransform do
 end
 ```
 
-> **In practice**, use `Emily.Quantization.Transform.quantize/3` from
-> the Emily test support tree — it covers edge cases this version
-> glosses over (per-layer skipping via `:except`, stricter opts
-> validation). It lives under `test/support/` because Axon is an
-> `only: :test` dep on Emily.
+> **Notes.** The transform only rewrites top-level `:dense` nodes; a
+> model with dense layers nested inside other Axon ops needs a
+> recursive rewriter. The `transpose: true` default stores weights as
+> `[out, in]` (MLX / AWQ convention, groups along the reduction axis);
+> set `false` if you're feeding a checkpoint that's already laid out
+> the other way. Bits must be one of `[2, 4, 8]` — the defn-native
+> `dequantize_defn/1` path doesn't cover `{3, 6}`.
 
 ## Quantized inference
 

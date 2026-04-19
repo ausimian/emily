@@ -38,8 +38,8 @@ defmodule Emily.Quantization do
 
   @doc """
   Bit widths supported by `dequantize_defn/1` (and therefore by
-  `Emily.Quantization.Layers.quantized_dense/4` /
-  `Emily.Quantization.Transform`).
+  `Emily.Quantization.Layers.quantized_dense/4` and any Axon graph
+  rewrite that wires it in).
 
   `bits ∈ {3, 6}` use cross-u32 lane packing and aren't supported by
   the defn-native path; `QuantizedWeight.to_dense/1` (the Native path)
