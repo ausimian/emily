@@ -4,8 +4,7 @@
 Mix.install(
   [
     {:emily, "~> 0.1"},
-    {:bumblebee,
-     github: "elixir-nx/bumblebee", ref: "273805e95507dc7866b958d90e0012a3abad1761"},
+    {:bumblebee, "~> 0.6"},
     {:tokenizers, "~> 0.5"},
     {:nx, "~> 0.10"},
     {:kino, "~> 0.14"}
@@ -68,7 +67,7 @@ Nx.Serving.run(serving, %{question: question, context: context})
 
 The expected output is a map shaped like
 
-```elixir
+```
 %{
   results: [
     %{text: "José Valim", start: _, end: _, score: _}
