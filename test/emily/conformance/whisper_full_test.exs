@@ -80,14 +80,7 @@ defmodule Emily.Conformance.WhisperFullTest do
       outputs.logits[[.., 0..2, 0..2]],
       Nx.tensor([
         [[2.9246, 0.2663, 3.8530], [-4.5523, -8.4833, -4.4232], [17.7350, 16.3070, 13.2149]]
-      ]),
-      # Whisper-tiny under BinaryBackend fallback for conv produces
-      # slightly different rounding than a pure Emily path would, so
-      # loosen the numerical tolerance marginally relative to the
-      # tiny-random suite. Still three orders of magnitude inside
-      # f16/bf16 accumulation drift territory.
-      atol: 1.0e-3,
-      rtol: 1.0e-3
+      ])
     )
   end
 
