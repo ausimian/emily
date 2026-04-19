@@ -29,8 +29,13 @@
 
 Mix.install([
   {:emily, path: Path.expand("..", __DIR__)},
+  # `override: true` because Emily's mix.exs declares
+  # `{:bumblebee, "~> 0.6", optional: true}` — Mix would otherwise
+  # refuse the github ref here as a child-dep conflict.
   {:bumblebee,
-   github: "elixir-nx/bumblebee", ref: "273805e95507dc7866b958d90e0012a3abad1761"},
+   github: "elixir-nx/bumblebee",
+   ref: "273805e95507dc7866b958d90e0012a3abad1761",
+   override: true},
   {:axon, "~> 0.7"},
   {:tokenizers, "~> 0.5"},
   {:nx, "~> 0.10"}
