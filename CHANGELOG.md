@@ -53,9 +53,12 @@ Initial release. See the git history for per-milestone detail.
   Qwen3-0.6B (dense and quantized), ViT-base, and Whisper-tiny,
   pinned against HuggingFace reference values.
 - **Worker-thread dispatch.** Each MLX stream is owned by a
-  dedicated OS thread; NIFs hand work to the worker via a
-  promise/future, keeping per-thread Metal `CommandEncoder` state
-  consistent across BEAM scheduler migration.
+  dedicated OS thread. NIFs enqueue work on the worker and return
+  immediately; the worker posts the result back to the caller via
+  `enif_send`, and the public wrapper awaits it with `receive`. No
+  BEAM scheduler (regular or dirty) blocks on MLX work, and the
+  per-thread Metal `CommandEncoder` state stays consistent regardless
+  of how the BEAM migrates Elixir processes between schedulers.
 - **Vendored MLX build.** MLX is built from source via cmake from
   `vendor/mlx` (git submodule); no prebuilt download. Build cache
   keyed on the submodule SHA under `~/Library/Caches/emily/`.
