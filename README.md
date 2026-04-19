@@ -156,6 +156,23 @@ With JIT on, kernels are compiled on first invocation, so there's a
 small per-kernel warm-up cost at runtime; subsequent calls are cached
 in-process. All of Emily's test suite passes under both modes.
 
+MLX's JIT branch unconditionally preprocesses NAX kernel sources,
+which transitively include
+`<MetalPerformancePrimitives/MetalPerformancePrimitives.h>` — a
+header that only ships with the macOS 26.2+ SDK. On older SDKs (e.g.
+Xcode 15.x, which is what GitHub's `macos-14` runner provides) the
+preprocess step fails and the JIT build can't configure. Emily works
+around this by applying a local patch under `patches/` to MLX before
+`cmake` runs: when the SDK gate fails, the patch mirrors the same
+guard MLX's AOT branch already uses, defines `MLX_METAL_NO_NAX` (so
+`is_nax_available()` returns `false` at runtime), and emits stub
+implementations of the NAX JIT source providers so the NIF links.
+The patch is applied idempotently from `mix.exs` and is a no-op on
+macOS 26.2+. Upstream fix proposed at
+[ml-explore/mlx#3426](https://github.com/ml-explore/mlx/pull/3426);
+once merged and the submodule is bumped past it, the `patches/`
+directory and the `maybe_apply_mlx_patches` plumbing can be deleted.
+
 ## Usage
 
 Install Emily as the global Nx backend and use Nx normally:
