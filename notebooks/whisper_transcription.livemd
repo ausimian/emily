@@ -7,7 +7,8 @@ Mix.install(
     {:bumblebee, "~> 0.6"},
     {:tokenizers, "~> 0.5"},
     {:nx, "~> 0.10"},
-    {:kino, "~> 0.14"}
+    {:kino, "~> 0.14"},
+    {:req, "~> 0.5"}
   ],
   config: [
     nx: [default_backend: Emily.Backend]
@@ -17,13 +18,20 @@ Mix.install(
 
 ## Overview
 
-This notebook runs `openai/whisper-tiny` on `Emily.Backend`: record a
-short audio clip in the browser, feed it through Bumblebee's mel
-featurizer, and let Whisper's encoder-decoder transcribe it. Every
-step below the `Nx.Serving` boundary — the mel-spectrogram pipeline,
-the encoder self-attention stack, the cached encoder state, the
-decoder loop with cross-attention — dispatches to MLX through
-`Emily.Compiler`.
+This notebook runs `openai/whisper-tiny` on `Emily.Backend` in three
+modes:
+
+1. **A canned clip** — a short public-domain WAV, transcribed the
+   moment you evaluate the cell.
+2. **A live recording** — press record in the browser, click
+   Transcribe, see the result.
+3. **Your own input** — swap the `Req.get!/1` URL for another WAV, or
+   substitute a `File.read!/1` call.
+
+All three feed the same `Nx.Serving` built below. Under the hood:
+Bumblebee's mel featurizer, Whisper's encoder self-attention, the
+cached encoder state, and the decoder with cross-attention — every op
+dispatches to MLX through `Emily.Compiler`.
 
 The checkpoint is ~150 MB on first fetch. The numerical pin lives in
 `test/emily/conformance/whisper_full_test.exs`.
@@ -44,53 +52,6 @@ repo = {:hf, "openai/whisper-tiny"}
 {:ok, generation_config} = Bumblebee.load_generation_config(repo)
 ```
 
-## Recording input
-
-`Kino.Input.audio/2` renders a browser recorder. The `:pcm_f32`
-format and 16 kHz sampling rate match Whisper's featurizer contract,
-so no resampling or format conversion is needed — the raw buffer is
-already what the model expects.
-
-```elixir
-audio_input = Kino.Input.audio("Audio to transcribe", format: :pcm_f32, sampling_rate: 16_000)
-```
-
-Record a short clip (up to 30 s — Whisper's context window) and
-evaluate the next cell to decode it. If no clip is recorded, a
-deterministic synthetic tone is used so the pipeline still runs
-end-to-end on first evaluation.
-
-```elixir
-audio_tensor =
-  case Kino.Input.read(audio_input) do
-    nil ->
-      # 3-second 440 Hz sine at 16 kHz — exercises the full pipeline
-      # without requiring a microphone recording.
-      Nx.iota({48_000}, type: :f32)
-      |> Nx.multiply(2 * :math.pi() * 440 / 16_000)
-      |> Nx.sin()
-      |> Nx.multiply(0.25)
-
-    %{file_ref: ref, num_channels: channels} ->
-      samples =
-        ref
-        |> Kino.Input.file_path()
-        |> File.read!()
-        |> Nx.from_binary(:f32)
-
-      # Downmix stereo / multi-channel to mono.
-      if channels > 1 do
-        samples
-        |> Nx.reshape({:auto, channels})
-        |> Nx.mean(axes: [1])
-      else
-        samples
-      end
-  end
-
-Nx.shape(audio_tensor)
-```
-
 ## Building a serving
 
 ```elixir
@@ -106,32 +67,117 @@ autoregressive decoder loop (with a cached encoder state), and the
 tokenizer detokenize step. The `compiler: Emily.Compiler` attachment
 on `:defn_options` routes every compiled computation through Emily.
 
-## Running transcription
+## A canned transcription
+
+An ~11 second JFK inauguration clip from the whisper.cpp samples.
+The WAV is 16 kHz 16-bit mono PCM — exactly what Whisper's featurizer
+expects — so the parser below just scans for the RIFF `data` chunk
+and reinterprets its bytes as signed 16-bit ints normalised into
+`[-1, 1]`. No ffmpeg, no resampling.
 
 ```elixir
-%{chunks: chunks} = Nx.Serving.run(serving, audio_tensor)
+defmodule WAV do
+  @moduledoc false
 
-text = chunks |> Enum.map_join(& &1.text) |> String.trim()
+  @doc "Decode 16-bit PCM mono 16 kHz WAV to a 1-D f32 Nx tensor in [-1, 1]."
+  def decode!(<<"RIFF", _size::little-32, "WAVE", rest::binary>>) do
+    {%{bits: 16, channels: 1, rate: 16_000}, data} = scan_chunks(rest, nil, nil)
+    data |> Nx.from_binary(:s16) |> Nx.divide(32_768.0) |> Nx.as_type(:f32)
+  end
+
+  defp scan_chunks(<<"fmt ", size::little-32, fmt::binary-size(size), rest::binary>>, _, data) do
+    <<_fmt_tag::little-16, channels::little-16, rate::little-32, _byte_rate::little-32,
+      _block_align::little-16, bits::little-16, _rest_fmt::binary>> = fmt
+
+    scan_chunks(rest, %{bits: bits, channels: channels, rate: rate}, data)
+  end
+
+  defp scan_chunks(<<"data", size::little-32, data::binary-size(size), _::binary>>, fmt, _),
+    do: {fmt, data}
+
+  defp scan_chunks(
+         <<_id::binary-4, size::little-32, _::binary-size(size), rest::binary>>,
+         fmt,
+         data
+       ),
+       do: scan_chunks(rest, fmt, data)
+end
+
+jfk_wav =
+  Req.get!(
+    "https://raw.githubusercontent.com/ggml-org/whisper.cpp/master/samples/jfk.wav"
+  ).body
+
+jfk_audio = WAV.decode!(jfk_wav)
+
+%{chunks: chunks} = Nx.Serving.run(serving, jfk_audio)
+chunks |> Enum.map_join(& &1.text) |> String.trim()
 ```
 
-The default clip is a pure tone — Whisper's fallback for
-non-speech audio is typically silence or a short repeated token, so
-don't expect Shakespeare. Record an actual utterance in the audio
-input above for a real transcription.
+You should see something close to "And so, my fellow Americans, ask
+not what your country can do for you — ask what you can do for your
+country." The exact punctuation and capitalisation will wobble from
+run to run because the decoder samples greedily from a distribution.
 
-For long audio (> 30 s), pass `:chunk_num_seconds` to the serving
-builder; the serving splits the input, transcribes each chunk, and
-stitches the results back together. See the moduledoc for
-`Bumblebee.Audio` for the long-form example.
+## Transcribing a live recording
+
+`Kino.Control.form/2` wraps a `Kino.Input.audio/2` widget with a
+submit button. Clicking **Transcribe** reads the recorded PCM f32
+buffer, downmixes to mono if the browser captured stereo, and pushes
+the tensor through the same serving. `Kino.Frame.render/2` swaps the
+output in place each time.
+
+```elixir
+audio_input = Kino.Input.audio("Audio", format: :pcm_f32, sampling_rate: 16_000)
+
+form =
+  Kino.Control.form([audio: audio_input], submit: "Transcribe", reset_on_submit: [:audio])
+
+frame = Kino.Frame.new()
+
+Kino.render(form)
+Kino.render(frame)
+
+Kino.listen(form, fn
+  %{type: :submit, data: %{audio: nil}} ->
+    Kino.Frame.render(
+      frame,
+      Kino.Markdown.new("_No audio recorded — record a clip above and click Transcribe._")
+    )
+
+  %{type: :submit, data: %{audio: %{file_ref: ref, num_channels: channels}}} ->
+    samples =
+      ref
+      |> Kino.Input.file_path()
+      |> File.read!()
+      |> Nx.from_binary(:f32)
+
+    audio =
+      if channels > 1 do
+        samples |> Nx.reshape({:auto, channels}) |> Nx.mean(axes: [1])
+      else
+        samples
+      end
+
+    %{chunks: chunks} = Nx.Serving.run(serving, audio)
+    text = chunks |> Enum.map_join(& &1.text) |> String.trim()
+    Kino.Frame.render(frame, Kino.Markdown.new("**Transcript:** #{text}"))
+end)
+```
+
+Whisper's context window is 30 seconds. For longer recordings, pass
+`chunk_num_seconds: 30` when building the serving — Bumblebee will
+split the audio, transcribe each chunk with overlap, and stitch the
+outputs back together. See the `Bumblebee.Audio` moduledoc for the
+long-form example.
 
 ## Telemetry
 
 Whisper's autoregressive decoder reads tensors back host-side
-constantly — every sampled token, every early-stopping check,
-every caching step. Each readback fires
-`[:emily, :to_binary, :stop]`. Printing every span would drown the
-notebook, so aggregate: count the readbacks, sum their durations,
-and print a single summary.
+constantly — every sampled token, every early-stopping check, every
+caching step. Each readback fires `[:emily, :to_binary, :stop]`.
+Printing every span would drown the notebook, so aggregate: count the
+readbacks, sum their durations, and print a single summary.
 
 ```elixir
 {:ok, stats} = Agent.start_link(fn -> %{count: 0, total_ns: 0, bytes: 0} end)
@@ -147,28 +193,27 @@ and print a single summary.
   nil
 )
 
-Nx.Serving.run(serving, audio_tensor)
+Nx.Serving.run(serving, jfk_audio)
 
 summary = Agent.get(stats, & &1)
 total_ms = System.convert_time_unit(summary.total_ns, :native, :millisecond)
 
 IO.puts(
   "to_binary: #{summary.count} spans, " <>
-  "#{Float.round(summary.bytes / 1_048_576, 2)} MiB total, " <>
-  "#{total_ms} ms cumulative"
+    "#{Float.round(summary.bytes / 1_048_576, 2)} MiB total, " <>
+    "#{total_ms} ms cumulative"
 )
 ```
 
-The count is higher than you might expect — Whisper's decoder
-touches many small tensors (per-step cache slices, EOS probes,
-timestamp checks), so span counts in the tens of thousands for a
-few seconds of audio are normal. What matters is the *cumulative*
-readback time vs. end-to-end latency: if they're close, the
-decoder is readback-bound and a batched or async-aware driver
-would help.
+The count is high — Whisper's decoder touches many small tensors
+(per-step cache slices, EOS probes, timestamp checks), so span counts
+in the tens of thousands for ten seconds of audio are normal. What
+matters is the *cumulative* readback time vs. end-to-end latency: if
+they're close, the decoder is readback-bound and a batched or
+async-aware driver would help.
 
 See `Emily.Telemetry` for the full event catalogue, including
 `[:emily, :fallback, *]` for spotting any op that routes through
 `Nx.BinaryBackend`, `[:emily, :eval, *]` for explicit lazy-graph
-flushes via `Emily.eval/1`, and `[:emily, :memory, :stats]` for
-MLX allocator polling.
+flushes via `Emily.eval/1`, and `[:emily, :memory, :stats]` for MLX
+allocator polling.
