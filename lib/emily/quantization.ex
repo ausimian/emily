@@ -44,6 +44,12 @@ defmodule Emily.Quantization do
   `bits ∈ {3, 6}` use cross-u32 lane packing and aren't supported by
   the defn-native path; `QuantizedWeight.to_dense/1` (the Native path)
   still handles them.
+
+  ## Examples
+
+      iex> Emily.Quantization.defn_supported_bits()
+      [2, 4, 8]
+
   """
   @spec defn_supported_bits() :: [pos_integer()]
   def defn_supported_bits, do: @defn_supported_bits
@@ -135,12 +141,14 @@ defmodule Emily.Quantization do
   Supported: `bits ∈ #{inspect(@defn_supported_bits)}`. `bits ∈ {3, 6}`
   pack across u32 boundaries and are out of scope here.
 
-  ## Example
+  ## Examples
 
-      qw = Emily.QuantizedWeight.from_dense(w, group_size: 64, bits: 4)
-      dense_defn = Emily.Quantization.dequantize_defn(qw)
-      dense_native = Emily.QuantizedWeight.to_dense(qw)
-      # element-wise identical
+      iex> w = Nx.iota({4, 64}, backend: Emily.Backend, type: :f32)
+      iex> qw = Emily.QuantizedWeight.from_dense(w, group_size: 64, bits: 4)
+      iex> dense = Emily.Quantization.dequantize_defn(qw)
+      iex> Nx.shape(dense)
+      {4, 64}
+
   """
   @spec dequantize_defn(QuantizedWeight.t()) :: Nx.Tensor.t()
   deftransform dequantize_defn(qw) do

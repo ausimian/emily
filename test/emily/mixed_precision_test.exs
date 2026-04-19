@@ -1,5 +1,7 @@
 defmodule Emily.MixedPrecisionTest do
   use ExUnit.Case, async: true
+  doctest Emily.MixedPrecision
+  doctest Emily.MixedPrecision.LossScaler
 
   alias Emily.MixedPrecision, as: MP
   alias Emily.MixedPrecision.LossScaler

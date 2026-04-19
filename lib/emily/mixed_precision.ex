@@ -85,7 +85,20 @@ defmodule Emily.MixedPrecision do
               min_scale: 1.0,
               counter: 0
 
-    @doc "Create a new loss scaler."
+    @doc """
+    Create a new loss scaler.
+
+    ## Examples
+
+        iex> scaler = Emily.MixedPrecision.LossScaler.new()
+        iex> scaler.scale
+        65536.0
+
+        iex> scaler = Emily.MixedPrecision.LossScaler.new(scale: 32.0, min_scale: 1.0)
+        iex> {scaler.scale, scaler.min_scale}
+        {32.0, 1.0}
+
+    """
     def new(opts \\ []) do
       fields =
         opts
@@ -106,6 +119,13 @@ defmodule Emily.MixedPrecision do
   Downcast float tensors in a nested structure to `type`.
 
   Integer and predicate tensors are left unchanged.
+
+  ## Examples
+
+      iex> params = %{w: Nx.tensor([1.0, 2.0], type: :f32)}
+      iex> Emily.MixedPrecision.cast_params(params, {:bf, 16}).w.type
+      {:bf, 16}
+
   """
   def cast_params(params, type), do: deep_apply(params, &Nx.as_type(&1, type))
 
@@ -114,6 +134,13 @@ defmodule Emily.MixedPrecision do
 
   Semantically identical to `cast_params/2` — exists for readability
   at the call site (the direction of the cast is part of the name).
+
+  ## Examples
+
+      iex> grads = %{w: Nx.tensor([0.5, 0.25], type: {:bf, 16})}
+      iex> Emily.MixedPrecision.accumulate_grad(grads, {:f, 32}).w.type
+      {:f, 32}
+
   """
   def accumulate_grad(grads, type), do: deep_apply(grads, &Nx.as_type(&1, type))
 
@@ -127,6 +154,13 @@ defmodule Emily.MixedPrecision do
     * `:backoff_factor` — multiply scale by this on overflow (default `0.5`)
     * `:growth_interval` — successful steps before growing (default `2000`)
     * `:min_scale` — floor for the scale (default `1.0`)
+
+  ## Examples
+
+      iex> scaler = Emily.MixedPrecision.loss_scale(scale: 1024.0)
+      iex> scaler.scale
+      1024.0
+
   """
   def loss_scale(opts \\ []), do: LossScaler.new(opts)
 
@@ -135,6 +169,14 @@ defmodule Emily.MixedPrecision do
 
   Call this inside the function passed to `Nx.Defn.grad` so that the
   backward pass produces scaled gradients.
+
+  ## Examples
+
+      iex> scaler = Emily.MixedPrecision.loss_scale(scale: 8.0)
+      iex> loss = Nx.tensor(2.5)
+      iex> Emily.MixedPrecision.scale_loss(loss, scaler) |> Nx.to_number()
+      20.0
+
   """
   def scale_loss(loss, %LossScaler{scale: scale}) do
     Nx.multiply(loss, scale)
@@ -145,6 +187,15 @@ defmodule Emily.MixedPrecision do
 
   Divides every float tensor in `grads` by `scaler.scale`, then checks
   for inf/nan. Returns `{unscaled_grads, overflow?}`.
+
+  ## Examples
+
+      iex> scaler = Emily.MixedPrecision.loss_scale(scale: 4.0)
+      iex> grads = %{w: Nx.tensor([8.0, 16.0])}
+      iex> {unscaled, overflow?} = Emily.MixedPrecision.unscale(grads, scaler)
+      iex> {Nx.to_flat_list(unscaled.w), overflow?}
+      {[2.0, 4.0], false}
+
   """
   def unscale(grads, %LossScaler{scale: scale}) do
     inv_scale = 1.0 / scale
@@ -158,6 +209,17 @@ defmodule Emily.MixedPrecision do
   On overflow: halves the scale (floored at `min_scale`), resets the
   counter. On success: increments the counter; doubles the scale after
   `growth_interval` consecutive successes.
+
+  ## Examples
+
+      iex> scaler = Emily.MixedPrecision.loss_scale(scale: 1024.0)
+      iex> Emily.MixedPrecision.update(scaler, true).scale
+      512.0
+
+      iex> scaler = Emily.MixedPrecision.loss_scale(scale: 1024.0)
+      iex> Emily.MixedPrecision.update(scaler, false).counter
+      1
+
   """
   def update(%LossScaler{} = scaler, true = _overflow) do
     %{scaler | scale: max(scaler.min_scale, scaler.scale * scaler.backoff_factor), counter: 0}
@@ -175,6 +237,15 @@ defmodule Emily.MixedPrecision do
 
   @doc """
   Check whether any tensor in a nested structure contains inf or nan.
+
+  ## Examples
+
+      iex> Emily.MixedPrecision.has_overflow?(%{w: Nx.tensor([1.0, 2.0])})
+      false
+
+      iex> Emily.MixedPrecision.has_overflow?(%{w: Nx.tensor([1.0, :nan])})
+      true
+
   """
   def has_overflow?(structure), do: deep_overflow?(structure)
 

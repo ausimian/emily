@@ -35,6 +35,16 @@ defmodule Emily.Quantization.Layers do
     * `opts` — reserved for Axon-layer metadata; not used by this
       implementation directly (all state lives on the
       `%QuantizedWeight{}`).
+
+  ## Examples
+
+      iex> w = Nx.iota({4, 128}, backend: Emily.Backend, type: :f32)
+      iex> qw = Emily.QuantizedWeight.from_dense(w)
+      iex> x = Nx.iota({2, 128}, backend: Emily.Backend, type: :f32)
+      iex> y = Emily.Quantization.Layers.quantized_dense(x, qw)
+      iex> Nx.shape(y)
+      {2, 4}
+
   """
   deftransform quantized_dense(input, kernel, bias \\ 0, opts \\ []) do
     # When Axon.dense registers `use_bias: false`, the generated op call

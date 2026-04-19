@@ -70,6 +70,13 @@ defmodule Emily.Stream do
   Each stream is backed by a dedicated OS thread that owns the MLX
   stream and its Metal command encoder. The worker thread is cleaned
   up when the resource is garbage collected.
+
+  ## Examples
+
+      iex> stream = Emily.Stream.new(:gpu)
+      iex> match?(%Emily.Stream{}, stream)
+      true
+
   """
   @spec new(:gpu | :cpu) :: t()
   def new(_device \\ :gpu) do
@@ -83,6 +90,17 @@ defmodule Emily.Stream do
   Stores the worker reference in the process dictionary so that
   `Emily.Backend` passes it to every NIF call. The previous worker
   (if any) is restored in an `after` block, so nesting is safe.
+
+  ## Examples
+
+      iex> stream = Emily.Stream.new(:gpu)
+      iex> Emily.Stream.with_stream(stream, fn ->
+      ...>   Nx.tensor([1.0, 2.0, 3.0], backend: Emily.Backend)
+      ...>   |> Nx.sum()
+      ...>   |> Nx.to_number()
+      ...> end)
+      6.0
+
   """
   @spec with_stream(t(), (-> result)) :: result when result: var
   def with_stream(%__MODULE__{worker: w}, fun) when is_function(fun, 0) do

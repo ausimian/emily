@@ -76,6 +76,18 @@ defmodule Emily.Fast do
   `opts`:
 
     * `:eps` — small constant added inside the rsqrt. Default `1.0e-6`.
+
+  ## Examples
+
+      iex> x = Nx.tensor([[1.0, 2.0, 3.0, 4.0]], backend: Emily.Backend)
+      iex> w = Nx.tensor([1.0, 1.0, 1.0, 1.0], backend: Emily.Backend)
+      iex> y = Nx.Defn.jit_apply(
+      ...>   fn x, w -> Emily.Fast.rms_norm(x, w, eps: 1.0e-5) end,
+      ...>   [x, w]
+      ...> )
+      iex> Nx.shape(y)
+      {1, 4}
+
   """
   @spec rms_norm(Nx.Tensor.t(), Nx.Tensor.t(), keyword()) :: Nx.Tensor.t()
   def rms_norm(x, weight, opts \\ []) do
@@ -112,6 +124,19 @@ defmodule Emily.Fast do
   `opts`:
 
     * `:eps` — small constant added inside the sqrt. Default `1.0e-5`.
+
+  ## Examples
+
+      iex> x = Nx.tensor([[1.0, 2.0, 3.0, 4.0]], backend: Emily.Backend)
+      iex> w = Nx.tensor([1.0, 1.0, 1.0, 1.0], backend: Emily.Backend)
+      iex> b = Nx.tensor([0.0, 0.0, 0.0, 0.0], backend: Emily.Backend)
+      iex> y = Nx.Defn.jit_apply(
+      ...>   fn x, w, b -> Emily.Fast.layer_norm(x, w, b, eps: 1.0e-5) end,
+      ...>   [x, w, b]
+      ...> )
+      iex> Nx.shape(y)
+      {1, 4}
+
   """
   @spec layer_norm(Nx.Tensor.t(), Nx.Tensor.t(), Nx.Tensor.t(), keyword()) ::
           Nx.Tensor.t()
@@ -159,6 +184,18 @@ defmodule Emily.Fast do
 
   For scaled variants (Llama-3, LongRoPE, linear, dynamic) use
   `rope_with_freqs/4` with a precomputed inverse-frequency table.
+
+  ## Examples
+
+      iex> x = Nx.iota({1, 1, 4, 8}, backend: Emily.Backend, type: :f32)
+      iex> offset = Nx.tensor(0, backend: Emily.Backend)
+      iex> y = Nx.Defn.jit_apply(
+      ...>   fn x, o -> Emily.Fast.rope(x, o, dims: 8) end,
+      ...>   [x, offset]
+      ...> )
+      iex> Nx.shape(y)
+      {1, 1, 4, 8}
+
   """
   @spec rope(Nx.Tensor.t(), Nx.Tensor.t(), keyword()) :: Nx.Tensor.t()
   def rope(x, offset, opts) do
@@ -191,6 +228,19 @@ defmodule Emily.Fast do
     * `:dims` — number of trailing axes to rotate. Required.
     * `:traditional` — see `rope/3`. Default `false`.
     * `:scale` — position scale multiplier. Default `1.0`.
+
+  ## Examples
+
+      iex> x = Nx.iota({1, 1, 4, 8}, backend: Emily.Backend, type: :f32)
+      iex> offset = Nx.tensor(0, backend: Emily.Backend)
+      iex> freqs = Nx.tensor([1.0, 0.1, 0.01, 0.001], backend: Emily.Backend)
+      iex> y = Nx.Defn.jit_apply(
+      ...>   fn x, o, f -> Emily.Fast.rope_with_freqs(x, o, f, dims: 8) end,
+      ...>   [x, offset, freqs]
+      ...> )
+      iex> Nx.shape(y)
+      {1, 1, 4, 8}
+
   """
   @spec rope_with_freqs(Nx.Tensor.t(), Nx.Tensor.t(), Nx.Tensor.t(), keyword()) ::
           Nx.Tensor.t()
@@ -293,6 +343,19 @@ defmodule Emily.Fast do
       `1 / sqrt(head_dim)`.
     * `:causal` — if `true`, apply MLX's built-in upper-triangular
       mask. Default `false`.
+
+  ## Examples
+
+      iex> q = Nx.iota({1, 2, 4, 8}, backend: Emily.Backend, type: :f32)
+      iex> k = Nx.iota({1, 2, 4, 8}, backend: Emily.Backend, type: :f32)
+      iex> v = Nx.iota({1, 2, 4, 8}, backend: Emily.Backend, type: :f32)
+      iex> y = Nx.Defn.jit_apply(
+      ...>   fn q, k, v -> Emily.Fast.scaled_dot_product_attention(q, k, v) end,
+      ...>   [q, k, v]
+      ...> )
+      iex> Nx.shape(y)
+      {1, 2, 4, 8}
+
   """
   @spec scaled_dot_product_attention(
           Nx.Tensor.t(),
@@ -348,6 +411,20 @@ defmodule Emily.Fast do
 
     * `:scale` — see `scaled_dot_product_attention/4`. Default
       `1 / sqrt(head_dim)`.
+
+  ## Examples
+
+      iex> q = Nx.iota({1, 2, 4, 8}, backend: Emily.Backend, type: :f32)
+      iex> k = Nx.iota({1, 2, 4, 8}, backend: Emily.Backend, type: :f32)
+      iex> v = Nx.iota({1, 2, 4, 8}, backend: Emily.Backend, type: :f32)
+      iex> mask = Nx.broadcast(Nx.tensor(0.0), {1, 1, 4, 4}) |> Nx.backend_transfer(Emily.Backend)
+      iex> y = Nx.Defn.jit_apply(
+      ...>   fn q, k, v, m -> Emily.Fast.scaled_dot_product_attention_with_mask(q, k, v, m) end,
+      ...>   [q, k, v, mask]
+      ...> )
+      iex> Nx.shape(y)
+      {1, 2, 4, 8}
+
   """
   @spec scaled_dot_product_attention_with_mask(
           Nx.Tensor.t(),

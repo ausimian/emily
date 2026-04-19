@@ -8,6 +8,7 @@ defmodule Emily.Quantization.DequantizeDefnTest do
   """
 
   use ExUnit.Case, async: true
+  doctest Emily.Quantization
 
   alias Emily.Quantization
   alias Emily.QuantizedWeight

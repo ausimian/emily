@@ -9,6 +9,7 @@ defmodule Emily.Fast.RoPETest do
   """
 
   use ExUnit.Case, async: true
+  doctest Emily.Fast, only: [rope: 3, rope_with_freqs: 4]
 
   import Emily.BackendGenerators, only: [assert_close: 3]
 

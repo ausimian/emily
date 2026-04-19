@@ -53,6 +53,27 @@ defmodule Emily.Backend do
   `[:emily, :fallback, *]` telemetry spans; see `Emily.Telemetry` for
   the full catalogue and for opt-in one-shot warnings.
 
+  Every op below has a native MLX path for its hot shape/dtype and
+  falls back only when the input hits the listed guard:
+
+    * `gather` — indices tensor not in the
+      `{batch…, rank_of_axes}` layout MLX gather accepts.
+    * `cumulative_sum` / `cumulative_product` / `cumulative_max` /
+      `cumulative_min` — when `axis` is not the last axis (MLX's
+      factoring raises on some interior-axis views).
+    * `dot` — batched dot on integer / pred types (MLX matmul is
+      float-only). The non-batched tensordot path handles ints
+      natively.
+    * `conv` — `batch_group_size > 1`, or complex-typed.
+    * `reduce` — always, since the reducer is a user-supplied BEAM
+      function that can't be JITed into Metal.
+    * `window_reduce` — same reason. The fixed `window_sum` /
+      `window_product` / `window_max` / `window_min` variants all run
+      native.
+    * `indexed_add` / `indexed_put` — indices tensor not in MLX's
+      native scatter layout.
+    * `qr` with `mode: :complete`. `mode: :reduced` is native.
+
   ## Debug assertions
 
   Compile-time flags `:debug_bounds_check` and `:debug_detect_nan_inf`
