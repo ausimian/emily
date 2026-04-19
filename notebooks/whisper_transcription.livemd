@@ -1,0 +1,174 @@
+# Whisper transcription on Emily
+
+```elixir
+Mix.install(
+  [
+    {:emily, "~> 0.1"},
+    {:bumblebee, "~> 0.6"},
+    {:tokenizers, "~> 0.5"},
+    {:nx, "~> 0.10"},
+    {:kino, "~> 0.14"}
+  ],
+  config: [
+    nx: [default_backend: Emily.Backend]
+  ]
+)
+```
+
+## Overview
+
+This notebook runs `openai/whisper-tiny` on `Emily.Backend`: record a
+short audio clip in the browser, feed it through Bumblebee's mel
+featurizer, and let Whisper's encoder-decoder transcribe it. Every
+step below the `Nx.Serving` boundary — the mel-spectrogram pipeline,
+the encoder self-attention stack, the cached encoder state, the
+decoder loop with cross-attention — dispatches to MLX through
+`Emily.Compiler`.
+
+The checkpoint is ~150 MB on first fetch. The numerical pin lives in
+`test/emily/conformance/whisper_full_test.exs`.
+
+## Loading the model
+
+Whisper ships as four separate Bumblebee artefacts: the model
+(encoder + decoder weights), the featurizer (audio → mel), the
+tokenizer (token ids → text), and the generation config (decoder
+sampling strategy, special-token ids).
+
+```elixir
+repo = {:hf, "openai/whisper-tiny"}
+
+{:ok, whisper} = Bumblebee.load_model(repo)
+{:ok, featurizer} = Bumblebee.load_featurizer(repo)
+{:ok, tokenizer} = Bumblebee.load_tokenizer(repo)
+{:ok, generation_config} = Bumblebee.load_generation_config(repo)
+```
+
+## Recording input
+
+`Kino.Input.audio/2` renders a browser recorder. The `:pcm_f32`
+format and 16 kHz sampling rate match Whisper's featurizer contract,
+so no resampling or format conversion is needed — the raw buffer is
+already what the model expects.
+
+```elixir
+audio_input = Kino.Input.audio("Audio to transcribe", format: :pcm_f32, sampling_rate: 16_000)
+```
+
+Record a short clip (up to 30 s — Whisper's context window) and
+evaluate the next cell to decode it. If no clip is recorded, a
+deterministic synthetic tone is used so the pipeline still runs
+end-to-end on first evaluation.
+
+```elixir
+audio_tensor =
+  case Kino.Input.read(audio_input) do
+    nil ->
+      # 3-second 440 Hz sine at 16 kHz — exercises the full pipeline
+      # without requiring a microphone recording.
+      Nx.iota({48_000}, type: :f32)
+      |> Nx.multiply(2 * :math.pi() * 440 / 16_000)
+      |> Nx.sin()
+      |> Nx.multiply(0.25)
+
+    %{file_ref: ref, num_channels: channels} ->
+      samples =
+        ref
+        |> Kino.Input.file_path()
+        |> File.read!()
+        |> Nx.from_binary(:f32)
+
+      # Downmix stereo / multi-channel to mono.
+      if channels > 1 do
+        samples
+        |> Nx.reshape({:auto, channels})
+        |> Nx.mean(axes: [1])
+      else
+        samples
+      end
+  end
+
+Nx.shape(audio_tensor)
+```
+
+## Building a serving
+
+```elixir
+serving =
+  Bumblebee.Audio.speech_to_text_whisper(whisper, featurizer, tokenizer, generation_config,
+    defn_options: [compiler: Emily.Compiler]
+  )
+```
+
+`Bumblebee.Audio.speech_to_text_whisper/5` builds an `Nx.Serving`
+that composes the featurizer, the encoder forward pass, the
+autoregressive decoder loop (with a cached encoder state), and the
+tokenizer detokenize step. The `compiler: Emily.Compiler` attachment
+on `:defn_options` routes every compiled computation through Emily.
+
+## Running transcription
+
+```elixir
+%{chunks: chunks} = Nx.Serving.run(serving, audio_tensor)
+
+text = chunks |> Enum.map_join(& &1.text) |> String.trim()
+```
+
+The default clip is a pure tone — Whisper's fallback for
+non-speech audio is typically silence or a short repeated token, so
+don't expect Shakespeare. Record an actual utterance in the audio
+input above for a real transcription.
+
+For long audio (> 30 s), pass `:chunk_num_seconds` to the serving
+builder; the serving splits the input, transcribes each chunk, and
+stitches the results back together. See the moduledoc for
+`Bumblebee.Audio` for the long-form example.
+
+## Telemetry
+
+Whisper's autoregressive decoder reads tensors back host-side
+constantly — every sampled token, every early-stopping check,
+every caching step. Each readback fires
+`[:emily, :to_binary, :stop]`. Printing every span would drown the
+notebook, so aggregate: count the readbacks, sum their durations,
+and print a single summary.
+
+```elixir
+{:ok, stats} = Agent.start_link(fn -> %{count: 0, total_ns: 0, bytes: 0} end)
+
+:telemetry.attach(
+  "whisper-to-binary",
+  [:emily, :to_binary, :stop],
+  fn _event, %{duration: duration}, %{byte_size: bytes}, _config ->
+    Agent.update(stats, fn s ->
+      %{count: s.count + 1, total_ns: s.total_ns + duration, bytes: s.bytes + bytes}
+    end)
+  end,
+  nil
+)
+
+Nx.Serving.run(serving, audio_tensor)
+
+summary = Agent.get(stats, & &1)
+total_ms = System.convert_time_unit(summary.total_ns, :native, :millisecond)
+
+IO.puts(
+  "to_binary: #{summary.count} spans, " <>
+  "#{Float.round(summary.bytes / 1_048_576, 2)} MiB total, " <>
+  "#{total_ms} ms cumulative"
+)
+```
+
+The count is higher than you might expect — Whisper's decoder
+touches many small tensors (per-step cache slices, EOS probes,
+timestamp checks), so span counts in the tens of thousands for a
+few seconds of audio are normal. What matters is the *cumulative*
+readback time vs. end-to-end latency: if they're close, the
+decoder is readback-bound and a batched or async-aware driver
+would help.
+
+See `Emily.Telemetry` for the full event catalogue, including
+`[:emily, :fallback, *]` for spotting any op that routes through
+`Nx.BinaryBackend`, `[:emily, :eval, *]` for explicit lazy-graph
+flushes via `Emily.eval/1`, and `[:emily, :memory, :stats]` for
+MLX allocator polling.
