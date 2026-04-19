@@ -107,7 +107,7 @@ defmodule Emily.MixProject do
   defp docs do
     [
       main: "readme",
-      source_url_pattern: "#{@source_url}/blob/v#{@version}/%{path}#L%{line}",
+      source_url_pattern: "#{@source_url}/blob/#{@version}/%{path}#L%{line}",
       extras: [
         "README.md",
         "CHANGELOG.md",
