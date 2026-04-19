@@ -51,7 +51,7 @@ defmodule Emily.MixProject do
     [
       {:elixir_make, "~> 0.9"},
       {:fine, "~> 0.1"},
-      {:nx, "~> 0.10"},
+      {:nx, "~> 0.11", override: true},
       # Bumblebee >= 0.6.3 (the latest Hex release) lacks Qwen3 support.
       # Pinned to a `main` commit that contains `Bumblebee.Text.Qwen3` so
       # M4 can exercise Qwen3-0.6B end-to-end. Bump deliberately when a

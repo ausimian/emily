@@ -1,5 +1,15 @@
 # Release notes for next release
 
+## Changed
+
+- Bumped `nx` to 0.11. Bumblebee's pinned `main` commit still declares
+  `nx ~> 0.9.0 or ~> 0.10.0`; we override that constraint via
+  `override: true` because Bumblebee's actual source is compatible
+  with 0.11 (full conformance suite — tiny-random + full-size Qwen3
+  / ViT / Whisper / DistilBERT, fused kernels, MNIST training, and
+  quantised Qwen3 — passes under nx 0.11). The override can be
+  dropped once Bumblebee cuts a release past nx 0.10.
+
 ## Added
 
 - `EMILY_MLX_JIT=1` build-time flag to select MLX's runtime JIT
