@@ -40,8 +40,12 @@ defmodule Emily.Native do
   @spec from_binary(binary(), [non_neg_integer()], dtype()) :: tensor()
   def from_binary(_data, _shape, _dtype), do: nif()
 
+  @doc false
+  @spec to_binary_nif(worker(), tensor()) :: reference()
+  def to_binary_nif(_w, _tensor), do: nif()
+
   @spec to_binary(worker(), tensor()) :: binary()
-  def to_binary(_w, _tensor), do: nif()
+  def to_binary(w, tensor), do: Async.call(to_binary_nif(w, tensor))
 
   @spec shape(tensor()) :: [non_neg_integer()]
   def shape(_tensor), do: nif()
