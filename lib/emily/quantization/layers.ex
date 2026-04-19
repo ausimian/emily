@@ -4,9 +4,9 @@ defmodule Emily.Quantization.Layers do
 
   `quantized_dense/4` is the drop-in replacement for `Axon.Layers.dense/4`
   on a `%Emily.QuantizedWeight{}` kernel. See `Emily.Quantization` for
-  the defn-integration trade-offs and
-  `Emily.Quantization.Transform.quantize_dense_layers/2` for the
-  graph-rewrite that wires it in.
+  the defn-integration trade-offs; the `qwen3_quantized` notebook walks
+  through a concrete `Axon.rewrite_nodes/2`-based graph rewrite that
+  swaps every `:dense` for a layer calling this op.
   """
 
   import Nx.Defn
