@@ -20,6 +20,7 @@ defmodule Emily.Quantization.LayersTest do
   """
 
   use ExUnit.Case, async: true
+  doctest Emily.Quantization.Layers
 
   alias Emily.Quantization
   alias Emily.Quantization.Layers

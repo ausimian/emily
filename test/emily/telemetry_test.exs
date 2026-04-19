@@ -1,5 +1,6 @@
 defmodule Emily.TelemetryTest do
   use ExUnit.Case, async: false
+  doctest Emily.Telemetry
 
   import ExUnit.CaptureLog
 

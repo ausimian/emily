@@ -9,6 +9,9 @@ defmodule Emily.Fast.SDPATest do
 
   use ExUnit.Case, async: true
 
+  doctest Emily.Fast,
+    only: [scaled_dot_product_attention: 4, scaled_dot_product_attention_with_mask: 5]
+
   import Emily.BackendGenerators, only: [assert_close: 3]
 
   @f32_tol 1.0e-4

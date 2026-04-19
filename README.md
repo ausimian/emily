@@ -21,15 +21,28 @@ Emily.Native      (NIF shim)         — one function per MLX op, no policy
 MLX C++           (vendored source)  — built from `vendor/mlx` via cmake
 ```
 
-Dispatch is one-directional (Elixir → C++ → MLX); the C++ side never
-calls back into the BEAM.
+
+## Installation
+
+Add `:emily` to your `mix.exs` deps:
+
+```elixir
+def deps do
+  [
+    {:emily, "~> 0.1.0"}
+  ]
+end
+```
+
+MLX is built from source on first `mix compile` — see [Prerequisites](#prerequisites)
+and [Building](#building) for the Xcode / cmake setup.
 
 ## Features
 
 - **Nx backend.** Every `Nx.*` op dispatches to MLX; ops without a
   native primitive fall back transparently to `Nx.BinaryBackend`
-  with a `[:emily, :fallback, *]` telemetry event. See
-  `Emily.Backend`.
+  with a `[:emily, :fallback, *]` telemetry event. See the
+  `Fallbacks` section of `Emily.Backend` for the per-op catalogue.
 - **Defn compiler.** `Emily.Compiler` runs `defn` / `Nx.Serving` /
   Bumblebee inference on MLX. Backs the results with lazy MLX graphs.
 - **Fused transformer kernels.** `Emily.Fast` exposes
@@ -223,31 +236,99 @@ By default, every op uses the **default worker** owned by the
 That single queue serialises all GPU work across the VM — correct
 and simple, but a bottleneck under concurrent inference.
 
-**Stream-per-process** — for concurrent inference on a shared model:
+### Stream-per-worker, shared weights
+
+The recommended pattern for concurrent inference: load the model
+**once**, create a **pool of streams** at boot, and route each
+request to a worker that owns one of those streams. Weights live in
+one MLX buffer that every stream reads; the only per-stream cost is
+the Metal command buffer.
 
 ```elixir
-stream = Emily.Stream.new(:gpu)
+# 1. Load weights once, at application start.
+{:ok, model}     = Bumblebee.load_model({:hf, "Qwen/Qwen3-0.6B"})
+{:ok, tokenizer} = Bumblebee.load_tokenizer({:hf, "Qwen/Qwen3-0.6B"})
+{:ok, config}    = Bumblebee.load_generation_config({:hf, "Qwen/Qwen3-0.6B"})
 
-Emily.Stream.with_stream(stream, fn ->
-  # Every Emily op in this block dispatches on `stream`'s
-  # Metal command queue — concurrent with other streams.
-  model.(input)
-end)
+serving =
+  Bumblebee.Text.generation(model, tokenizer, config,
+    defn_options: [compiler: Emily.Compiler]
+  )
+
+# 2. Start N workers; each owns one Emily.Stream for its lifetime.
+defmodule MyApp.StreamWorker do
+  use GenServer
+
+  def start_link({id, serving}),
+    do: GenServer.start_link(__MODULE__, serving, name: via(id))
+
+  def run(id, input), do: GenServer.call(via(id), {:run, input}, :infinity)
+
+  @impl true
+  def init(serving) do
+    {:ok, %{serving: serving, stream: Emily.Stream.new(:gpu)}}
+  end
+
+  @impl true
+  def handle_call({:run, input}, _from, %{stream: s, serving: sv} = state) do
+    result = Emily.Stream.with_stream(s, fn -> Nx.Serving.run(sv, input) end)
+    {:reply, result, state}
+  end
+
+  defp via(id), do: {:via, Registry, {MyApp.StreamRegistry, id}}
+end
+
+# 3. Dispatch each request to any free worker (round-robin, poolboy,
+#    a Registry lookup, etc.). Calls to different workers run
+#    concurrently on distinct Metal command queues.
+MyApp.StreamWorker.run(pick_worker(), "The quick brown fox…")
 ```
 
-Each `Emily.Stream` maps to its own `WorkerThread` and its own Metal
-command queue. Weights are shared across streams (MLX arrays are
-refcounted and thread-safe for reads), so the per-stream cost is the
-command buffer, not the model. Create streams once at serving-worker
-init, not per-request.
+Create streams once at worker init, not per-request —
+`Emily.Stream.new/1` spawns an OS thread.
 
-**Pooled servings** — for small models where duplicating weights is
-cheap, start K `Nx.Serving` instances behind poolboy / Registry /
-etc. Each instance holds its own weights and runs on the default
-stream. No `Emily.Stream` needed. Trade-off: memory scales linearly
-with K.
+**Stream lifecycle.** `Emily.Stream` has no explicit release API;
+cleanup piggybacks on BEAM GC of the NIF resource held in the
+struct. In the pattern above, the stream lives as long as its owning
+worker process: when the worker terminates (crash, supervisor
+shutdown, or `GenServer.stop/1`), the process heap is reclaimed, the
+resource's refcount drops to zero, and the NIF destructor joins the
+dedicated OS thread. A supervised restart therefore drops the old
+stream and allocates a fresh one in the child's `init/1`. To drop a
+stream deliberately, terminate the process that owns it.
 
-See `Emily.Stream` for details and the `qwen3_quantized` notebook
+### Pooled servings — K weight copies, one default queue
+
+For small models where duplicating weights is cheap, start K
+`Nx.Serving` instances behind poolboy / Registry / etc. Each instance
+holds its own copy of the weights. No `Emily.Stream` is involved, so
+**every instance dispatches onto the same default Metal command
+queue** — requests run sequentially at the GPU even though multiple
+servings exist at the BEAM level. The pool buys parallelism for
+CPU-side serving work (pre/post-processing, batching) but not for
+GPU-side compute. Memory scales linearly with K.
+
+Combine the two if you need both: K servings for CPU parallelism,
+each with its own `Emily.Stream` for GPU parallelism.
+
+### Using Emily with `Nx.Serving`
+
+`Nx.Serving` itself is stream-agnostic — it calls into `Emily.Compiler`
+which dispatches to whatever MLX stream is installed in the calling
+process. That gives three viable configurations:
+
+| Configuration                                | Weights in GPU memory | GPU queues   | When to use                                                   |
+| -------------------------------------------- | --------------------- | ------------ | ------------------------------------------------------------- |
+| Single serving, default stream               | 1×                    | 1 (shared)   | Default. Simplest; fine for single-user / batched workloads.  |
+| Single serving + pool of `Emily.Stream`s     | 1×                    | N (per ws)   | Concurrent inference on a shared model. Large models.         |
+| K servings (pooled), default stream          | K×                    | 1 (shared)   | Small models where CPU serving work dominates GPU compute.    |
+
+In every case `Nx.Serving.run/2` / `Nx.Serving.batched_run/2` is the
+caller-facing API; the only difference is whether the calling
+process wraps the call in `Emily.Stream.with_stream/2` and whether
+you run one serving or many.
+
+See `Emily.Stream` for the API and the `qwen3_quantized` notebook
 under Notebooks for a worked multi-stream example.
 
 ## Observability

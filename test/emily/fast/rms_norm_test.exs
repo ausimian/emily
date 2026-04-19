@@ -16,6 +16,7 @@ defmodule Emily.Fast.RMSNormTest do
   """
 
   use ExUnit.Case, async: true
+  doctest Emily.Fast, only: [rms_norm: 3]
 
   import Emily.BackendGenerators, only: [assert_close: 3]
 

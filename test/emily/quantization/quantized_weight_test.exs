@@ -11,6 +11,7 @@ defmodule Emily.QuantizedWeightTest do
 
   use ExUnit.Case, async: true
   use ExUnitProperties
+  doctest Emily.QuantizedWeight
 
   alias Emily.QuantizedWeight
 

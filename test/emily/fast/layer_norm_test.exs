@@ -5,6 +5,7 @@ defmodule Emily.Fast.LayerNormTest do
   """
 
   use ExUnit.Case, async: true
+  doctest Emily.Fast, only: [layer_norm: 4]
 
   import Emily.BackendGenerators, only: [assert_close: 3]
 

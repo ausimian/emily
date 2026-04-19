@@ -172,6 +172,14 @@ defmodule Emily do
   Useful for benchmarking or flushing pending work before observing
   side effects. `to_binary/1` implicitly evaluates. Emits a
   `[:emily, :eval, :start | :stop | :exception]` telemetry span.
+
+  ## Examples
+
+      iex> a = Nx.tensor([1.0, 2.0, 3.0], backend: Emily.Backend)
+      iex> b = a |> Nx.multiply(2.0) |> Nx.add(1.0)
+      iex> Emily.eval(b.data.ref)
+      :ok
+
   """
   @spec eval(t()) :: :ok
   def eval(tensor) do
