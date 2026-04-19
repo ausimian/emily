@@ -1,0 +1,58 @@
+diff --git a/mlx/backend/metal/CMakeLists.txt b/mlx/backend/metal/CMakeLists.txt
+index 67c69579..a3d575ed 100644
+--- a/mlx/backend/metal/CMakeLists.txt
++++ b/mlx/backend/metal/CMakeLists.txt
+@@ -83,18 +83,43 @@ if(MLX_METAL_JIT)
+ 
+   make_jit_source(steel/attn/kernels/steel_attention)
+ 
+-  make_jit_source(
+-    steel/gemm/gemm_nax kernels/steel/utils.h kernels/steel/gemm/nax.h
+-    kernels/steel/gemm/params.h kernels/steel/gemm/transforms.h)
+-  make_jit_source(steel/gemm/kernels/steel_gemm_fused_nax)
+-  make_jit_source(steel/gemm/kernels/steel_gemm_gather_nax)
+-  make_jit_source(steel/gemm/kernels/steel_gemm_splitk_nax)
++  # NAX JIT sources #include <MetalPerformancePrimitives/...>, which only
++  # exists in the macOS 26.2+ SDK. Mirror the AOT gate from
++  # kernels/CMakeLists.txt so older SDKs can still build with JIT on.
++  # When gated out we supply empty stubs for the NAX JIT source
++  # providers so jit_kernels.cpp still links; is_nax_available()
++  # returns false at runtime under MLX_METAL_NO_NAX so the stubs are
++  # never exercised.
++  if((MLX_METAL_VERSION GREATER_EQUAL 400) AND (MACOS_SDK_VERSION GREATER_EQUAL
++                                                26.2))
++    make_jit_source(
++      steel/gemm/gemm_nax kernels/steel/utils.h kernels/steel/gemm/nax.h
++      kernels/steel/gemm/params.h kernels/steel/gemm/transforms.h)
++    make_jit_source(steel/gemm/kernels/steel_gemm_fused_nax)
++    make_jit_source(steel/gemm/kernels/steel_gemm_gather_nax)
++    make_jit_source(steel/gemm/kernels/steel_gemm_splitk_nax)
+ 
+-  make_jit_source(quantized_nax kernels/quantized_utils.h)
+-  make_jit_source(fp_quantized_nax kernels/quantized_utils.h kernels/fp8.h
+-                  kernels/fp4.h)
++    make_jit_source(quantized_nax kernels/quantized_utils.h)
++    make_jit_source(fp_quantized_nax kernels/quantized_utils.h kernels/fp8.h
++                    kernels/fp4.h)
+ 
+-  make_jit_source(steel/attn/kernels/steel_attention_nax)
++    make_jit_source(steel/attn/kernels/steel_attention_nax)
++  else()
++    target_compile_definitions(mlx PRIVATE MLX_METAL_NO_NAX)
++    set(_nax_stub_cpp "${CMAKE_CURRENT_BINARY_DIR}/jit/nax_stubs.cpp")
++    file(
++      WRITE "${_nax_stub_cpp}"
++      "namespace mlx::core::metal {\n"
++      "const char* gemm_nax() { return \"\"; }\n"
++      "const char* steel_gemm_fused_nax() { return \"\"; }\n"
++      "const char* steel_gemm_gather_nax() { return \"\"; }\n"
++      "const char* steel_gemm_splitk_nax() { return \"\"; }\n"
++      "const char* quantized_nax() { return \"\"; }\n"
++      "const char* fp_quantized_nax() { return \"\"; }\n"
++      "const char* steel_attention_nax() { return \"\"; }\n"
++      "}\n")
++    target_sources(mlx PRIVATE "${_nax_stub_cpp}")
++  endif()
+ 
+ else()
+   target_sources(mlx PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/nojit_kernels.cpp)

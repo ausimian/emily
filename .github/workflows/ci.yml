@@ -12,15 +12,17 @@ concurrency:
 
 jobs:
   precommit:
-    name: precommit (${{ matrix.os }})
+    name: precommit (${{ matrix.os }}, jit=${{ matrix.jit }})
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
         # Emily is Apple-Silicon only. macos-14 is arm64 (M1).
         os: [macos-14]
+        jit: ["0", "1"]
     env:
       MIX_ENV: test
+      EMILY_MLX_JIT: ${{ matrix.jit }}
     steps:
       - uses: actions/checkout@v6
         with:
@@ -43,17 +45,21 @@ jobs:
         uses: actions/cache@v5
         with:
           path: _build
-          key: build-${{ runner.os }}-${{ hashFiles('mix.lock', 'c_src/**', 'Makefile', '.tool-versions', '.gitmodules') }}
-          restore-keys: build-${{ runner.os }}-
+          key: build-${{ runner.os }}-jit${{ matrix.jit }}-${{ hashFiles('mix.lock', 'c_src/**', 'Makefile', '.tool-versions', '.gitmodules') }}
+          restore-keys: build-${{ runner.os }}-jit${{ matrix.jit }}-
 
       # MLX cmake build (~6 min from source) and NIF object files.
-      # Keyed by the vendored MLX submodule commit + NIF sources.
+      # Keyed by the vendored MLX submodule commit + NIF sources; the
+      # JIT flag changes libmlx/metallib bytes so each flavour caches
+      # separately (the install dir itself gains a `-jit` suffix, but
+      # the NIF .o files under build-<version>/ are shared, so we still
+      # partition the top-level cache).
       - name: Cache MLX and NIF objects
         uses: actions/cache@v5
         with:
           path: ~/Library/Caches/emily
-          key: mlx-${{ runner.os }}-${{ hashFiles('.gitmodules', 'c_src/**', 'Makefile') }}
-          restore-keys: mlx-${{ runner.os }}-
+          key: mlx-${{ runner.os }}-jit${{ matrix.jit }}-${{ hashFiles('.gitmodules', 'c_src/**', 'Makefile') }}
+          restore-keys: mlx-${{ runner.os }}-jit${{ matrix.jit }}-
 
       # The Bumblebee cache holds tiny-random HuggingFace fixtures
       # downloaded by the conformance suite (~3 MB across 7 repos).

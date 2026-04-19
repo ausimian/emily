@@ -136,6 +136,26 @@ builds until the submodule pin changes. Override the cache location
 with `EMILY_CACHE=/some/path mix compile`, or force a rebuild with
 `mix compile.emily_mlx --force`.
 
+### MLX JIT (optional)
+
+MLX can ship its Metal kernels either AOT-compiled into
+`mlx.metallib`, or as source strings that are JIT-compiled on first
+use. `EMILY_MLX_JIT=1` at build time selects the JIT path; any other
+value (or unset) is the default and produces the AOT build. Toggling
+the flag produces a distinct cached MLX build (the cache key includes
+the setting), so no stale artefact is reused.
+
+Artefact sizes on an M-series Mac (dev build, release optimisations):
+
+| Mode                       | `libemily.so` | `mlx.metallib` | `priv/` total |
+| -------------------------- | ------------: | -------------: | ------------: |
+| JIT off (default)          |       ~20 MB  |       ~154 MB  |      ~175 MB  |
+| JIT on (`EMILY_MLX_JIT=1`) |       ~22 MB  |       ~3.5 MB  |       ~25 MB  |
+
+With JIT on, kernels are compiled on first invocation, so there's a
+small per-kernel warm-up cost at runtime; subsequent calls are cached
+in-process. All of Emily's test suite passes under both modes.
+
 ## Usage
 
 Install Emily as the global Nx backend and use Nx normally:
