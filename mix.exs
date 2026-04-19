@@ -52,12 +52,14 @@ defmodule Emily.MixProject do
       {:elixir_make, "~> 0.9"},
       {:fine, "~> 0.1"},
       {:nx, "~> 0.10"},
-      # Bumblebee >= 0.6.3 (the latest Hex release) lacks Qwen3 support.
-      # Pinned to a `main` commit that contains `Bumblebee.Text.Qwen3` so
-      # M4 can exercise Qwen3-0.6B end-to-end. Bump deliberately when a
-      # newer release lands on Hex.
-      {:bumblebee,
-       github: "elixir-nx/bumblebee", ref: "273805e95507dc7866b958d90e0012a3abad1761", only: :test},
+      # Hex Bumblebee is the single source of truth for Emily's own
+      # tests and `mix docs`. The Qwen3-support gap in 0.6.3 is
+      # covered by `scripts/qwen3_conformance.exs`, a standalone
+      # Mix.install script that pulls the github ref on demand.
+      # Keeping the main mix.exs on Hex means the lockfile is stable
+      # across envs and the published package metadata matches what
+      # consumers see.
+      {:bumblebee, "~> 0.6", only: :test},
       {:tokenizers, "~> 0.5", only: :test},
       # Axon is already pulled in transitively by Bumblebee, but the M5
       # exit-criterion test (Axon MLP forward under `Emily.Compiler`)

@@ -2,7 +2,11 @@
 #
 # Usage:
 #
-#     MIX_ENV=test mix run bench/qwen3_tokens_per_sec.exs
+#     elixir bench/qwen3_tokens_per_sec.exs
+#
+# Standalone Mix.install so the bench doesn't need the github-ref
+# Bumblebee pinned in Emily's own mix.exs — same rationale as
+# `scripts/qwen3_conformance.exs`. See that script's header.
 #
 # Optional environment variables:
 #
@@ -19,6 +23,10 @@
 #                                MLX kernels (RMSNorm, LayerNorm, RoPE,
 #                                SDPA) via `Emily.Bumblebee.FastKernels`.
 #                                Reports baseline vs fused side by side.
+#                                Requires `Emily.Bumblebee.FastKernels`
+#                                to be available in `lib/` (see the
+#                                separate graduation PR); script raises
+#                                if it isn't.
 #     EMILY_BENCH_PIN            "1.5" → fail with non-zero exit if the
 #                                fused mean tokens/sec doesn't beat
 #                                baseline mean by at least the given
@@ -29,6 +37,15 @@
 # We deliberately avoid `Benchee` — this benchmark has one workload and
 # one (or two) metrics. The whole script is standalone so a reader can
 # follow the generation flow without chasing macros.
+
+Mix.install([
+  {:emily, path: Path.expand("..", __DIR__)},
+  {:bumblebee,
+   github: "elixir-nx/bumblebee", ref: "273805e95507dc7866b958d90e0012a3abad1761"},
+  {:axon, "~> 0.7"},
+  {:tokenizers, "~> 0.5"},
+  {:nx, "~> 0.10"}
+])
 
 defmodule Emily.Bench.Qwen3 do
   @default_model "Qwen/Qwen3-0.6B"
@@ -82,6 +99,15 @@ defmodule Emily.Bench.Qwen3 do
     {baseline_mean, _, _, _} = baseline
 
     if fast_kernels? do
+      unless Code.ensure_loaded?(Emily.Bumblebee.FastKernels) do
+        IO.puts(
+          "EMILY_BENCH_FAST_KERNELS=1 requires Emily.Bumblebee.FastKernels to be\n" <>
+            "in `lib/`, which isn't the case on this branch. Graduate the shim first."
+        )
+
+        System.halt(1)
+      end
+
       IO.puts("\n=== fused (Emily.Bumblebee.FastKernels) ===")
 
       fused_model_info =

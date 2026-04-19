@@ -9,10 +9,14 @@
 # conformance variants that download full-size weight checkpoints, so
 # they are excluded even from `--only conformance`; run explicitly:
 #
-#     mix test --only qwen3_full         # ~1.5 GB checkpoint
 #     mix test --only vit_full           # ~330 MB checkpoint
 #     mix test --only whisper_full       # ~150 MB checkpoint
 #     mix test --only distilbert_full    # ~250 MB checkpoint
+#
+# Qwen3 conformance lives outside `mix test` entirely —
+# `scripts/qwen3_conformance.exs` is a standalone Mix.install script
+# pinning the Bumblebee main ref that carries Qwen3 support. See its
+# header for usage.
 #
 # (Soak tests deliberately stay in the default suite; see
 # `test/soak/memory_test.exs` for the rationale.)
@@ -23,13 +27,6 @@
 # run explicitly:
 #
 #     mix test --only training_full
-#
-# `:qwen3_quant_full` is the M10.5 quantized end-to-end conformance —
-# runs the full Qwen3-0.6B through Transform.quantize/3 and greedy
-# decodes 32 tokens. Same 1.5 GB checkpoint as `:qwen3_full`; opt in
-# with:
-#
-#     mix test --only qwen3_quant_full
 #
 # `:grad_conformance` is the M13 EXLA gradient oracle suite — compares
 # Emily grads against EXLA-produced golden values. Lightweight (no
@@ -48,8 +45,6 @@ ExUnit.start(
   max_cases: System.schedulers_online(),
   exclude: [
     :conformance,
-    :qwen3_full,
-    :qwen3_quant_full,
     :vit_full,
     :whisper_full,
     :distilbert_full,
