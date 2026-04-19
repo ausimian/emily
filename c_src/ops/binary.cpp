@@ -1,5 +1,6 @@
 // Binary elementwise: arithmetic, compare, logical, bitwise.
 
+#include "../emily/async.hpp"
 #include "../emily/tensor.hpp"
 #include "../emily/worker.hpp"
 
@@ -7,23 +8,25 @@
 #include <mlx/mlx.h>
 
 namespace mx = mlx::core;
+using emily::async_encoded;
 using emily::Tensor;
-using emily::WorkerThread;
 using emily::wrap;
+using emily::WorkerThread;
 
 namespace {
 
-#define EMILY_BINARY(nif_name, mlx_fn)                                         \
-  fine::ResourcePtr<Tensor> nif_name(                                          \
-      ErlNifEnv *,                                                             \
+#define EMILY_BINARY(op_name, mlx_fn)                                          \
+  fine::Term op_name##_nif(                                                    \
+      ErlNifEnv *env,                                                          \
       fine::ResourcePtr<WorkerThread> w,                                       \
       fine::ResourcePtr<Tensor> a,                                             \
       fine::ResourcePtr<Tensor> b) {                                           \
-    return w->run_sync([&](mx::Stream &s) {                                    \
-      return wrap(mlx_fn(a->array, b->array, s));                              \
-    });                                                                        \
+    return async_encoded(env, w,                                               \
+        [a = std::move(a), b = std::move(b)](mx::Stream &s) {                  \
+          return wrap(mlx_fn(a->array, b->array, s));                          \
+        });                                                                    \
   }                                                                            \
-  FINE_NIF(nif_name, 0);
+  FINE_NIF(op_name##_nif, 0);
 
 // Arithmetic
 EMILY_BINARY(add,           mx::add)

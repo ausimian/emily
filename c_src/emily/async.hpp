@@ -140,4 +140,22 @@ fine::Term async_reply(ErlNifEnv *env,
   return fine::Term(ref_to_return);
 }
 
+// Convenience wrapper over async_reply for lambdas that return a
+// fine-encodable value (typically a `fine::ResourcePtr<Tensor>` or
+// a tuple of them). The helper wraps the computation, encodes the
+// result in msg_env, and posts `{ref, {:ok, encoded}}` back.
+//
+// `build` signature:
+//     (mx::Stream &stream) -> T   (T is any fine-encodable type)
+template <typename F>
+fine::Term async_encoded(ErlNifEnv *env,
+                         fine::ResourcePtr<WorkerThread> w,
+                         F &&build) {
+  return async_reply(
+      env, w,
+      [build = std::forward<F>(build)](mx::Stream &s, ErlNifEnv *msg_env) mutable {
+        return fine::encode(msg_env, build(s));
+      });
+}
+
 }  // namespace emily

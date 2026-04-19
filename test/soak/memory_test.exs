@@ -45,11 +45,16 @@ defmodule Emily.Soak.MemoryTest do
   # memory at the peak, well within the tolerance window.
   @gc_every 10
 
-  # Measured drift under the full suite is ~2 MB (Metal pool keeps
-  # ~2 tensors live past clear_cache). 4 MB tolerance absorbs that
-  # without masking a leak of more than a couple of retained tensors;
-  # a 1 % per-iter leak rate would blow through it by ~5×.
-  @tolerance_bytes 4 * 1024 * 1024
+  # Drift sources:
+  #   * Metal arena keeps ~2 tensors live past clear_cache (~2 MB).
+  #   * Async NIF dispatch (Phase 2) keeps up to ~@gc_every extra
+  #     tensors live via heap-fragment messages in transit + worker
+  #     queue lag between enif_send and task destruction. Measured
+  #     empirically as a *bounded* ~10 MB plateau across 100–8000
+  #     iters; a real leak would grow linearly instead.
+  # 16 MB tolerance covers both while still failing if a genuine
+  # leak retains more than ~16 extra tensors total.
+  @tolerance_bytes 16 * 1024 * 1024
 
   defp workload(data) do
     w = Emily.MlxStream.worker(Emily.MlxStream.Default)

@@ -1,5 +1,6 @@
 // Unary elementwise ops. All take a Tensor and return a Tensor.
 
+#include "../emily/async.hpp"
 #include "../emily/tensor.hpp"
 #include "../emily/worker.hpp"
 
@@ -7,24 +8,25 @@
 #include <mlx/mlx.h>
 
 namespace mx = mlx::core;
+using emily::async_encoded;
 using emily::Tensor;
-using emily::WorkerThread;
 using emily::wrap;
+using emily::WorkerThread;
 
 // Anonymous namespace so our NIF names (log1p, sqrt, sin, etc.) don't
 // clash with C math-library functions brought in by MLX headers.
 namespace {
 
-#define EMILY_UNARY(nif_name, mlx_fn)                                          \
-  fine::ResourcePtr<Tensor> nif_name(                                          \
-      ErlNifEnv *,                                                             \
+#define EMILY_UNARY(op_name, mlx_fn)                                           \
+  fine::Term op_name##_nif(                                                    \
+      ErlNifEnv *env,                                                          \
       fine::ResourcePtr<WorkerThread> w,                                       \
       fine::ResourcePtr<Tensor> a) {                                           \
-    return w->run_sync([&](mx::Stream &s) {                                    \
+    return async_encoded(env, w, [a](mx::Stream &s) {                          \
       return wrap(mlx_fn(a->array, s));                                        \
     });                                                                        \
   }                                                                            \
-  FINE_NIF(nif_name, 0);
+  FINE_NIF(op_name##_nif, 0);
 
 EMILY_UNARY(negative,        mx::negative)
 EMILY_UNARY(abs,             mx::abs)
@@ -68,15 +70,15 @@ EMILY_UNARY(stop_gradient,   mx::stop_gradient)
 
 #undef EMILY_UNARY
 
-fine::ResourcePtr<Tensor> round(
-    ErlNifEnv *,
+fine::Term round_nif(
+    ErlNifEnv *env,
     fine::ResourcePtr<WorkerThread> w,
     fine::ResourcePtr<Tensor> a,
     int64_t decimals) {
-  return w->run_sync([&](mx::Stream &s) {
+  return async_encoded(env, w, [a, decimals](mx::Stream &s) {
     return wrap(mx::round(a->array, static_cast<int>(decimals), s));
   });
 }
-FINE_NIF(round, 0);
+FINE_NIF(round_nif, 0);
 
 } // namespace

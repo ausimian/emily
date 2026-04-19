@@ -1,5 +1,6 @@
 // Dtype cast.
 
+#include "../emily/async.hpp"
 #include "../emily/tensor.hpp"
 #include "../emily/worker.hpp"
 
@@ -10,33 +11,34 @@
 #include <tuple>
 
 namespace mx = mlx::core;
+using emily::async_encoded;
 using emily::Tensor;
-using emily::WorkerThread;
 using emily::to_mlx_dtype;
 using emily::wrap;
+using emily::WorkerThread;
 
 namespace {
 
-fine::ResourcePtr<Tensor> astype(
-    ErlNifEnv *,
+fine::Term astype_nif(
+    ErlNifEnv *env,
     fine::ResourcePtr<WorkerThread> w,
     fine::ResourcePtr<Tensor> a,
     std::tuple<fine::Atom, int64_t> dtype) {
-  return w->run_sync([&](mx::Stream &s) {
+  return async_encoded(env, w, [a = std::move(a), dtype](mx::Stream &s) {
     return wrap(mx::astype(a->array, to_mlx_dtype(dtype), s));
   });
 }
-FINE_NIF(astype, 0);
+FINE_NIF(astype_nif, 0);
 
-fine::ResourcePtr<Tensor> bitcast(
-    ErlNifEnv *,
+fine::Term bitcast_nif(
+    ErlNifEnv *env,
     fine::ResourcePtr<WorkerThread> w,
     fine::ResourcePtr<Tensor> a,
     std::tuple<fine::Atom, int64_t> dtype) {
-  return w->run_sync([&](mx::Stream &s) {
+  return async_encoded(env, w, [a = std::move(a), dtype](mx::Stream &s) {
     return wrap(mx::view(a->array, to_mlx_dtype(dtype), s));
   });
 }
-FINE_NIF(bitcast, 0);
+FINE_NIF(bitcast_nif, 0);
 
 } // namespace
