@@ -107,7 +107,8 @@ defmodule Emily.MixProject do
         "README.md",
         "CHANGELOG.md",
         "notebooks/distilbert_qa.livemd",
-        "notebooks/qwen3_quantized.livemd"
+        "notebooks/qwen3_quantized.livemd",
+        "notebooks/mnist_training.livemd"
       ],
       groups_for_extras: [
         README: ~r{README.md},
