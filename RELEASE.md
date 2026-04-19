@@ -11,7 +11,10 @@ Initial release. See the git history for per-milestone detail.
 - **Fused transformer kernels.** `Emily.Fast` exposes
   `mx::fast::rms_norm`, `layer_norm`, `rope`, and scaled-dot-product
   attention as defn-callable helpers with composed-defn fallbacks
-  for non-Emily backends.
+  for non-Emily backends. `Emily.Bumblebee.FastKernels` rewrites a
+  Bumblebee Axon graph to call the fused kernels in place; declared
+  as an optional dep on `:axon` + `:bumblebee`, elides cleanly if
+  either is absent.
 - **Affine group-wise quantization.** `Emily.QuantizedWeight` and
   `Emily.Quantization` wrap MLX `quantize` / `dequantize` /
   `quantized_matmul` for int2 / int4 / int8 inference.
@@ -51,9 +54,10 @@ Initial release. See the git history for per-milestone detail.
 - **Vendored MLX build.** MLX is built from source via cmake from
   `vendor/mlx` (git submodule); no prebuilt download. Build cache
   keyed on the submodule SHA under `~/Library/Caches/emily/`.
-- **Documentation.** Per-module HexDocs, four runnable Livebooks
+- **Documentation.** Per-module HexDocs, five runnable Livebooks
   (`notebooks/distilbert_qa.livemd`,
   `notebooks/qwen3_quantized.livemd`,
   `notebooks/mnist_training.livemd`,
-  `notebooks/whisper_transcription.livemd`), and worked Bumblebee
-  examples in the conformance suite.
+  `notebooks/whisper_transcription.livemd`,
+  `notebooks/fast_kernels.livemd`), and worked Bumblebee examples in
+  the conformance suite.

@@ -114,7 +114,8 @@ defmodule Emily.MixProject do
         "notebooks/distilbert_qa.livemd",
         "notebooks/qwen3_quantized.livemd",
         "notebooks/mnist_training.livemd",
-        "notebooks/whisper_transcription.livemd"
+        "notebooks/whisper_transcription.livemd",
+        "notebooks/fast_kernels.livemd"
       ],
       groups_for_extras: [
         README: ~r{README.md},
