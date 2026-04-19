@@ -60,6 +60,32 @@ defmodule Emily.CompilerTest do
         Emily.Compiler.__to_backend__(bogus: true)
       end
     end
+
+    # Nx.Serving prepends :batch_keys to defn_options for arity-1
+    # serving builders (e.g. Bumblebee's speech_to_text_whisper/5);
+    # Bumblebee's Shared.compile_or_jit propagates :cache.
+    # Evaluator ignores both, but rejecting them at validate time
+    # breaks those flows. Regression for the Whisper notebook smoke
+    # test.
+    test "accepts :batch_keys and :cache without raising" do
+      assert [[batch_keys: [:default]]] ==
+               Emily.Compiler.__partitions_options__(batch_keys: [:default])
+
+      assert {Emily.Backend, [device: :gpu]} ==
+               Emily.Compiler.__to_backend__(batch_keys: [:default], cache: "bumblebee")
+    end
+
+    test "jit passes through :batch_keys without raising" do
+      fun = fn x -> Nx.add(x, 1.0) end
+
+      result =
+        Nx.Defn.jit_apply(fun, [Nx.tensor([1.0, 2.0])],
+          compiler: Emily.Compiler,
+          batch_keys: [:default]
+        )
+
+      assert_close(result, Nx.tensor([2.0, 3.0]))
+    end
   end
 
   # ------------------------------------------------------------------

@@ -51,7 +51,9 @@ Initial release. See the git history for per-milestone detail.
 - **Vendored MLX build.** MLX is built from source via cmake from
   `vendor/mlx` (git submodule); no prebuilt download. Build cache
   keyed on the submodule SHA under `~/Library/Caches/emily/`.
-- **Documentation.** Per-module HexDocs, two runnable Livebooks
+- **Documentation.** Per-module HexDocs, four runnable Livebooks
   (`notebooks/distilbert_qa.livemd`,
-  `notebooks/qwen3_quantized.livemd`), and worked Bumblebee
+  `notebooks/qwen3_quantized.livemd`,
+  `notebooks/mnist_training.livemd`,
+  `notebooks/whisper_transcription.livemd`), and worked Bumblebee
   examples in the conformance suite.

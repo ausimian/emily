@@ -55,6 +55,12 @@ defmodule Emily.Compiler do
       but multi-partition serving is rejected because MLX kernel
       dispatch isn't thread-safe. Pass `1` (the default) to silence.
       For concurrent inference see `Emily.Stream`.
+    * `:batch_keys`, `:cache` — accepted and ignored. `Nx.Serving`
+      propagates `:batch_keys` to the compiler via `defn_options` for
+      arity-1 serving builders (e.g. `Bumblebee.Audio.speech_to_text_whisper/5`),
+      and Bumblebee passes `:cache` through for its own per-scope
+      cache suffixing. Neither is used by the Evaluator walk, but
+      rejecting them would break those servings.
 
   ## Examples
 
@@ -75,7 +81,15 @@ defmodule Emily.Compiler do
 
   alias Nx.Defn.Evaluator
 
-  @valid_opts [:device, :hooks, :debug_options, :garbage_collect, :max_concurrency]
+  @valid_opts [
+    :device,
+    :hooks,
+    :debug_options,
+    :garbage_collect,
+    :max_concurrency,
+    :batch_keys,
+    :cache
+  ]
 
   @impl true
   def __jit__(key, vars, fun, args_list, opts) do
