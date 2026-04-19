@@ -21,7 +21,7 @@ defmodule Emily.Conformance.VitFullTest do
   are real signals.
   """
 
-  use ExUnit.Case, async: false
+  use ExUnit.Case, async: true
   use Emily.ConformanceHelper
 
   alias Emily.Bumblebee.FastKernels

@@ -4,7 +4,7 @@ defmodule Emily.Fast.LayerNormTest do
   defn composability, and fused-kernel equivalence under Emily.
   """
 
-  use ExUnit.Case, async: false
+  use ExUnit.Case, async: true
 
   import Emily.BackendGenerators, only: [assert_close: 3]
 
@@ -41,9 +41,7 @@ defmodule Emily.Fast.LayerNormTest do
 
   describe "emily backend (fused path)" do
     setup do
-      prev = Nx.default_backend()
       Nx.default_backend(Emily.Backend)
-      on_exit(fn -> Nx.default_backend(prev) end)
       :ok
     end
 

@@ -22,7 +22,7 @@ defmodule Emily.Conformance.WhisperFullTest do
   which are real signals.
   """
 
-  use ExUnit.Case, async: false
+  use ExUnit.Case, async: true
   use Emily.ConformanceHelper
 
   alias Emily.Bumblebee.FastKernels

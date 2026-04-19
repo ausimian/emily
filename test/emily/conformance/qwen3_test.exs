@@ -25,7 +25,7 @@ defmodule Emily.Conformance.Qwen3Test do
       mix test --only conformance
   """
 
-  use ExUnit.Case, async: false
+  use ExUnit.Case, async: true
   use Emily.ConformanceHelper
 
   alias Bumblebee.Text.Generation, as: BBGeneration

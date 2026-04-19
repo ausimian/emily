@@ -14,7 +14,7 @@ defmodule Emily.Bumblebee.FastKernelsTest do
   `:fast_kernels_full` tag).
   """
 
-  use ExUnit.Case, async: false
+  use ExUnit.Case, async: true
 
   import Emily.BackendGenerators, only: [assert_close: 3]
 
@@ -24,9 +24,7 @@ defmodule Emily.Bumblebee.FastKernelsTest do
   @f32_tol 1.0e-4
 
   setup do
-    prev = Nx.default_backend()
     Nx.default_backend(Emily.Backend)
-    on_exit(fn -> Nx.default_backend(prev) end)
     :ok
   end
 
