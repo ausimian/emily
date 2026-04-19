@@ -71,7 +71,8 @@ defmodule Emily.MixProject do
       {:stream_data, "~> 1.1", only: [:dev, :test]},
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
       {:dialyxir, "~> 1.4", only: [:dev], runtime: false},
-      {:ex_doc, "~> 0.34", only: :docs, runtime: false}
+      {:ex_doc, "~> 0.34", only: :docs, runtime: false},
+      {:publisho, "~> 1.0", only: :dev, runtime: false}
     ]
   end
 
@@ -132,7 +133,7 @@ defmodule Emily.MixProject do
       licenses: ["MIT"],
       links: %{"GitHub" => @source_url},
       files:
-        ~w(lib c_src patches vendor/mlx/mlx vendor/mlx/cmake vendor/mlx/CMakeLists.txt vendor/mlx/LICENSE Makefile mix.exs README.md CHANGELOG.md LICENSE)
+        ~w(lib c_src patches vendor/mlx/mlx vendor/mlx/cmake vendor/mlx/CMakeLists.txt vendor/mlx/mlx.pc.in vendor/mlx/LICENSE vendor/mlx/ACKNOWLEDGMENTS.md Makefile mix.exs README.md CHANGELOG.md LICENSE)
     ]
   end
 
