@@ -48,6 +48,12 @@ Mix.install([
 ])
 
 defmodule Emily.Bench.Qwen3 do
+  # Emily.Bumblebee.FastKernels is only reachable when the shim has
+  # graduated to `lib/`. The EMILY_BENCH_FAST_KERNELS path below is
+  # guarded at runtime by `Code.ensure_loaded?/1`; silence the
+  # compile-time warning Elixir raises on the capture.
+  @compile {:no_warn_undefined, Emily.Bumblebee.FastKernels}
+
   @default_model "Qwen/Qwen3-0.6B"
   @default_prompt "The quick brown fox jumps over the lazy dog."
   @default_new_tokens 64
