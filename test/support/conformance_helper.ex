@@ -4,9 +4,10 @@ defmodule Emily.ConformanceHelper do
 
   `use Emily.ConformanceHelper` installs:
 
-    * a `setup_all` block that swaps the global default backend to
-      `Emily.Backend` for the duration of the module and restores it
-      on exit — every conformance suite does this identically;
+    * a per-test `setup` block that swaps the process-scoped default
+      backend to `Emily.Backend` for the duration of the test and
+      restores it on exit — pdict scope (not application env) so
+      modules can run `async: true`;
     * an import of `assert_all_close/2,3`, the tolerance-aware
       comparison we use against reference slices produced by
       HuggingFace Transformers (PyTorch). Mirrors
@@ -16,16 +17,22 @@ defmodule Emily.ConformanceHelper do
   Each conformance module still declares its own `@moduletag`s
   (`:conformance`, `:qwen3_full`, `:vit_full`, …) — those are not
   shared because they gate test selection.
+
+  ## When to avoid this helper
+
+  Tests that drive `Nx.Serving.batched_run` through a supervised
+  serving process cannot rely on the pdict default, because the
+  serving worker is a separate process that falls back to the
+  application env. Those tests must set `Nx.global_default_backend`
+  directly (and run `async: false`).
   """
 
   defmacro __using__(_opts) do
     quote do
       import Emily.ConformanceHelper, only: [assert_all_close: 2, assert_all_close: 3]
 
-      setup_all do
-        prev = Nx.default_backend()
-        Nx.global_default_backend(Emily.Backend)
-        on_exit(fn -> Nx.global_default_backend(prev) end)
+      setup do
+        Nx.default_backend(Emily.Backend)
         :ok
       end
     end

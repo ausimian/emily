@@ -1,5 +1,5 @@
 defmodule Emily.AsyncEvalTest do
-  use ExUnit.Case, async: false
+  use ExUnit.Case, async: true
 
   # Regression tests for the async `Emily.Native.eval/2` path.
   # `eval/2` internally dispatches to `eval_nif/2` (which returns a

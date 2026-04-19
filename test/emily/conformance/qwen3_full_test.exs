@@ -14,7 +14,7 @@ defmodule Emily.Conformance.Qwen3FullTest do
   checkpoint has been republished — all of which are real signals.
   """
 
-  use ExUnit.Case, async: false
+  use ExUnit.Case, async: true
 
   alias Emily.Bumblebee.FastKernels
 
@@ -25,10 +25,8 @@ defmodule Emily.Conformance.Qwen3FullTest do
   @prompt "The quick brown fox jumps over the lazy dog."
   @reference_text " The quick brown fox is a character in the story. The quick brown fox is a character in the story. The quick brown fox is a character in the story"
 
-  setup_all do
-    prev = Nx.default_backend()
-    Nx.global_default_backend(Emily.Backend)
-    on_exit(fn -> Nx.global_default_backend(prev) end)
+  setup do
+    Nx.default_backend(Emily.Backend)
     :ok
   end
 

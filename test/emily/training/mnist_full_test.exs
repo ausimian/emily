@@ -18,7 +18,7 @@ defmodule Emily.Training.MnistFullTest do
   Runs once per invocation, no property sweep.
   """
 
-  use ExUnit.Case, async: false
+  use ExUnit.Case, async: true
 
   alias Emily.MnistHelper
 
@@ -26,10 +26,8 @@ defmodule Emily.Training.MnistFullTest do
   @moduletag capture_log: true
   @moduletag timeout: 600_000
 
-  setup_all do
-    prev = Nx.default_backend()
-    Nx.global_default_backend(Emily.Backend)
-    on_exit(fn -> Nx.global_default_backend(prev) end)
+  setup do
+    Nx.default_backend(Emily.Backend)
     :ok
   end
 

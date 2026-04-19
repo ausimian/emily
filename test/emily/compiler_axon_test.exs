@@ -9,14 +9,12 @@ defmodule Emily.CompilerAxonTest do
   ops with the same operands as the reference walker.
   """
 
-  use ExUnit.Case, async: false
+  use ExUnit.Case, async: true
 
   import Emily.BackendGenerators, only: [assert_close: 2]
 
   setup do
-    prev = Nx.default_backend()
     Nx.default_backend(Emily.Backend)
-    on_exit(fn -> Nx.default_backend(prev) end)
     :ok
   end
 

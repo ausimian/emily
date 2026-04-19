@@ -1,5 +1,5 @@
 defmodule Emily.StreamTest do
-  use ExUnit.Case, async: false
+  use ExUnit.Case, async: true
 
   describe "Emily.Stream" do
     test "new/1 creates a stream with a worker reference" do

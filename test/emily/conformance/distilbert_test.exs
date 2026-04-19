@@ -32,13 +32,25 @@ defmodule Emily.Conformance.DistilbertTest do
   """
 
   use ExUnit.Case, async: false
-  use Emily.ConformanceHelper
+
+  import Emily.ConformanceHelper, only: [assert_all_close: 2, assert_all_close: 3]
 
   alias Emily.Bumblebee.FastKernels
 
   @moduletag :conformance
   @moduletag capture_log: true
   @moduletag timeout: 120_000
+
+  # `batched_run` runs through a supervised serving process, which has
+  # its own process dict. Set the backend globally so the worker sees
+  # `Emily.Backend` as its default; keep the module `async: false` to
+  # avoid racing the global with other suites.
+  setup_all do
+    prev = Nx.default_backend()
+    Nx.global_default_backend(Emily.Backend)
+    on_exit(fn -> Nx.global_default_backend(prev) end)
+    :ok
+  end
 
   test ":base" do
     assert {:ok, %{model: model, params: params, spec: spec}} =

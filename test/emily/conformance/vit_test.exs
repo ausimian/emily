@@ -24,7 +24,7 @@ defmodule Emily.Conformance.VitTest do
       mix test --only conformance
   """
 
-  use ExUnit.Case, async: false
+  use ExUnit.Case, async: true
   use Emily.ConformanceHelper
 
   @moduletag :conformance

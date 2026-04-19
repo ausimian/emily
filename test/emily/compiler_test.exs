@@ -19,15 +19,13 @@ defmodule Emily.CompilerTest do
   and `Nx.Defn.Evaluator` to verify equivalence.
   """
 
-  use ExUnit.Case, async: false
+  use ExUnit.Case, async: true
 
   import Nx.Defn
   import Emily.BackendGenerators, only: [assert_close: 2]
 
   setup do
-    prev = Nx.default_backend()
     Nx.default_backend(Emily.Backend)
-    on_exit(fn -> Nx.default_backend(prev) end)
     :ok
   end
 

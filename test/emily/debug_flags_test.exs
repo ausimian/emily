@@ -12,7 +12,7 @@ defmodule Emily.DebugFlagsTest do
       `DebugHelpers.check_bounds!` / `check_nan_inf!`.
   """
 
-  use ExUnit.Case, async: false
+  use ExUnit.Case, async: true
 
   import Emily.TensorHelpers
 

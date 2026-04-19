@@ -14,15 +14,13 @@ defmodule Emily.Quantization.TransformTest do
   scheme.
   """
 
-  use ExUnit.Case, async: false
+  use ExUnit.Case, async: true
 
   alias Emily.Quantization.Transform
   alias Emily.QuantizedWeight
 
-  setup_all do
-    prev = Nx.default_backend()
-    Nx.global_default_backend(Emily.Backend)
-    on_exit(fn -> Nx.global_default_backend(prev) end)
+  setup do
+    Nx.default_backend(Emily.Backend)
     :ok
   end
 

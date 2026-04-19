@@ -18,7 +18,7 @@ defmodule Emily.Conformance.Qwen3QuantFullTest do
   see PLAN.md M10.5.)
   """
 
-  use ExUnit.Case, async: false
+  use ExUnit.Case, async: true
 
   alias Emily.Bumblebee.FastKernels
   alias Emily.Quantization.Transform
@@ -37,10 +37,8 @@ defmodule Emily.Conformance.Qwen3QuantFullTest do
   # quantization noise across all linear layers.
   @reference_text " Let's see, what is the correct answer for this riddle? The answer is a word that contains the letters B, O, U, and R,"
 
-  setup_all do
-    prev = Nx.default_backend()
-    Nx.global_default_backend(Emily.Backend)
-    on_exit(fn -> Nx.global_default_backend(prev) end)
+  setup do
+    Nx.default_backend(Emily.Backend)
     :ok
   end
 
