@@ -70,7 +70,7 @@ The expected output is a map shaped like
 
 ```elixir
 %{
-  predictions: [
+  results: [
     %{text: "José Valim", start: _, end: _, score: _}
   ]
 }
