@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 <!-- %% CHANGELOG_ENTRIES %% -->
 
+## 0.1.2 - 2026-04-19
+
+### Fixed
+
+- **HexDocs source links.** `mix.exs`'s `source_url_pattern`
+  prepended a `v` prefix to the version tag, but the project's
+  release convention (via `mix publisho`) uses bare semver tags.
+  The generated `[source]` links in HexDocs pointed at nonexistent
+  `v<version>` tags. Dropped the prefix so links resolve to the
+  actual tag.
+
 ## 0.1.1 - 2026-04-19
 
 Initial release. See the git history for per-milestone detail.
