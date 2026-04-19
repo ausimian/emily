@@ -1,51 +1,57 @@
-# Release notes for next release
+Initial release. See the git history for per-milestone detail.
 
-## Added
+### Added
 
-- `EMILY_MLX_JIT=1` build-time flag to select MLX's runtime JIT
-  compilation of Metal kernels. Default (unset / `0`) preserves the
-  existing AOT path. The JIT build ships a ~3.5 MB `mlx.metallib`
-  stub instead of the ~154 MB precompiled library, reducing the
-  `priv/` footprint from ~175 MB to ~25 MB at the cost of a small
-  per-kernel warm-up on first use. The flag is incorporated into the
-  MLX install-dir cache key so toggling it does not reuse a stale
-  artefact. README "How to build" documents the trade-off.
-
-- M23 — Public documentation & examples review. Pre-1.0 pass over the
-  documentation surface users actually consume (moduledocs, README,
-  HexDocs navigation, worked examples).
-  - **`notebooks/distilbert_qa.livemd`** — DistilBERT QA pipeline
-    wired through `Emily.Compiler`; mirrors the conformance suite
-    without the test harness. `Mix.install/2` at the top so the
-    notebook runs standalone.
-  - **`notebooks/qwen3_quantized.livemd`** — Qwen3-0.6B loaded,
-    int4-quantized group-wise, greedy-decoded under
-    `Bumblebee.Text.generation/4`. Demonstrates `Emily.Stream` for
-    concurrent per-process Metal command queues.
-  - **`mix.exs` docs config**: `groups_for_modules` organises the
-    HexDocs nav by concern (Core / Concurrency / Quantization /
-    Training / Performance / Observability); `extras` adds the
-    two notebooks under a `Notebooks` group.
-  - **Moduledoc pass**. Removed stale milestone references; clarified
-    the "Public API" vs Nx-callback-impl split on `Emily.Backend`
-    and `Emily.Compiler`; reorganised `Divergences from
-    Nx.BinaryBackend` into a dedicated subsection. Added `iex>`
-    examples to `Emily`, `Emily.Compiler`, `Emily.Stream`,
-    `Emily.Quantization`, `Emily.QuantizedWeight`,
-    `Emily.MixedPrecision`, and `Emily.Telemetry`.
-  - **README**: new `Documentation` section with a HexDocs link and
-    notebook pointers. The stale "Milestones shipped" section was
-    replaced by a brief summary that points at `CHANGELOG.md` for
-    the per-milestone breakdown. Testing commands updated to
-    include `:qwen3_quant_full`, `:training_full`,
-    `:distilbert_full`.
-  - **CHANGELOG cutover**: moved the full M0–M22 release history
-    from `RELEASE.md` into `CHANGELOG.md` under
-    `## [0.1.0] - unreleased`. `RELEASE.md` now carries only the
-    M23 notes, matching the conventions' "release notes for next
-    release" contract.
-  - **`mix docs` runs clean** over `lib/*.ex` — no unresolved
-    cross-refs from moduledocs. Historical references in
-    `CHANGELOG.md` / `PLAN.md` to hidden internal modules
-    (`Emily.Native` etc.) remain as prose; they are accurate
-    descriptions of the state at the time the entry was written.
+- **Nx backend.** `Emily.Backend` implements every required
+  `Nx.Backend` callback against MLX, with transparent fallback to
+  `Nx.BinaryBackend` for ops without a native primitive.
+- **Defn compiler.** `Emily.Compiler` runs `defn` / `Nx.Serving` /
+  Bumblebee on Emily; pins the result backend and caps partition
+  concurrency so `Nx.Serving` stays compatible.
+- **Fused transformer kernels.** `Emily.Fast` exposes
+  `mx::fast::rms_norm`, `layer_norm`, `rope`, and scaled-dot-product
+  attention as defn-callable helpers with composed-defn fallbacks
+  for non-Emily backends.
+- **Affine group-wise quantization.** `Emily.QuantizedWeight` and
+  `Emily.Quantization` wrap MLX `quantize` / `dequantize` /
+  `quantized_matmul` for int2 / int4 / int8 inference.
+  `Emily.Quantization.dequantize_defn/1` provides a defn-native
+  dequantize for use inside Axon forward passes.
+- **Mixed-precision training.** `Emily.MixedPrecision` ships the
+  bf16 recipe: `cast_params` for the forward pass, f32 master
+  weights, dynamic loss scaling with overflow detection.
+- **Per-process Metal streams.** `Emily.Stream` lets each BEAM
+  process own its own Metal command queue, enabling concurrent
+  inference on a shared model.
+- **Zero-copy `to_binary`.** `Nx.to_binary/1` on an Emily tensor
+  returns a BEAM resource binary aliasing the MLX buffer — no memcpy.
+- **Native gradient + training primitives.** `gather`, `scatter`,
+  `scatter_add`, `conv`, and the window-reduction family lower
+  directly to MLX so `Nx.Defn.grad` and CNN training stay native.
+- **Native linalg.** `lu`, `svd`, `qr`, `cholesky`, `eigh`, `solve`,
+  and `triangular_solve` dispatch to `mx::linalg::*` instead of
+  rounding through `Nx.BinaryBackend`.
+- **Telemetry.** `[:emily, :eval, *]`, `[:emily, :to_binary, *]`,
+  `[:emily, :fallback, *]`, and `[:emily, :memory, :stats]` span
+  events; opt-in one-shot fallback warnings via
+  `config :emily, :warn_on_fallback, true`.
+- **Compile-time debug flags.** `:debug_bounds_check` and
+  `:debug_detect_nan_inf` re-enable runtime assertions on hot paths;
+  default off with zero runtime cost.
+- **Bumblebee conformance.** End-to-end suites for DistilBERT,
+  Qwen3-0.6B (dense and quantized), ViT-base, and Whisper-tiny,
+  pinned against HuggingFace reference values.
+- **Worker-thread dispatch.** Each MLX stream is owned by a
+  dedicated OS thread. NIFs enqueue work on the worker and return
+  immediately; the worker posts the result back to the caller via
+  `enif_send`, and the public wrapper awaits it with `receive`. No
+  BEAM scheduler (regular or dirty) blocks on MLX work, and the
+  per-thread Metal `CommandEncoder` state stays consistent regardless
+  of how the BEAM migrates Elixir processes between schedulers.
+- **Vendored MLX build.** MLX is built from source via cmake from
+  `vendor/mlx` (git submodule); no prebuilt download. Build cache
+  keyed on the submodule SHA under `~/Library/Caches/emily/`.
+- **Documentation.** Per-module HexDocs, two runnable Livebooks
+  (`notebooks/distilbert_qa.livemd`,
+  `notebooks/qwen3_quantized.livemd`), and worked Bumblebee
+  examples in the conformance suite.

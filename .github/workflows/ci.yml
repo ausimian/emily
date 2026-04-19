@@ -3,6 +3,7 @@ name: CI
 on:
   push:
     branches: [main]
+    tags: ['[0-9]+.[0-9]+.[0-9]+*']
   pull_request:
     branches: [main]
 
@@ -13,6 +14,7 @@ concurrency:
 jobs:
   precommit:
     name: precommit (${{ matrix.os }}, jit=${{ matrix.jit }})
+    if: github.event_name != 'push' || github.ref_type == 'branch'
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -82,6 +84,35 @@ jobs:
       # DistilBERT forward pass is the canonical integration signal
       # that no Nx op on the transformer critical path has regressed.
       - run: mix test --only conformance
+
+  # Tagged-release gate: exercise the Hex tarball the way a downstream
+  # consumer would — unpack it into a throwaway project, consume it via
+  # a path dep, compile the vendored MLX source, and run a sanity
+  # snippet against Emily.Backend + Emily.Compiler. Catches missing
+  # package files or broken build inputs before `mix hex.publish`.
+  smoke-test:
+    name: Hex package smoke test
+    if: github.event_name == 'push' && github.ref_type == 'tag'
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          submodules: recursive
+
+      - name: Setup Beam
+        uses: erlef/setup-beam@v1
+        with:
+          version-file: .tool-versions
+          version-type: strict
+
+      - name: Cache MLX build
+        uses: actions/cache@v5
+        with:
+          path: ~/Library/Caches/emily
+          key: mlx-smoke-${{ runner.os }}-${{ hashFiles('.gitmodules', 'c_src/**', 'Makefile') }}
+          restore-keys: mlx-smoke-${{ runner.os }}-
+
+      - run: scripts/smoke-test-package.sh
 
   # ASan CI deferred: requires OTP built with --enable-sanitizers=address
   # (macOS SIP blocks DYLD_INSERT_LIBRARIES, and late-loaded libasan
