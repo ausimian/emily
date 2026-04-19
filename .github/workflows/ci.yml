@@ -6,6 +6,12 @@ on:
     tags: ['[0-9]+.[0-9]+.[0-9]+*']
   pull_request:
     branches: [main]
+  workflow_dispatch:
+    inputs:
+      run_full_tests:
+        description: 'Run full model tests (whisper_full, vit_full, distilbert_full, training_full, fast_kernels_full)'
+        type: boolean
+        default: true
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -113,6 +119,85 @@ jobs:
           restore-keys: mlx-smoke-${{ runner.os }}-
 
       - run: scripts/smoke-test-package.sh
+
+  # Manual-only job: exercises the heavy `*_full` conformance and
+  # training variants excluded from the default suite (see
+  # test/test_helper.exs). These download full-size checkpoints
+  # (hundreds of MB) and take multi-minute wall time, so they run
+  # on demand via the Actions "Run workflow" button rather than on
+  # every push / PR.
+  full-tests:
+    name: full model tests (jit=${{ matrix.jit }})
+    if: github.event_name == 'workflow_dispatch' && inputs.run_full_tests
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-14]
+        jit: ["0", "1"]
+    env:
+      MIX_ENV: test
+      EMILY_MLX_JIT: ${{ matrix.jit }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          submodules: recursive
+
+      - name: Setup Beam
+        uses: erlef/setup-beam@v1
+        with:
+          version-file: .tool-versions
+          version-type: strict
+
+      - name: Cache deps
+        uses: actions/cache@v5
+        with:
+          path: deps
+          key: deps-${{ runner.os }}-${{ hashFiles('mix.lock') }}
+          restore-keys: deps-${{ runner.os }}-
+
+      - name: Cache build
+        uses: actions/cache@v5
+        with:
+          path: _build
+          key: build-${{ runner.os }}-jit${{ matrix.jit }}-${{ hashFiles('mix.lock', 'c_src/**', 'Makefile', '.tool-versions', '.gitmodules') }}
+          restore-keys: build-${{ runner.os }}-jit${{ matrix.jit }}-
+
+      - name: Cache MLX and NIF objects
+        uses: actions/cache@v5
+        with:
+          path: ~/Library/Caches/emily
+          key: mlx-${{ runner.os }}-jit${{ matrix.jit }}-${{ hashFiles('.gitmodules', 'c_src/**', 'Makefile') }}
+          restore-keys: mlx-${{ runner.os }}-jit${{ matrix.jit }}-
+
+      # Full checkpoints land here (Bumblebee + scidata MNIST).
+      - name: Cache Bumblebee fixtures
+        uses: actions/cache@v5
+        with:
+          path: ~/Library/Caches/bumblebee
+          key: bumblebee-full-${{ runner.os }}-${{ hashFiles('test/emily/conformance/**', 'test/emily/bumblebee/**') }}
+          restore-keys: |
+            bumblebee-full-${{ runner.os }}-
+            bumblebee-${{ runner.os }}-
+
+      - run: mix deps.get
+
+      - run: mix compile
+
+      - name: whisper_full
+        run: mix test --only whisper_full
+
+      - name: vit_full
+        run: mix test --only vit_full
+
+      - name: distilbert_full
+        run: mix test --only distilbert_full
+
+      - name: training_full
+        run: mix test --only training_full
+
+      - name: fast_kernels_full
+        run: mix test --only fast_kernels_full
 
   # ASan CI deferred: requires OTP built with --enable-sanitizers=address
   # (macOS SIP blocks DYLD_INSERT_LIBRARIES, and late-loaded libasan
