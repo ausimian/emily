@@ -181,8 +181,12 @@ defmodule Emily.MixProject do
   end
 
   defp mlx_install_dir do
-    Path.join(cache_dir(), "mlx-#{mlx_cache_key()}")
+    Path.join(cache_dir(), "mlx-#{mlx_cache_key()}#{jit_suffix()}")
   end
+
+  defp mlx_jit_enabled?, do: System.get_env("EMILY_MLX_JIT") == "1"
+
+  defp jit_suffix, do: if(mlx_jit_enabled?(), do: "-jit", else: "")
 
   defp build_mlx(args) do
     dir = mlx_install_dir()
@@ -230,7 +234,8 @@ defmodule Emily.MixProject do
       "-DMLX_BUILD_PYTHON_BINDINGS=OFF",
       "-DMLX_BUILD_SAFETENSORS=OFF",
       "-DMLX_BUILD_GGUF=OFF",
-      "-DMLX_BUILD_METAL_TESTS=OFF"
+      "-DMLX_BUILD_METAL_TESTS=OFF",
+      "-DMLX_METAL_JIT=#{if mlx_jit_enabled?(), do: "ON", else: "OFF"}"
     ]
 
     # When xcode-select points at CommandLineTools (the default on fresh

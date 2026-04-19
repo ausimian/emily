@@ -2,6 +2,15 @@
 
 ## Added
 
+- `EMILY_MLX_JIT=1` build-time flag to select MLX's runtime JIT
+  compilation of Metal kernels. Default (unset / `0`) preserves the
+  existing AOT path. The JIT build ships a ~3.5 MB `mlx.metallib`
+  stub instead of the ~154 MB precompiled library, reducing the
+  `priv/` footprint from ~175 MB to ~25 MB at the cost of a small
+  per-kernel warm-up on first use. The flag is incorporated into the
+  MLX install-dir cache key so toggling it does not reuse a stale
+  artefact. README "How to build" documents the trade-off.
+
 - M23 — Public documentation & examples review. Pre-1.0 pass over the
   documentation surface users actually consume (moduledocs, README,
   HexDocs navigation, worked examples).
