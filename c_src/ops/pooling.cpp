@@ -14,6 +14,7 @@
 // scatter_add source values into a full(init_value) tensor -> slice
 // back to the unpadded shape.
 
+#include "../emily/async.hpp"
 #include "../emily/tensor.hpp"
 #include "../emily/worker.hpp"
 
@@ -25,9 +26,10 @@
 #include <vector>
 
 namespace mx = mlx::core;
+using emily::async_encoded;
 using emily::Tensor;
-using emily::WorkerThread;
 using emily::wrap;
+using emily::WorkerThread;
 
 namespace {
 
@@ -127,9 +129,9 @@ mx::array sliding_windows_view(
 
 // -------------------- Reductions --------------------
 
-#define EMILY_WINDOW_REDUCE(nif_name, mlx_fn)                                  \
-  fine::ResourcePtr<Tensor> nif_name(                                          \
-      ErlNifEnv *,                                                             \
+#define EMILY_WINDOW_REDUCE(op_name, mlx_fn)                                   \
+  fine::Term op_name##_nif(                                                    \
+      ErlNifEnv *env,                                                          \
       fine::ResourcePtr<WorkerThread> w,                                       \
       fine::ResourcePtr<Tensor> t,                                             \
       std::vector<int64_t> window_shape,                                       \
@@ -138,19 +140,23 @@ mx::array sliding_windows_view(
       std::vector<int64_t> pad_hi,                                             \
       std::vector<int64_t> dilations,                                          \
       fine::ResourcePtr<Tensor> init_value) {                                  \
-    return w->run_sync([&](mx::Stream &s) {                                    \
-      auto padded = do_pad(t->array, pad_lo, pad_hi, init_value->array, s);    \
-      std::vector<int64_t> out_dims;                                           \
-      auto view = sliding_windows_view(padded, window_shape, strides,          \
-                                       dilations, out_dims, s);                \
-      int rank = static_cast<int>(window_shape.size());                        \
-      std::vector<int> reduce_axes(rank);                                      \
-      for (int i = 0; i < rank; ++i)                                           \
-        reduce_axes[i] = rank + i;                                             \
-      return wrap(mlx_fn(view, reduce_axes, /*keepdims=*/false, s));           \
-    });                                                                        \
+    return async_encoded(env, w,                                               \
+        [t = std::move(t), window_shape = std::move(window_shape),             \
+         strides = std::move(strides), pad_lo = std::move(pad_lo),             \
+         pad_hi = std::move(pad_hi), dilations = std::move(dilations),         \
+         init_value = std::move(init_value)](mx::Stream &s) {                  \
+          auto padded = do_pad(t->array, pad_lo, pad_hi, init_value->array, s);\
+          std::vector<int64_t> out_dims;                                       \
+          auto view = sliding_windows_view(padded, window_shape, strides,      \
+                                           dilations, out_dims, s);            \
+          int rank = static_cast<int>(window_shape.size());                    \
+          std::vector<int> reduce_axes(rank);                                  \
+          for (int i = 0; i < rank; ++i)                                       \
+            reduce_axes[i] = rank + i;                                         \
+          return wrap(mlx_fn(view, reduce_axes, /*keepdims=*/false, s));       \
+        });                                                                    \
   }                                                                            \
-  FINE_NIF(nif_name, 0);
+  FINE_NIF(op_name##_nif, 0);
 
 EMILY_WINDOW_REDUCE(window_sum,     mx::sum)
 EMILY_WINDOW_REDUCE(window_max,     mx::max)
@@ -299,8 +305,8 @@ mx::array window_scatter_impl(
   return mx::slice(scattered, slice_start, slice_stop, slice_strides_v, s);
 }
 
-fine::ResourcePtr<Tensor> window_scatter_max(
-    ErlNifEnv *,
+fine::Term window_scatter_max_nif(
+    ErlNifEnv *env,
     fine::ResourcePtr<WorkerThread> w,
     fine::ResourcePtr<Tensor> t,
     fine::ResourcePtr<Tensor> source,
@@ -309,16 +315,21 @@ fine::ResourcePtr<Tensor> window_scatter_max(
     std::vector<int64_t> strides,
     std::vector<int64_t> pad_lo,
     std::vector<int64_t> pad_hi) {
-  return w->run_sync([&](mx::Stream &s) {
-    return wrap(window_scatter_impl(
-        t->array, source->array, init_value->array, window_shape, strides,
-        pad_lo, pad_hi, /*is_max=*/true, s));
-  });
+  return async_encoded(env, w,
+      [t = std::move(t), source = std::move(source),
+       init_value = std::move(init_value),
+       window_shape = std::move(window_shape),
+       strides = std::move(strides), pad_lo = std::move(pad_lo),
+       pad_hi = std::move(pad_hi)](mx::Stream &s) {
+        return wrap(window_scatter_impl(
+            t->array, source->array, init_value->array, window_shape, strides,
+            pad_lo, pad_hi, /*is_max=*/true, s));
+      });
 }
-FINE_NIF(window_scatter_max, 0);
+FINE_NIF(window_scatter_max_nif, 0);
 
-fine::ResourcePtr<Tensor> window_scatter_min(
-    ErlNifEnv *,
+fine::Term window_scatter_min_nif(
+    ErlNifEnv *env,
     fine::ResourcePtr<WorkerThread> w,
     fine::ResourcePtr<Tensor> t,
     fine::ResourcePtr<Tensor> source,
@@ -327,12 +338,17 @@ fine::ResourcePtr<Tensor> window_scatter_min(
     std::vector<int64_t> strides,
     std::vector<int64_t> pad_lo,
     std::vector<int64_t> pad_hi) {
-  return w->run_sync([&](mx::Stream &s) {
-    return wrap(window_scatter_impl(
-        t->array, source->array, init_value->array, window_shape, strides,
-        pad_lo, pad_hi, /*is_max=*/false, s));
-  });
+  return async_encoded(env, w,
+      [t = std::move(t), source = std::move(source),
+       init_value = std::move(init_value),
+       window_shape = std::move(window_shape),
+       strides = std::move(strides), pad_lo = std::move(pad_lo),
+       pad_hi = std::move(pad_hi)](mx::Stream &s) {
+        return wrap(window_scatter_impl(
+            t->array, source->array, init_value->array, window_shape, strides,
+            pad_lo, pad_hi, /*is_max=*/false, s));
+      });
 }
-FINE_NIF(window_scatter_min, 0);
+FINE_NIF(window_scatter_min_nif, 0);
 
 } // namespace
