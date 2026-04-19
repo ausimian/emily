@@ -132,7 +132,7 @@ defmodule Emily.MixProject do
       licenses: ["MIT"],
       links: %{"GitHub" => @source_url},
       files:
-        ~w(lib c_src vendor/mlx/mlx vendor/mlx/cmake vendor/mlx/CMakeLists.txt vendor/mlx/LICENSE Makefile mix.exs README.md CHANGELOG.md LICENSE)
+        ~w(lib c_src patches vendor/mlx/mlx vendor/mlx/cmake vendor/mlx/CMakeLists.txt vendor/mlx/LICENSE Makefile mix.exs README.md CHANGELOG.md LICENSE)
     ]
   end
 
@@ -246,6 +246,8 @@ defmodule Emily.MixProject do
 
     Mix.shell().info("Building MLX from source (#{mlx_cache_key()})...")
 
+    maybe_apply_mlx_patches()
+
     run!("cmake", cmake_args, "cmake configure", build_env)
     run!("cmake", ["--build", build_dir, "--parallel", ncpu], "cmake build", build_env)
     run!("cmake", ["--install", build_dir], "cmake install", build_env)
@@ -253,6 +255,49 @@ defmodule Emily.MixProject do
     # Clean up the build directory — only the install prefix is needed.
     File.rm_rf!(build_dir)
     :ok
+  end
+
+  # Local patches applied to vendor/mlx before cmake runs. Each file
+  # under patches/ is a unified diff rooted at the MLX source tree
+  # (i.e. apply with `git -C vendor/mlx apply`). We apply idempotently
+  # by checking whether the reverse patch applies cleanly first.
+  @mlx_patches_dir Path.expand("patches", __DIR__)
+
+  defp maybe_apply_mlx_patches do
+    case File.ls(@mlx_patches_dir) do
+      {:ok, entries} ->
+        entries
+        |> Enum.filter(&String.ends_with?(&1, ".patch"))
+        |> Enum.sort()
+        |> Enum.each(&apply_mlx_patch(Path.join(@mlx_patches_dir, &1)))
+
+      _ ->
+        :ok
+    end
+  end
+
+  defp apply_mlx_patch(path) do
+    # `-R --check` tests whether the patch is already applied. If so,
+    # skip. Otherwise apply it.
+    case System.cmd("git", ["-C", @mlx_source_dir, "apply", "-R", "--check", path],
+           stderr_to_stdout: true
+         ) do
+      {_, 0} ->
+        :already_applied
+
+      _ ->
+        case System.cmd("git", ["-C", @mlx_source_dir, "apply", path], stderr_to_stdout: true) do
+          {_, 0} ->
+            Mix.shell().info("  Applied MLX patch: #{Path.basename(path)}")
+            :applied
+
+          {output, code} ->
+            Mix.raise("""
+            Failed to apply MLX patch #{path} (exit #{code}):
+            #{output}
+            """)
+        end
+    end
   end
 
   @xcode_developer_dir "/Applications/Xcode.app/Contents/Developer"
