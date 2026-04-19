@@ -57,11 +57,21 @@ dense_text
 
 ## Quantization transform
 
-Rewriting the Axon graph so every `:dense` node runs
+Rewriting the Axon graph so every `:dense` node runs through
 `Emily.Quantization.Layers.quantized_dense/4` needs Axon, which is
-test-only in the Emily package. For the notebook we inline the
-transform using `Axon.map_nodes/2`. A production-grade version lives
-in the Emily test suite at `test/support/quantization_transform.ex`.
+test-only in the Emily package — so we inline the transform here. A
+production-grade version with extra options (`:except`, dtype
+coercion, stricter validation) lives in the Emily test suite at
+`test/support/quantization_transform.ex`; this cell is a trimmed
+version of the same pattern.
+
+Two steps:
+
+1. **Graph rewrite** — `Axon.rewrite_nodes/2` replaces each `:dense`
+   node with a `:quantized_dense` sub-graph built with `Axon.layer/3`.
+2. **Parameter quantization** — after init (or Bumblebee load), walk
+   the `Axon.ModelState` and swap each dense kernel for a
+   `%QuantizedWeight{}`.
 
 ```elixir
 defmodule DenseTransform do
@@ -70,74 +80,86 @@ defmodule DenseTransform do
 
   @default_opts [bits: 4, group_size: 128, transpose: true]
 
-  def quantize(model, params, opts \\ []) do
+  def quantize(model, model_state, opts \\ []) do
     opts = Keyword.merge(@default_opts, opts)
-    {quantize_graph(model, opts), quantize_params(model, params, opts)}
+    {rewrite_graph(model), quantize_state(model, model_state, opts)}
   end
 
-  defp quantize_graph(model, opts) do
-    Axon.map_nodes(model, fn
-      %Axon.Node{op: :dense} = node -> dense_to_quantized(node, opts)
-      other -> other
+  # Replace every :dense node with a :quantized_dense layer whose
+  # forward pass dispatches through Emily.Quantization.Layers.quantized_dense/4.
+  defp rewrite_graph(model) do
+    Axon.rewrite_nodes(model, fn
+      %Axon.Node{op: :dense, meta: meta, name: name_fn} ->
+        fn [x], _output ->
+          quantized_dense_layer(x, meta[:units],
+            use_bias: meta[:use_bias],
+            name: name_fn
+          )
+        end
+
+      _ ->
+        :skip
     end)
   end
 
-  defp dense_to_quantized(%Axon.Node{} = node, opts) do
-    # Replace the :dense op with a :quantized_dense Axon node that
-    # invokes Emily.Quantization.Layers.quantized_dense/4 during the
-    # forward pass. The kernel parameter shape is preserved at graph
-    # time; the quantized body ships in the params map.
-    %Axon.Node{
-      node
-      | op: Layers,
-        op_name: :quantized_dense,
-        args:
-          node.args ++
-            [bits: opts[:bits], group_size: opts[:group_size], transpose: opts[:transpose]]
-    }
+  defp quantized_dense_layer(x, units, opts) do
+    kernel =
+      Axon.param("kernel", &Axon.Shape.dense_kernel(&1, units),
+        initializer: :glorot_uniform
+      )
+
+    {inputs, op} =
+      if opts[:use_bias] do
+        bias =
+          Axon.param("bias", &Axon.Shape.dense_bias(&1, units),
+            initializer: :zeros
+          )
+
+        {[x, kernel, bias], &Layers.quantized_dense/4}
+      else
+        {[x, kernel], &Layers.quantized_dense/3}
+      end
+
+    Axon.layer(op, inputs,
+      name: opts[:name],
+      meta: %{units: units, use_bias: opts[:use_bias]},
+      op_name: :quantized_dense
+    )
   end
 
-  defp quantize_params(model, params, opts) do
-    # Walk the param tree. For every kernel tied to a dense layer in
-    # `model`, replace the f32 tensor with %QuantizedWeight{}.
-    dense_layer_names =
+  # Walk the ModelState, replacing each dense kernel tensor with a
+  # %QuantizedWeight{}. For the default transpose: true (AWQ / MLX
+  # convention, groups along the reduction axis) we pre-transpose the
+  # [in, out] kernel to [out, in] before calling from_dense/2.
+  defp quantize_state(model, state, opts) do
+    transpose = opts[:transpose]
+
+    dense_names =
       model
       |> Axon.properties()
-      |> Map.get(:names, [])
-      |> Enum.filter(fn name -> is_dense?(model, name) end)
-      |> MapSet.new()
+      |> Enum.filter(fn {_name, op} -> op == :dense end)
+      |> Enum.map(fn {name, _} -> name end)
 
-    update_in(params.data, fn data ->
-      Map.new(data, fn
-        {name, %{"kernel" => kernel} = layer_params} ->
-          if MapSet.member?(dense_layer_names, name) do
-            qw = QuantizedWeight.from_dense(kernel, opts)
-            {name, %{layer_params | "kernel" => qw}}
-          else
-            {name, layer_params}
-          end
+    Enum.reduce(dense_names, state, fn name, acc ->
+      update_in(acc, [Access.key!(:data), name, "kernel"], fn kernel ->
+        source = if transpose, do: Nx.transpose(kernel), else: kernel
 
-        other ->
-          other
+        QuantizedWeight.from_dense(source,
+          group_size: opts[:group_size],
+          bits: opts[:bits],
+          transpose: transpose
+        )
       end)
     end)
-  end
-
-  defp is_dense?(model, _layer_name) do
-    # Simplified: in a real loader, walk model.nodes and check
-    # :op == :dense. See test/support/quantization_transform.ex for a
-    # production-grade version.
-    true
   end
 end
 ```
 
-> **In practice**, use
-> `Emily.Quantization.Transform.quantize/3` from the Emily test
-> support tree — it handles the edge cases this inlined version
-> glosses over (layer-name skipping, dtype coercion, the
-> `:except` option). It lives under `test/support/` because Axon
-> is an `only: :test` dep on Emily.
+> **In practice**, use `Emily.Quantization.Transform.quantize/3` from
+> the Emily test support tree — it covers edge cases this version
+> glosses over (per-layer skipping via `:except`, stricter opts
+> validation). It lives under `test/support/` because Axon is an
+> `only: :test` dep on Emily.
 
 ## Quantized inference
 
