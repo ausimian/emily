@@ -206,11 +206,17 @@ and direct MLX round-trips, but most users should go through Nx.
 
 MLX dispatches GPU work through Metal command queues. Emily owns one
 worker thread per command queue; each worker is a dedicated OS thread
-that runs the MLX ops on behalf of BEAM schedulers. NIFs hand their
-work to a worker via a `run_sync` promise (blocks the caller for
-~1–10 µs) rather than executing on the scheduler thread directly,
-which keeps MLX's per-thread `CommandEncoder` consistent and lets
-the BEAM migrate Elixir processes freely.
+that runs the MLX ops on behalf of BEAM processes. NIFs return
+immediately after enqueueing their work on a worker: the worker runs
+the op, then posts `{ref, {:ok, result}}` back to the caller via
+`enif_send`, and the caller's public wrapper awaits that message with
+a plain `receive`. No BEAM scheduler (regular or dirty) blocks on MLX
+work — callers see the same synchronous semantics as before, but the
+scheduler is free to run other processes while the GPU is busy.
+
+Because the MLX stream is pinned to its worker thread, MLX's
+per-thread `CommandEncoder` state stays consistent regardless of how
+the BEAM migrates Elixir processes between schedulers.
 
 By default, every op uses the **default worker** owned by the
 `Emily.MlxStream.Default` GenServer under the application supervisor.
