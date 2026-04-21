@@ -585,6 +585,20 @@ defmodule Emily.BackendTest do
         assert_close(gathered, Nx.sort(a, axis: axis, direction: :desc))
       end
     end
+
+    # Nx.top_k returns {values, indices} and dispatches through the
+    # Nx.Shared.optional fallback (argsort + take_along_axis + slice),
+    # since Emily doesn't override the top_k backend callback.
+    test "top_k returns the k largest in descending order with matching indices" do
+      a = Nx.tensor([[3.0, 1.0, 4.0, 1.0, 5.0], [9.0, 2.0, 6.0, 5.0, 3.0]])
+
+      {emily_vals, emily_idx} = Nx.top_k(to_emily(a), k: 3)
+      {ref_vals, ref_idx} = Nx.top_k(a, k: 3)
+
+      assert_close(emily_vals, ref_vals)
+      assert_close(emily_idx, ref_idx)
+      assert bin(emily_vals) |> Nx.to_flat_list() == [5.0, 4.0, 3.0, 9.0, 6.0, 5.0]
+    end
   end
 
   # ---------------- Indexing: gather / indexed_add / indexed_put ----------------

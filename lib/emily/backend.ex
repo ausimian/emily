@@ -953,16 +953,13 @@ defmodule Emily.Backend do
     Native.astype(w, idx, out.type) |> wrap(out, w)
   end
 
-  @impl true
-  def top_k(%T{} = out, t, opts) do
-    w = worker()
-    k = opts[:k]
-    axis = tuple_size(t.shape) - 1
-
-    r = Native.topk(w, ref(t), k, -1)
-    r = Native.sort(w, r, axis)
-    Native.flip(w, r, axis) |> wrap(out, w)
-  end
+  # No `top_k/3` override. The real callback contract is
+  # `top_k({out_values, out_indices}, tensor, opts) :: {values, indices}`,
+  # but `mx::topk` only yields values. Without an override, Nx falls back
+  # to `argsort(:desc) + take_along_axis + slice_along_axis`, all of
+  # which route through MLX via this backend -- correct and no slower
+  # than a handrolled implementation would be without a true dual-output
+  # primitive.
 
   # all_close with absolute/relative tolerance:
   # all(abs(a - b) <= atol + rtol * abs(b)).
