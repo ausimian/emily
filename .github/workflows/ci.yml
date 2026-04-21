@@ -25,9 +25,16 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # Emily is Apple-Silicon only. macos-14 is arm64 (M1).
-        os: [macos-14]
-        jit: ["0", "1"]
+        # Emily is Apple-Silicon only. macos-14 (arm64, M1) covers the
+        # AOT path on older macOS; macos-26 is required for the JIT
+        # build because MLX's NAX JIT sources transitively include
+        # <MetalPerformancePrimitives/MetalPerformancePrimitives.h>,
+        # which only ships in the macOS 26.2+ SDK.
+        include:
+          - os: macos-14
+            jit: "0"
+          - os: macos-26
+            jit: "1"
     env:
       MIX_ENV: test
       EMILY_MLX_JIT: ${{ matrix.jit }}
@@ -133,8 +140,13 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [macos-14]
-        jit: ["0", "1"]
+        # Same split as the precommit job: jit=1 requires the macOS
+        # 26.2+ SDK for MetalPerformancePrimitives.h.
+        include:
+          - os: macos-14
+            jit: "0"
+          - os: macos-26
+            jit: "1"
     env:
       MIX_ENV: test
       EMILY_MLX_JIT: ${{ matrix.jit }}
