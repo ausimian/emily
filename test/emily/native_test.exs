@@ -422,6 +422,37 @@ defmodule Emily.NativeTest do
       r = Native.repeat(worker(), x, 2, 0)
       assert to_f32_list(r) == [1.0, 1.0, 2.0, 2.0]
     end
+
+    test "flip reverses a 1D tensor" do
+      x = f32([1.0, 2.0, 3.0, 4.0], [4])
+      assert to_f32_list(Native.flip(worker(), x, 0)) == [4.0, 3.0, 2.0, 1.0]
+    end
+
+    test "flip along axis 0 of a 2D tensor reverses rows" do
+      x = f32([1.0, 2.0, 3.0, 4.0, 5.0, 6.0], [2, 3])
+      assert Native.shape(Native.flip(worker(), x, 0)) == [2, 3]
+      assert to_f32_list(Native.flip(worker(), x, 0)) == [4.0, 5.0, 6.0, 1.0, 2.0, 3.0]
+    end
+
+    test "flip along axis 1 of a 2D tensor reverses columns" do
+      x = f32([1.0, 2.0, 3.0, 4.0, 5.0, 6.0], [2, 3])
+      assert to_f32_list(Native.flip(worker(), x, 1)) == [3.0, 2.0, 1.0, 6.0, 5.0, 4.0]
+    end
+
+    test "flip accepts a negative axis" do
+      x = f32([1.0, 2.0, 3.0, 4.0, 5.0, 6.0], [2, 3])
+      assert to_f32_list(Native.flip(worker(), x, -1)) == [3.0, 2.0, 1.0, 6.0, 5.0, 4.0]
+    end
+
+    test "flip of a singleton axis is a no-op" do
+      x = f32([1.0, 2.0, 3.0], [1, 3])
+      assert to_f32_list(Native.flip(worker(), x, 0)) == [1.0, 2.0, 3.0]
+    end
+
+    test "flip of a scalar returns the scalar unchanged" do
+      x = f32_scalar(7.0)
+      assert to_f32_list(Native.flip(worker(), x, 0)) == [7.0]
+    end
   end
 
   # ---------- Indexing ----------
