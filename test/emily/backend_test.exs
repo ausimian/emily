@@ -303,6 +303,19 @@ defmodule Emily.BackendTest do
       ref = Nx.reverse(a)
       assert_close(emily, ref)
     end
+
+    property "reverse along a random axis subset matches BinaryBackend" do
+      check all(
+              shape <- non_scalar_shape(),
+              a <- tensor(shape, {:f, 32}),
+              axes <- axis_subset(shape),
+              max_runs: @max_runs
+            ) do
+        emily = Nx.reverse(to_emily(a), axes: axes)
+        ref = Nx.reverse(a, axes: axes)
+        assert_close(emily, ref)
+      end
+    end
   end
 
   # ---------------- Indexing ----------------
@@ -541,6 +554,51 @@ defmodule Emily.BackendTest do
         assert_close(emily, ref)
       end
     end
+
+    # argsort indices from different backends can disagree on ties, so
+    # verify via `take_along_axis(argsort) == sort` rather than comparing
+    # indices directly.
+    property "argsort asc gathers back into sorted order" do
+      check all(
+              shape <- non_scalar_shape(),
+              a <- tensor(shape, {:f, 32}),
+              axis <- axis_of(shape),
+              max_runs: @max_runs
+            ) do
+        emily_a = to_emily(a)
+        idx = Nx.argsort(emily_a, axis: axis)
+        gathered = Nx.take_along_axis(emily_a, idx, axis: axis)
+        assert_close(gathered, Nx.sort(a, axis: axis))
+      end
+    end
+
+    property "argsort desc gathers back into reverse-sorted order" do
+      check all(
+              shape <- non_scalar_shape(),
+              a <- tensor(shape, {:f, 32}),
+              axis <- axis_of(shape),
+              max_runs: @max_runs
+            ) do
+        emily_a = to_emily(a)
+        idx = Nx.argsort(emily_a, axis: axis, direction: :desc)
+        gathered = Nx.take_along_axis(emily_a, idx, axis: axis)
+        assert_close(gathered, Nx.sort(a, axis: axis, direction: :desc))
+      end
+    end
+
+    # Nx.top_k returns {values, indices} and dispatches through the
+    # Nx.Shared.optional fallback (argsort + take_along_axis + slice),
+    # since Emily doesn't override the top_k backend callback.
+    test "top_k returns the k largest in descending order with matching indices" do
+      a = Nx.tensor([[3.0, 1.0, 4.0, 1.0, 5.0], [9.0, 2.0, 6.0, 5.0, 3.0]])
+
+      {emily_vals, emily_idx} = Nx.top_k(to_emily(a), k: 3)
+      {ref_vals, ref_idx} = Nx.top_k(a, k: 3)
+
+      assert_close(emily_vals, ref_vals)
+      assert_close(emily_idx, ref_idx)
+      assert bin(emily_vals) |> Nx.to_flat_list() == [5.0, 4.0, 3.0, 9.0, 6.0, 5.0]
+    end
   end
 
   # ---------------- Indexing: gather / indexed_add / indexed_put ----------------
@@ -645,6 +703,22 @@ defmodule Emily.BackendTest do
 
   defp axis_of(shape) do
     StreamData.integer(0..(tuple_size(shape) - 1))
+  end
+
+  # Random (possibly empty) subset of the shape's axes, returned as a
+  # sorted list. Useful for ops that take an `axes:` option.
+  defp axis_subset(shape) do
+    rank = tuple_size(shape)
+
+    StreamData.list_of(StreamData.boolean(), length: rank)
+    |> StreamData.map(fn mask ->
+      mask
+      |> Enum.with_index()
+      |> Enum.flat_map(fn
+        {true, ax} -> [ax]
+        {false, _} -> []
+      end)
+    end)
   end
 
   defp assert_nx_eq(%Nx.Tensor{} = a, %Nx.Tensor{} = b) do
