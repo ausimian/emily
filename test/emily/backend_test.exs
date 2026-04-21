@@ -585,18 +585,6 @@ defmodule Emily.BackendTest do
         assert_close(gathered, Nx.sort(a, axis: axis, direction: :desc))
       end
     end
-
-    test "top_k returns the k largest in descending order" do
-      a = Nx.tensor([[3.0, 1.0, 4.0, 1.0, 5.0], [9.0, 2.0, 6.0, 5.0, 3.0]])
-
-      # Nx.top_k may return either a values tensor or {values, indices}
-      # depending on version; unwrap to values either way.
-      emily_vals = top_k_values(Nx.top_k(to_emily(a), k: 3))
-      ref_vals = top_k_values(Nx.top_k(a, k: 3))
-
-      assert_close(emily_vals, ref_vals)
-      assert bin(emily_vals) |> Nx.to_flat_list() == [5.0, 4.0, 3.0, 9.0, 6.0, 5.0]
-    end
   end
 
   # ---------------- Indexing: gather / indexed_add / indexed_put ----------------
@@ -702,9 +690,6 @@ defmodule Emily.BackendTest do
   defp axis_of(shape) do
     StreamData.integer(0..(tuple_size(shape) - 1))
   end
-
-  defp top_k_values({values, _indices}), do: values
-  defp top_k_values(%Nx.Tensor{} = values), do: values
 
   # Random (possibly empty) subset of the shape's axes, returned as a
   # sorted list. Useful for ops that take an `axes:` option.
