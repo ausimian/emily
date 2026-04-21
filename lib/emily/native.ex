@@ -362,6 +362,13 @@ defmodule Emily.Native do
   def swapaxes(w, a, axis1, axis2), do: Async.call(swapaxes_nif(w, a, axis1, axis2))
 
   @doc false
+  @spec flip_nif(worker(), tensor(), integer()) :: reference()
+  def flip_nif(_w, _a, _axis), do: nif()
+
+  @spec flip(worker(), tensor(), integer()) :: tensor()
+  def flip(w, a, axis), do: Async.call(flip_nif(w, a, axis))
+
+  @doc false
   @spec pad_nif(worker(), tensor(), [integer()], [integer()], [integer()], tensor()) ::
           reference()
   def pad_nif(_w, _a, _axes, _low_pad, _high_pad, _pad_value), do: nif()

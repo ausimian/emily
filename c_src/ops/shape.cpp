@@ -1,5 +1,5 @@
 // Shape manipulation: reshape, transpose, squeeze, expand_dims,
-// broadcast_to, concatenate, stack, flatten, pad, tile, swapaxes.
+// broadcast_to, concatenate, stack, flatten, pad, tile, swapaxes, flip.
 
 #include "../emily/async.hpp"
 #include "../emily/tensor.hpp"
@@ -9,6 +9,8 @@
 #include <mlx/mlx.h>
 
 #include <cstdint>
+#include <stdexcept>
+#include <string>
 #include <utility>
 #include <vector>
 
@@ -179,5 +181,40 @@ fine::Term repeat_nif(
       });
 }
 FINE_NIF(repeat_nif, 0);
+
+// Reverse elements along `axis`. Implemented as a strided slice with
+// stride -1; the stop sentinel `-shape[axis] - 1` normalises (via MLX's
+// `e < 0 ? e + n : e`) to -1, i.e. "past index 0 going backwards".
+fine::Term flip_nif(
+    ErlNifEnv *env,
+    fine::ResourcePtr<WorkerThread> w,
+    fine::ResourcePtr<Tensor> a,
+    int64_t axis) {
+  return async_encoded(env, w, [a = std::move(a), axis](mx::Stream &s) {
+    const auto &shape = a->array.shape();
+    const auto ndim = static_cast<int>(shape.size());
+    if (ndim == 0) {
+      return wrap(a->array);
+    }
+    int ax = static_cast<int>(axis);
+    if (ax < 0) {
+      ax += ndim;
+    }
+    if (ax < 0 || ax >= ndim) {
+      throw std::invalid_argument(
+          "[flip] axis " + std::to_string(axis) + " out of range for ndim " +
+          std::to_string(ndim));
+    }
+    mx::Shape starts(ndim, 0);
+    mx::Shape stops(shape.begin(), shape.end());
+    mx::Shape strides(ndim, 1);
+    starts[ax] = shape[ax] - 1;
+    stops[ax] = -shape[ax] - 1;
+    strides[ax] = -1;
+    return wrap(mx::slice(a->array, std::move(starts), std::move(stops),
+                          std::move(strides), s));
+  });
+}
+FINE_NIF(flip_nif, 0);
 
 } // namespace
