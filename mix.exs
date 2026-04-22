@@ -285,6 +285,12 @@ defmodule Emily.MixProject do
   defp http_download!(url, dest) do
     {:ok, _} = Application.ensure_all_started(:inets)
     {:ok, _} = Application.ensure_all_started(:ssl)
+    # `ensure_all_started(:ssl)` transitively starts the :public_key app,
+    # but a consumer's `mix compile` sometimes reaches this point before
+    # the :public_key module itself has been loaded — smoke-test CI on a
+    # clean cache hit "(UndefinedFunctionError) :public_key.cacerts_get/0
+    # ... module :public_key is not available". Force a module load.
+    {:module, :public_key} = :code.ensure_loaded(:public_key)
 
     http_opts = [
       autoredirect: true,
