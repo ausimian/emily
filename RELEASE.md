@@ -1,5 +1,22 @@
 ### Added
 
+- **MLX prebuilt-release workflow
+  (`.github/workflows/release-mlx.yml`).** Manual workflow that
+  builds `libmlx.a` + `mlx.metallib` + headers from a chosen
+  `ml-explore/mlx` tag and uploads the tarball to a draft GitHub
+  release tagged `mlx-<version>` on this repo. Used to produce the
+  prebuilts that Emily's compile step downloads instead of the
+  previous source-build path. To cut a new MLX prebuilt release:
+  1. Run the workflow with `build_type=no-jit` on macos-14
+     (produces `mlx-<v>-macos-arm64-aot.tar.gz`).
+  2. Run it again with `build_type=jit` on macos-26 (produces
+     `mlx-<v>-macos-arm64-jit.tar.gz`).
+  3. Copy the two SHA256s from the draft release's `.sha256`
+     sidecars into `@mlx_checksums` in `mix.exs`.
+  4. Un-draft the release so consumers can fetch.
+  The heavy lifting sits in `scripts/build-mlx-prebuilt.sh`, which
+  runs standalone for local debugging:
+  `scripts/build-mlx-prebuilt.sh path/to/mlx-src 0.31.2 0`.
 - **`Emily.Fast.einsum/2`** — eager-only wrapper around MLX's
   path-optimised `mx::einsum`. Accepts a standard Einstein-summation
   string and a list of `Emily.Backend`-backed tensors; MLX picks the
