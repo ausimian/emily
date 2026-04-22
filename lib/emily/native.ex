@@ -642,10 +642,20 @@ defmodule Emily.Native do
           tensor(),
           float(),
           String.t(),
+          [tensor()],
           [tensor()]
         ) :: reference()
-  def fast_scaled_dot_product_attention_nif(_w, _q, _k, _v, _scale, _mask_mode, _mask_arrs),
-    do: nif()
+  def fast_scaled_dot_product_attention_nif(
+        _w,
+        _q,
+        _k,
+        _v,
+        _scale,
+        _mask_mode,
+        _mask_arrs,
+        _sinks_arrs
+      ),
+      do: nif()
 
   @spec fast_scaled_dot_product_attention(
           worker(),
@@ -654,10 +664,23 @@ defmodule Emily.Native do
           tensor(),
           float(),
           String.t(),
+          [tensor()],
           [tensor()]
         ) :: tensor()
-  def fast_scaled_dot_product_attention(w, q, k, v, scale, mask_mode, mask_arrs),
-    do: Async.call(fast_scaled_dot_product_attention_nif(w, q, k, v, scale, mask_mode, mask_arrs))
+  def fast_scaled_dot_product_attention(w, q, k, v, scale, mask_mode, mask_arrs, sinks_arrs),
+    do:
+      Async.call(
+        fast_scaled_dot_product_attention_nif(
+          w,
+          q,
+          k,
+          v,
+          scale,
+          mask_mode,
+          mask_arrs,
+          sinks_arrs
+        )
+      )
 
   # --- Sort --------------------------------------------------------
 

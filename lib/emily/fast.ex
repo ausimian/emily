@@ -41,9 +41,11 @@ defmodule Emily.Fast do
       inverse-frequency table (for Llama-3 / LongRoPE / linear /
       dynamic scaling).
     * `scaled_dot_product_attention/4` — `mx::fast::sdpa`, without
-      mask or with causal mask.
+      mask or with causal mask. Optional `:sinks` opt threads a
+      per-head sinks tensor through the softmax denominator
+      (StreamingLLM).
     * `scaled_dot_product_attention_with_mask/5` — the same with an
-      additive bias tensor.
+      additive bias tensor; also supports `:sinks`.
 
   ## Usage
 
@@ -343,6 +345,12 @@ defmodule Emily.Fast do
       `1 / sqrt(head_dim)`.
     * `:causal` — if `true`, apply MLX's built-in upper-triangular
       mask. Default `false`.
+    * `:sinks` — optional per-head "null destination" tensor. Shape
+      `{heads}` (or broadcastable to `{1, heads, 1, 1}`). When present
+      the sinks entries participate in the softmax denominator only,
+      contributing zero to the numerator — the StreamingLLM trick for
+      long-context decode. When absent the helper emits the same node
+      as before (bitwise source-compatible).
 
   ## Examples
 
@@ -364,10 +372,20 @@ defmodule Emily.Fast do
           keyword()
         ) :: Nx.Tensor.t()
   def scaled_dot_product_attention(q, k, v, opts \\ []) do
-    opts = Keyword.validate!(opts, [:scale, causal: false])
+    opts = Keyword.validate!(opts, [:scale, :sinks, causal: false])
     opts = Keyword.put_new_lazy(opts, :scale, fn -> default_sdpa_scale(q) end)
 
-    Expr.optional(:fast_scaled_dot_product_attention, [q, k, v, opts], &sdpa_fallback/4)
+    case Keyword.pop(opts, :sinks) do
+      {nil, opts} ->
+        Expr.optional(:fast_scaled_dot_product_attention, [q, k, v, opts], &sdpa_fallback/4)
+
+      {sinks, opts} ->
+        Expr.optional(
+          :fast_scaled_dot_product_attention_with_sinks,
+          [q, k, v, sinks, opts],
+          &sdpa_sinks_fallback/5
+        )
+    end
   end
 
   defp sdpa_fallback(q, k, v, opts) do
@@ -400,6 +418,33 @@ defmodule Emily.Fast do
     Nx.dot(probs, [-1], [0, 1], v, [-2], [0, 1])
   end
 
+  defp sdpa_sinks_fallback(q, k, v, sinks, opts) do
+    scale = opts[:scale]
+    causal = opts[:causal]
+
+    weights = Nx.dot(q, [-1], [0, 1], k, [-1], [0, 1]) |> Nx.multiply(scale)
+
+    weights =
+      if causal do
+        q_len = Nx.axis_size(q, -2)
+        k_len = Nx.axis_size(k, -2)
+        mask = Nx.less_equal(Nx.iota({q_len, 1}), Nx.iota({1, k_len}))
+
+        bias =
+          Nx.select(
+            mask,
+            Nx.tensor(0.0, type: Nx.type(weights)),
+            Nx.Constants.min_finite(Nx.type(weights))
+          )
+
+        Nx.add(weights, Nx.reshape(bias, {1, 1, q_len, k_len}))
+      else
+        weights
+      end
+
+    softmax_with_sinks(weights, sinks, v)
+  end
+
   @doc """
   SDPA with an additive mask tensor broadcasting across QKᵀ.
 
@@ -411,6 +456,7 @@ defmodule Emily.Fast do
 
     * `:scale` — see `scaled_dot_product_attention/4`. Default
       `1 / sqrt(head_dim)`.
+    * `:sinks` — see `scaled_dot_product_attention/4`. Optional.
 
   ## Examples
 
@@ -434,14 +480,24 @@ defmodule Emily.Fast do
           keyword()
         ) :: Nx.Tensor.t()
   def scaled_dot_product_attention_with_mask(q, k, v, mask, opts \\ []) do
-    opts = Keyword.validate!(opts, [:scale])
+    opts = Keyword.validate!(opts, [:scale, :sinks])
     opts = Keyword.put_new_lazy(opts, :scale, fn -> default_sdpa_scale(q) end)
 
-    Expr.optional(
-      :fast_scaled_dot_product_attention_with_mask,
-      [q, k, v, mask, opts],
-      &sdpa_masked_fallback/5
-    )
+    case Keyword.pop(opts, :sinks) do
+      {nil, opts} ->
+        Expr.optional(
+          :fast_scaled_dot_product_attention_with_mask,
+          [q, k, v, mask, opts],
+          &sdpa_masked_fallback/5
+        )
+
+      {sinks, opts} ->
+        Expr.optional(
+          :fast_scaled_dot_product_attention_with_mask_and_sinks,
+          [q, k, v, mask, sinks, opts],
+          &sdpa_masked_sinks_fallback/6
+        )
+    end
   end
 
   defp sdpa_masked_fallback(q, k, v, mask, opts) do
@@ -457,6 +513,18 @@ defmodule Emily.Fast do
     Nx.dot(probs, [-1], [0, 1], v, [-2], [0, 1])
   end
 
+  defp sdpa_masked_sinks_fallback(q, k, v, mask, sinks, opts) do
+    scale = opts[:scale]
+
+    weights =
+      q
+      |> Nx.dot([-1], [0, 1], k, [-1], [0, 1])
+      |> Nx.multiply(scale)
+      |> Nx.add(mask)
+
+    softmax_with_sinks(weights, sinks, v)
+  end
+
   defp default_sdpa_scale(q) do
     head_dim = Nx.axis_size(q, -1)
     1.0 / :math.sqrt(head_dim)
@@ -469,5 +537,41 @@ defmodule Emily.Fast do
     exp = Nx.exp(Nx.subtract(x, max))
     sum = Nx.sum(exp, axes: [-1], keep_axes: true)
     Nx.divide(exp, sum)
+  end
+
+  # Fallback math matching `mx::fast::scaled_dot_product_attention`'s
+  # sinks semantics: the per-head `sinks` entries participate in the
+  # softmax denominator as extra "null destinations" (StreamingLLM),
+  # contributing 0 to the numerator. `weights` is the post-scale,
+  # post-mask QKᵀ with shape `{B, H, Q, K}`; `sinks` is any tensor that
+  # broadcasts to `{B, H, Q, 1}` (typically shape `{H}` or `{1, H, 1}`).
+  defp softmax_with_sinks(weights, sinks, v) do
+    weights_type = Nx.type(weights)
+    sinks = Nx.as_type(sinks, weights_type)
+    sinks_b = reshape_sinks(sinks, weights)
+
+    row_max_weights = Nx.reduce_max(weights, axes: [-1], keep_axes: true)
+    row_max = Nx.max(row_max_weights, sinks_b)
+
+    exp_logits = Nx.exp(Nx.subtract(weights, row_max))
+    exp_sinks = Nx.exp(Nx.subtract(sinks_b, row_max))
+
+    denom = Nx.add(Nx.sum(exp_logits, axes: [-1], keep_axes: true), exp_sinks)
+    probs = Nx.divide(exp_logits, denom)
+    Nx.dot(probs, [-1], [0, 1], v, [-2], [0, 1])
+  end
+
+  # Reshape `sinks` so it broadcasts against the weights tensor across
+  # `{B, H, Q, 1}`. Accepts `{H}`, `{1, H, 1}`, `{1, H, 1, 1}`, or the
+  # already-fully-broadcast shape.
+  defp reshape_sinks(sinks, weights) do
+    target_heads = Nx.axis_size(weights, 1)
+
+    case Nx.shape(sinks) do
+      {^target_heads} -> Nx.reshape(sinks, {1, target_heads, 1, 1})
+      {1, ^target_heads, 1} -> Nx.reshape(sinks, {1, target_heads, 1, 1})
+      {1, ^target_heads, 1, 1} -> sinks
+      _ -> sinks
+    end
   end
 end
