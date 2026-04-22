@@ -26,6 +26,17 @@
   `ArgumentError` on non-affine modes, pointing users at
   `to_dense/1`. Smoke-tested end-to-end on Metal for all four modes
   (Apple Silicon, macOS 26).
+- **SDPA attention sinks (`mx::fast::scaled_dot_product_attention`
+  `sinks` param).** `Emily.Fast.scaled_dot_product_attention/4` and
+  `scaled_dot_product_attention_with_mask/5` now accept an optional
+  `:sinks` keyword opt — a per-head tensor broadcastable to
+  `{1, heads, 1, 1}` whose entries participate in the softmax
+  denominator as extra "null destinations" (StreamingLLM). When
+  absent the helpers emit the pre-existing optional-node, so
+  `Emily.Bumblebee.FastKernels` and direct callers stay source- and
+  bit-compatible. The defn fallback implements the same semantics
+  in numerically-stable form; equivalence vs. the fused kernel was
+  measured at ~2e-7 max-abs-diff on f32.
 - **MLX JIT build no longer patches vendored MLX.** The
   `patches/mlx-jit-nax-gate.patch` workaround (and the
   `maybe_apply_mlx_patches` plumbing in `mix.exs`) has been removed.

@@ -1627,11 +1627,35 @@ defmodule Emily.Backend do
         ref(v),
         opts[:scale] * 1.0,
         mask_mode,
+        [],
         []
       )
 
     if @debug_detect_nan_inf,
       do: DebugHelpers.check_nan_inf!(:fast_scaled_dot_product_attention, r, w)
+
+    wrap(r, out, w)
+  end
+
+  @doc false
+  def fast_scaled_dot_product_attention_with_sinks(%T{} = out, q, k, v, sinks, opts) do
+    w = worker()
+    mask_mode = if opts[:causal], do: "causal", else: ""
+
+    r =
+      Native.fast_scaled_dot_product_attention(
+        w,
+        ref(q),
+        ref(k),
+        ref(v),
+        opts[:scale] * 1.0,
+        mask_mode,
+        [],
+        [ref(sinks)]
+      )
+
+    if @debug_detect_nan_inf,
+      do: DebugHelpers.check_nan_inf!(:fast_scaled_dot_product_attention_with_sinks, r, w)
 
     wrap(r, out, w)
   end
@@ -1648,11 +1672,47 @@ defmodule Emily.Backend do
         ref(v),
         opts[:scale] * 1.0,
         "array",
-        [ref(mask)]
+        [ref(mask)],
+        []
       )
 
     if @debug_detect_nan_inf,
       do: DebugHelpers.check_nan_inf!(:fast_scaled_dot_product_attention_with_mask, r, w)
+
+    wrap(r, out, w)
+  end
+
+  @doc false
+  def fast_scaled_dot_product_attention_with_mask_and_sinks(
+        %T{} = out,
+        q,
+        k,
+        v,
+        mask,
+        sinks,
+        opts
+      ) do
+    w = worker()
+
+    r =
+      Native.fast_scaled_dot_product_attention(
+        w,
+        ref(q),
+        ref(k),
+        ref(v),
+        opts[:scale] * 1.0,
+        "array",
+        [ref(mask)],
+        [ref(sinks)]
+      )
+
+    if @debug_detect_nan_inf,
+      do:
+        DebugHelpers.check_nan_inf!(
+          :fast_scaled_dot_product_attention_with_mask_and_sinks,
+          r,
+          w
+        )
 
     wrap(r, out, w)
   end

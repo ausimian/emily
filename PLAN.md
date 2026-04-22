@@ -1302,6 +1302,36 @@ or when upstream Nx gains an FP8 variant. Options considered:
 Nx upstream, shadow-type wrapper, opaque-handle operator — none a
 clear win at Emily's current maturity.
 
+### M26 — SDPA attention sinks
+
+Extends `mx::fast::scaled_dot_product_attention`'s `sinks` parameter
+(MLX v0.31.1+69; `vendor/mlx/mlx/fast.h:47-55`) through the stack so
+Bumblebee-rewritten models and direct `Emily.Fast` users can opt into
+StreamingLLM-style attention sinks for long-context decode. Sinks are
+per-head "null destinations" that participate in the softmax
+denominator only — they shift probability mass without consuming
+output values.
+
+- `c_src/ops/fast.cpp` — `fast_scaled_dot_product_attention_nif` takes
+  a second variadic-length-0-or-1 `sinks_arrs` parameter mirroring
+  the existing `mask_arrs` plumbing; `std::nullopt` when empty.
+- `lib/emily/native.ex` — stub arity bumped to 8.
+- `lib/emily/fast.ex` — both SDPA helpers accept `:sinks` as a keyword
+  opt (default absent). When unset, the helpers emit the same
+  optional-node as before, preserving source compatibility with
+  `Emily.Bumblebee.FastKernels`. When set, a distinct op name
+  (`fast_scaled_dot_product_attention_with_sinks` /
+  `…_with_mask_and_sinks`) dispatches to a new Backend callback that
+  threads the sinks tensor through the NIF.
+- `lib/emily/backend.ex` — two new callbacks that forward `sinks`;
+  existing callbacks pass `[]` for the sinks slot and behave
+  identically to pre-M26 output.
+- Fallback math (defn-side): computes
+  `row_max = max(reduce_max(logits), sinks_broadcast)`, then
+  `probs = exp(logits - row_max) / (sum(exp(logits - row_max)) + exp(sinks - row_max))`.
+  Verified numerically against the fused kernel at max-abs-diff
+  ~2e-7 on f32 (well under `@f32_tol = 1.0e-4`).
+
 ## Testing philosophy
 
 | Layer | Oracle | Harness |
@@ -1380,7 +1410,7 @@ change to M6 status.
 | # | Capability | MLX location | Emily status | Roadmap fit | Effort | Recommendation |
 |---|---|---|---|---|---|---|
 | B1 | `einsum` with automatic contraction-path optimisation | `vendor/mlx/mlx/einsum.h:14,18` | No references in `c_src/` or `lib/`. `Nx.einsum` decomposes through the Backend via reshape/transpose/tensordot, so contraction ordering is left on the table. | ViT (M7) and any transformer variant with non-trivial contractions. | NIF-only wrap + `Emily.Backend.einsum/3` override. Low. | **Candidate** — wrap when a model surfaces a measurable contraction-ordering loss; not urgent. |
-| B2 | `fast::scaled_dot_product_attention` attention sinks | `vendor/mlx/mlx/fast.h:47-55` (the `sinks` param) | Emily passes `std::nullopt` at `c_src/ops/fast.cpp:106`; the `Emily.Fast.scaled_dot_product_attention*` helpers (`lib/emily/fast.ex`) don't expose sinks. | Long-context streaming decode for Qwen3 (M4) and Qwen3-VL (M24). StreamingLLM-style sink tokens are the main use case. | Extend the existing `fast::sdpa` NIF; add a `defn`-callable helper in `Emily.Fast`. Medium (plumbing through the optional-expression hook). | **Candidate** — defer until a model target demands long-context decode; no immediate blocker. |
+| B2 | `fast::scaled_dot_product_attention` attention sinks | `vendor/mlx/mlx/fast.h:47-55` (the `sinks` param) | **Landed in M26.** `Emily.Fast.scaled_dot_product_attention*` now accept a `:sinks` keyword opt; NIF threads the sinks tensor through `fast::sdpa`; fallback implements sink-in-softmax-denominator maths; kernel-vs-fallback max abs diff ~2e-7 on f32 (well inside kernel tolerance). | — | Shipped. | — |
 | B3 | Sparse / MoE matmuls: `gather_qmm`, `gather_mm`, `block_masked_mm`, `segmented_mm` | `vendor/mlx/mlx/ops.h:1524, 1568, 1578, 1591` | Emily wraps only `quantized_matmul` (`c_src/ops/linalg.cpp`). No MoE-dispatch path. | Qwen3-MoE variants, any sparse-attention model. Outside current M4/M7 targets. | NIF wrap + Backend override + design the `Emily.Quantization` API extension. Medium. | **Deferred** — surfaces with the first MoE model target; not a v1 blocker. |
 | B4a | Microscaled quantization modes (`Mxfp4`, `Mxfp8`, `Nvfp4`) | `vendor/mlx/mlx/primitives.h:155` (`QuantizationMode` enum) | **Landed in M25.** `Emily.QuantizedWeight` now carries a `:mode` field; `quantize`/`dequantize`/`quantized_matmul` NIFs accept the mode string; Metal smoke-tested for all four modes (affine max_diff ~3e-5, microscaled modes match MLX's own dequant-then-dot oracle within f32). | — | Shipped. | — |
 | B4b | FP8 dtype (`to_fp8` / `from_fp8`) | `vendor/mlx/mlx/ops.h:1517-1521` | **Deferred.** Requires either an FP8 variant in `Nx.Type` (upstream coordination) or a shadow-type wrapper like `QuantizedWeight`. Neither is clearly right without a concrete FP8 user story. Revisit with M16 (mixed precision) or when Nx gains FP8. | M16 extends mixed precision to FP8 master weights. | Blocked on Nx dtype or shadow-type design. | **Deferred** — re-evaluate when M16 surfaces a concrete requirement. |
