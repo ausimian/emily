@@ -41,6 +41,21 @@
 
 ### Changed
 
+- **MLX prebuilt download replaces the vendored source build.** The
+  `vendor/mlx` submodule and the cmake-from-source path are gone.
+  `mix compile` now downloads a SHA256-verified `libmlx.a` +
+  `mlx.metallib` + headers tarball for the pinned `@mlx_version` from
+  this repo's releases into `$EMILY_CACHE` and links the NIF against
+  it directly. Consumer prerequisites drop from "Xcode + Metal
+  toolchain + cmake + submodule checkout" to just macOS Apple Silicon.
+  The JIT / no-JIT switch moves from the `EMILY_MLX_JIT` env var to
+  `config :emily, mlx_variant: :jit | :no_jit` in `config/config.exs`
+  (default `:no_jit`); variant is read via `Config.Reader.read!` at
+  project load, so a gitignored `config/local.exs` is the supported
+  per-checkout override. Version bumps are a single-commit change of
+  `@mlx_version` + `@mlx_checksums` in `mix.exs`, paired with a new
+  `mlx-<version>` GitHub release produced by `release-mlx.yml`. First
+  MLX pin under the new scheme: **0.31.2**.
 - **Microscaled quantization modes on `Emily.QuantizedWeight`.** The
   container now carries a `:mode` field (default `"affine"`) and
   accepts `"mxfp4"`, `"mxfp8"`, `"nvfp4"` — MLX's full

@@ -5,6 +5,27 @@ defmodule Emily.MixProject do
   @version "0.1.2"
   @source_url "https://github.com/ausimian/emily"
 
+  # MLX pin. The checksums map keys every supported (os, arch, variant)
+  # asset hosted on the `mlx-#{@mlx_version}` release of this repo and
+  # is verified against every downloaded tarball before extraction. Bumps
+  # must ship the new SHA256s in the same commit — see the release-mlx
+  # workflow for how to cut new prebuilts.
+  @mlx_version "0.31.2"
+  @mlx_checksums %{
+    "mlx-0.31.2-macos-arm64-aot.tar.gz" =>
+      "d752d33ea9ef050541263c97c87a47cbc72a239f9a2e355ae73b941bf24be012",
+    "mlx-0.31.2-macos-arm64-jit.tar.gz" =>
+      "8982b126697ed422c4b5a17e8171a3bbcf661383fdac8f01ac9ddf5cc309d9e3"
+  }
+
+  # Read once at project load — `:mlx_variant` lives in `config/config.exs`
+  # so CI can flip it via `config/local.exs` without a custom MIX_ENV.
+  # The env key is needed because config/config.exs calls `config_env/0`
+  # to pick a sibling env file.
+  @emily_cfg Path.expand("config/config.exs", __DIR__)
+             |> Config.Reader.read!(env: Mix.env())
+             |> Keyword.fetch!(:emily)
+
   require Logger
 
   def project do
@@ -140,12 +161,11 @@ defmodule Emily.MixProject do
     [
       licenses: ["MIT"],
       links: %{"GitHub" => @source_url},
-      files:
-        ~w(lib c_src vendor/mlx/mlx vendor/mlx/cmake vendor/mlx/CMakeLists.txt vendor/mlx/mlx.pc.in vendor/mlx/LICENSE vendor/mlx/ACKNOWLEDGMENTS.md Makefile mix.exs README.md CHANGELOG.md LICENSE)
+      files: ~w(lib c_src Makefile mix.exs config README.md CHANGELOG.md LICENSE)
     ]
   end
 
-  # ---------- MLX from source ----------
+  # ---------- MLX prebuilt download ----------
 
   defp make_env do
     dir = mlx_install_dir()
@@ -167,35 +187,45 @@ defmodule Emily.MixProject do
     end
   end
 
-  @mlx_source_dir Path.expand("vendor/mlx", __DIR__)
+  defp mlx_variant do
+    case Keyword.fetch!(@emily_cfg, :mlx_variant) do
+      :no_jit ->
+        "aot"
 
-  defp mlx_cache_key do
-    # In a git checkout the submodule commit is the best cache key.
-    # In a Hex install (no .git), hash the top-level CMakeLists.txt.
-    case System.cmd("git", ["-C", @mlx_source_dir, "rev-parse", "--short", "HEAD"],
-           stderr_to_stdout: true
-         ) do
-      {hash, 0} -> String.trim(hash)
-      _ -> cmake_hash()
+      :jit ->
+        "jit"
+
+      other ->
+        Mix.raise("""
+        Invalid :mlx_variant #{inspect(other)} in config/config.exs.
+        Expected :no_jit or :jit.
+        """)
     end
   end
 
-  defp cmake_hash do
-    @mlx_source_dir
-    |> Path.join("CMakeLists.txt")
-    |> File.read!()
-    |> then(&:crypto.hash(:sha256, &1))
-    |> Base.encode16(case: :lower)
-    |> binary_part(0, 12)
+  defp mlx_install_dir,
+    do: Path.join(cache_dir(), "mlx-#{@mlx_version}-#{mlx_variant()}")
+
+  defp mlx_asset_name, do: "mlx-#{@mlx_version}-macos-#{arch_tag()}-#{mlx_variant()}.tar.gz"
+
+  defp arch_tag do
+    case {:os.type(), :erlang.system_info(:system_architecture) |> to_string()} do
+      {{:unix, :darwin}, "aarch64" <> _} ->
+        "arm64"
+
+      {{:unix, :darwin}, "x86_64" <> _} ->
+        Mix.raise("""
+        No x86_64 macOS prebuilt exists for MLX #{@mlx_version}.
+        Apple Silicon is required; x86_64 Macs aren't supported by this build.
+        """)
+
+      {os, arch} ->
+        Mix.raise("""
+        Emily's MLX prebuilts are macOS-only; cannot build on
+        #{inspect(os)} / #{arch}.
+        """)
+    end
   end
-
-  defp mlx_install_dir do
-    Path.join(cache_dir(), "mlx-#{mlx_cache_key()}#{jit_suffix()}")
-  end
-
-  defp mlx_jit_enabled?, do: System.get_env("EMILY_MLX_JIT") == "1"
-
-  defp jit_suffix, do: if(mlx_jit_enabled?(), do: "-jit", else: "")
 
   defp build_mlx(args) do
     dir = mlx_install_dir()
@@ -207,100 +237,100 @@ defmodule Emily.MixProject do
     if File.dir?(dir) do
       {:ok, []}
     else
-      do_build_mlx(dir)
+      download_and_extract_mlx(dir)
       {:ok, []}
     end
   end
 
-  defp do_build_mlx(install_dir) do
+  defp download_and_extract_mlx(install_dir) do
+    asset = mlx_asset_name()
+    url = "https://github.com/ausimian/emily/releases/download/mlx-#{@mlx_version}/#{asset}"
+    tarball = Path.join(cache_dir(), asset)
+
+    expected =
+      Map.get(@mlx_checksums, asset) ||
+        Mix.raise("""
+        No SHA256 pinned for #{asset} in @mlx_checksums (mix.exs).
+        This usually means the pinned version was bumped without
+        updating the checksum map.
+        """)
+
     File.mkdir_p!(cache_dir())
-    build_dir = install_dir <> "-build"
-    File.rm_rf!(build_dir)
-    File.mkdir_p!(build_dir)
+    File.mkdir_p!(install_dir)
 
-    ncpu =
-      case :os.type() do
-        {:unix, :darwin} ->
-          {n, 0} = System.cmd("sysctl", ["-n", "hw.ncpu"])
-          String.trim(n)
+    Mix.shell().info("Downloading MLX prebuilt #{asset}")
+    http_download!(url, tarball)
+    verify_sha256!(tarball, expected)
 
-        _ ->
-          {n, 0} = System.cmd("nproc", [])
-          String.trim(n)
-      end
-
-    cmake_args = [
-      "-S",
-      @mlx_source_dir,
-      "-B",
-      build_dir,
-      "-DCMAKE_BUILD_TYPE=Release",
-      "-DCMAKE_INSTALL_PREFIX=#{install_dir}",
-      "-DBUILD_SHARED_LIBS=OFF",
-      "-DMLX_BUILD_TESTS=OFF",
-      "-DMLX_BUILD_EXAMPLES=OFF",
-      "-DMLX_BUILD_BENCHMARKS=OFF",
-      "-DMLX_BUILD_PYTHON_BINDINGS=OFF",
-      "-DMLX_BUILD_SAFETENSORS=OFF",
-      "-DMLX_BUILD_GGUF=OFF",
-      "-DMLX_BUILD_METAL_TESTS=OFF",
-      "-DMLX_METAL_JIT=#{if mlx_jit_enabled?(), do: "ON", else: "OFF"}"
-    ]
-
-    # When xcode-select points at CommandLineTools (the default on fresh
-    # macOS), xcrun cannot find the Metal toolchain. If Xcode.app is
-    # installed we set DEVELOPER_DIR so cmake and its custom commands
-    # (make_compiled_preamble.sh) can resolve `xcrun -sdk macosx metal`.
-    build_env = developer_dir_env()
-
-    Mix.shell().info("Building MLX from source (#{mlx_cache_key()})...")
-
-    run!("cmake", cmake_args, "cmake configure", build_env)
-    run!("cmake", ["--build", build_dir, "--parallel", ncpu], "cmake build", build_env)
-    run!("cmake", ["--install", build_dir], "cmake install", build_env)
-
-    # Clean up the build directory — only the install prefix is needed.
-    File.rm_rf!(build_dir)
-    :ok
-  end
-
-  @xcode_developer_dir "/Applications/Xcode.app/Contents/Developer"
-
-  defp developer_dir_env do
-    case System.cmd("xcrun", ["-sdk", "macosx", "metal", "--version"], stderr_to_stdout: true) do
+    case System.cmd(
+           "tar",
+           ["-xzf", tarball, "-C", install_dir, "--strip-components=1"],
+           stderr_to_stdout: true
+         ) do
       {_, 0} ->
-        # Metal toolchain reachable from the default developer directory.
-        []
-
-      _ ->
-        if File.dir?(@xcode_developer_dir) do
-          Mix.shell().info("  Using Xcode.app for Metal toolchain (DEVELOPER_DIR)")
-          [{"DEVELOPER_DIR", @xcode_developer_dir}]
-        else
-          Mix.raise("""
-          Metal toolchain not found. MLX requires the Metal compiler.
-
-          Install Xcode from the App Store and run:
-            sudo xcode-select -s #{@xcode_developer_dir}
-
-          Or, if Xcode is installed but the Metal Toolchain component is
-          missing, run:
-            xcodebuild -downloadComponent MetalToolchain
-          """)
-        end
-    end
-  end
-
-  defp run!(cmd, args, label, env) do
-    case System.cmd(cmd, args, stderr_to_stdout: true, env: env) do
-      {_output, 0} ->
         :ok
 
       {output, code} ->
         Mix.raise("""
-        #{label} failed (exit #{code}):
+        tar extract failed (exit #{code}):
         #{output}
         """)
+    end
+
+    File.rm(tarball)
+    :ok
+  end
+
+  defp http_download!(url, dest) do
+    {:ok, _} = Application.ensure_all_started(:inets)
+    {:ok, _} = Application.ensure_all_started(:ssl)
+
+    http_opts = [
+      autoredirect: true,
+      ssl: [
+        verify: :verify_peer,
+        cacerts: :public_key.cacerts_get(),
+        customize_hostname_check: [
+          match_fun: :public_key.pkix_verify_hostname_match_fun(:https)
+        ]
+      ]
+    ]
+
+    request = {String.to_charlist(url), []}
+    opts = [body_format: :binary, stream: String.to_charlist(dest)]
+
+    case :httpc.request(:get, request, http_opts, opts) do
+      {:ok, :saved_to_file} ->
+        :ok
+
+      {:ok, {{_, 200, _}, _headers, _body}} ->
+        :ok
+
+      {:ok, {{_, status, reason}, _headers, _body}} ->
+        File.rm(dest)
+        Mix.raise("MLX download failed (HTTP #{status} #{reason}): #{url}")
+
+      {:error, reason} ->
+        File.rm(dest)
+        Mix.raise("MLX download failed (#{inspect(reason)}): #{url}")
+    end
+  end
+
+  defp verify_sha256!(path, expected) do
+    actual =
+      path
+      |> File.read!()
+      |> then(&:crypto.hash(:sha256, &1))
+      |> Base.encode16(case: :lower)
+
+    if actual != expected do
+      File.rm(path)
+
+      Mix.raise("""
+      MLX prebuilt checksum mismatch for #{Path.basename(path)}.
+        expected: #{expected}
+        actual:   #{actual}
+      """)
     end
   end
 end
