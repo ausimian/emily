@@ -41,6 +41,7 @@ defmodule Emily.MixProject do
       aliases: aliases(),
       compilers: [:emily_mlx, :elixir_make] ++ Mix.compilers(),
       make_env: &make_env/0,
+      make_args: ["-j#{System.schedulers_online()}"],
       test_coverage: test_coverage(),
       dialyzer: dialyzer(),
       docs: docs(),
