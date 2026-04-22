@@ -18,7 +18,7 @@ testable against its own oracle:
 Emily.Compiler    (Nx.Defn.Compiler) — validates opts, pins the result backend
 Emily.Backend     (Nx.Backend)       — op-by-op translation to Native
 Emily.Native      (NIF shim)         — one function per MLX op, no policy
-MLX C++           (vendored source)  — built from `vendor/mlx` via cmake
+MLX C++           (prebuilt)         — libmlx.a + mlx.metallib fetched from GitHub
 ```
 
 
@@ -34,8 +34,11 @@ def deps do
 end
 ```
 
-MLX is built from source on first `mix compile` — see [Prerequisites](#prerequisites)
-and [Building](#building) for the Xcode / cmake setup.
+On first `mix compile` Emily downloads a prebuilt `libmlx.a` +
+`mlx.metallib` tarball from this repo's GitHub releases into
+`$EMILY_CACHE` (default `~/Library/Caches/emily`) and links it into
+the NIF. No cmake or Xcode toolchain is required on the consumer
+side. See [Building](#building) for details.
 
 ## Features
 
@@ -72,108 +75,72 @@ and [Building](#building) for the Xcode / cmake setup.
 
 ## Prerequisites
 
-- **macOS.** Apple Silicon recommended; x86_64 is supported but
-  without GPU acceleration.
+- **macOS on Apple Silicon (arm64).** Emily's MLX prebuilts are arm64
+  macOS only; x86_64 Macs aren't supported.
 - **Elixir 1.18+ / OTP 27+.** Development is pinned to Elixir 1.19.5
   / OTP 28.3 via `.tool-versions`.
-- **Xcode with the Metal toolchain.** The Command Line Tools alone
-  are not enough — the build invokes `xcrun -sdk macosx metal`,
-  which is only reachable from a full Xcode install. From a fresh
-  macOS:
 
-  ```sh
-  # 1. Install Xcode from the App Store, then point xcode-select at it:
-  sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
-
-  # 2. If Xcode is present but the Metal Toolchain component is missing:
-  xcodebuild -downloadComponent MetalToolchain
-  ```
-
-  `mix compile` will surface the correct command in its error message
-  if the toolchain is unreachable.
-- **cmake.** Used to build MLX from the vendored source tree. Install
-  via Homebrew (`brew install cmake`) or the equivalent for your
-  setup.
+No Xcode, Metal toolchain, or cmake is required on the consumer side
+— Emily downloads a prebuilt `libmlx.a` + `mlx.metallib` from GitHub.
 
 ## Building
 
-MLX is vendored as a git submodule under `vendor/mlx` and built from
-source during `mix compile`. There is no prebuilt download step.
-
-### Why vendored?
-
-The vendored pin sits ahead of the latest tagged MLX release because
-Emily depends on two thread-safety changes that were merged to MLX
-`main` after the last release:
-
-- [ml-explore/mlx#3348](https://github.com/ml-explore/mlx/pull/3348) —
-  thread-local `CommandEncoder`. Each MLX stream's Metal encoder lives
-  on the thread that created it, which lets Emily pin a stream to a
-  dedicated worker thread without colliding with other streams.
-- [ml-explore/mlx#3405](https://github.com/ml-explore/mlx/pull/3405) —
-  `ThreadLocalStream` API. Lets the worker thread set its stream as
-  the per-thread default so MLX ops dispatched on that thread go to
-  the right queue without explicit threading at every call site.
-
-Before these landed, concurrent dispatch from multiple OS threads
-would race the Metal driver (the conformance suite hit SIGABRTs and
-SIGSEGVs when the BEAM migrated processes between schedulers). With
-them, Emily can run one MLX stream per worker thread and let multiple
-BEAM processes drive inference concurrently — see the
-[Concurrency model](#concurrency-model) section below.
-
-Once a tagged MLX release contains both PRs, Emily can switch to a
-released version and drop the submodule. Until then, vendoring is the
-cleanest way to pin a known-good `main` commit reproducibly.
-
-### How to build
-
 ```sh
-git clone --recurse-submodules https://github.com/ausimian/emily.git
+git clone https://github.com/ausimian/emily.git
 cd emily
 mix deps.get
 mix compile
 ```
 
-If you cloned without `--recurse-submodules`, initialise them:
+On a cold build Emily downloads the pinned MLX prebuilt
+(`mlx-<version>-macos-arm64-<variant>.tar.gz`, ~40 MB AOT / ~5 MB JIT)
+from this repo's releases into `$EMILY_CACHE` (default
+`~/Library/Caches/emily/mlx-<version>-<variant>/`), verifies its
+SHA256 against `@mlx_checksums` in `mix.exs`, extracts it, and links
+it into the NIF. Subsequent builds reuse the cached install.
 
-```sh
-git submodule update --init --recursive
-```
+Override the cache location with `EMILY_CACHE=/some/path mix
+compile`, or re-fetch with `mix compile.emily_mlx --force`.
 
-The first build takes several minutes to compile MLX itself. The
-artefact (`libmlx.a` + the Metal shader library `mlx.metallib`) is
-cached under `$EMILY_CACHE` (default:
-`~/Library/Caches/emily/mlx-<submodule-hash>`) and reused across
-builds until the submodule pin changes. Override the cache location
-with `EMILY_CACHE=/some/path mix compile`, or force a rebuild with
-`mix compile.emily_mlx --force`.
+The MLX version is pinned in `mix.exs` as `@mlx_version`. Bumps
+happen in this repo — new prebuilts are produced by the manual
+`release-mlx.yml` workflow, which uploads tarballs + SHA256s to a
+`mlx-<version>` release on this repo; the `@mlx_version` /
+`@mlx_checksums` pair in `mix.exs` is then updated in the same commit.
 
 ### MLX JIT (optional)
 
 MLX can ship its Metal kernels either AOT-compiled into
 `mlx.metallib`, or as source strings that are JIT-compiled on first
-use. `EMILY_MLX_JIT=1` at build time selects the JIT path; any other
-value (or unset) is the default and produces the AOT build. Toggling
-the flag produces a distinct cached MLX build (the cache key includes
-the setting), so no stale artefact is reused.
+use. Emily defaults to the AOT variant. To switch, add to
+`config/config.exs`:
 
-Artefact sizes on an M-series Mac (dev build, release optimisations):
+```elixir
+config :emily, mlx_variant: :jit
+```
 
-| Mode                       | `libemily.so` | `mlx.metallib` | `priv/` total |
-| -------------------------- | ------------: | -------------: | ------------: |
-| JIT off (default)          |       ~20 MB  |       ~154 MB  |      ~175 MB  |
-| JIT on (`EMILY_MLX_JIT=1`) |       ~22 MB  |       ~3.5 MB  |       ~25 MB  |
+This changes which prebuilt tarball is downloaded; both variants can
+coexist under `$EMILY_CACHE`.
+
+Artefact sizes on an M-series Mac (release optimisations):
+
+| Mode                            | `libemily.so` | `mlx.metallib` | `priv/` total |
+| ------------------------------- | ------------: | -------------: | ------------: |
+| `:no_jit` (default)             |       ~20 MB  |       ~154 MB  |      ~175 MB  |
+| `:jit`                          |       ~22 MB  |       ~3.5 MB  |       ~25 MB  |
 
 With JIT on, kernels are compiled on first invocation, so there's a
 small per-kernel warm-up cost at runtime; subsequent calls are cached
-in-process. All of Emily's test suite passes under both modes.
+in-process. All of Emily's test suite passes under both variants.
 
-The JIT build requires the macOS 26.2+ SDK, because MLX's NAX kernel
-sources transitively `#include
-<MetalPerformancePrimitives/MetalPerformancePrimitives.h>` — a
-header first shipped in that SDK. The AOT (default) build has no
-such requirement and works on older macOS.
+The JIT prebuilt is built against the macOS 26.2+ SDK (MLX's NAX
+kernel sources transitively include
+`<MetalPerformancePrimitives/MetalPerformancePrimitives.h>`, which
+only ships in that SDK) and references half-float intrinsics such as
+`__fmaxf16` that aren't present in older macOS libSystem. It
+therefore also requires **macOS 26.2+ at runtime**; older macOS hosts
+should stick with the default `:no_jit` variant, whose prebuilt is
+built against macOS 14 and runs anywhere.
 
 ## Usage
 

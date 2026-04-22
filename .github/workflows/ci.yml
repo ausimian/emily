@@ -19,29 +19,34 @@ concurrency:
 
 jobs:
   precommit:
-    name: precommit (${{ matrix.os }}, jit=${{ matrix.jit }})
+    name: precommit (${{ matrix.os }}, variant=${{ matrix.variant }})
     if: github.event_name != 'push' || github.ref_type == 'branch'
+    # AOT prebuilt is built on macos-14 and is the older-macOS-compatible
+    # path. JIT prebuilt is built on macos-26 and isn't portable back to
+    # macos-14 (the macOS 26 libSystem grew `__fmaxf16` and other half-
+    # float intrinsics that MLX's Metal stack ends up referencing). Each
+    # lane therefore runs on the runner whose SDK the prebuilt targets.
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        # Emily is Apple-Silicon only. macos-14 (arm64, M1) covers the
-        # AOT path on older macOS; macos-26 is required for the JIT
-        # build because MLX's NAX JIT sources transitively include
-        # <MetalPerformancePrimitives/MetalPerformancePrimitives.h>,
-        # which only ships in the macOS 26.2+ SDK.
         include:
           - os: macos-14
-            jit: "0"
+            variant: no-jit
           - os: macos-26
-            jit: "1"
+            variant: jit
     env:
       MIX_ENV: test
-      EMILY_MLX_JIT: ${{ matrix.jit }}
     steps:
       - uses: actions/checkout@v6
-        with:
-          submodules: recursive
+
+      - name: Select MLX variant
+        if: matrix.variant == 'jit'
+        run: |
+          cat > config/local.exs <<'EOF'
+          import Config
+          config :emily, mlx_variant: :jit
+          EOF
 
       - name: Setup Beam
         uses: erlef/setup-beam@v1
@@ -60,21 +65,18 @@ jobs:
         uses: actions/cache@v5
         with:
           path: _build
-          key: build-${{ runner.os }}-jit${{ matrix.jit }}-${{ hashFiles('mix.lock', 'c_src/**', 'Makefile', '.tool-versions', '.gitmodules') }}
-          restore-keys: build-${{ runner.os }}-jit${{ matrix.jit }}-
+          key: build-${{ runner.os }}-${{ matrix.variant }}-${{ hashFiles('mix.lock', 'c_src/**', 'Makefile', '.tool-versions', 'mix.exs', 'config/config.exs') }}
+          restore-keys: build-${{ runner.os }}-${{ matrix.variant }}-
 
-      # MLX cmake build (~6 min from source) and NIF object files.
-      # Keyed by the vendored MLX submodule commit + NIF sources; the
-      # JIT flag changes libmlx/metallib bytes so each flavour caches
-      # separately (the install dir itself gains a `-jit` suffix, but
-      # the NIF .o files under build-<version>/ are shared, so we still
-      # partition the top-level cache).
+      # MLX prebuilt tarball (~40 MB AOT / ~5 MB JIT) + extracted install.
+      # Keyed by the NIF sources and the pinned MLX version in mix.exs;
+      # variants are cached separately because the install dir differs.
       - name: Cache MLX and NIF objects
         uses: actions/cache@v5
         with:
           path: ~/Library/Caches/emily
-          key: mlx-${{ runner.os }}-jit${{ matrix.jit }}-${{ hashFiles('.gitmodules', 'c_src/**', 'Makefile') }}
-          restore-keys: mlx-${{ runner.os }}-jit${{ matrix.jit }}-
+          key: mlx-${{ runner.os }}-${{ matrix.variant }}-${{ hashFiles('c_src/**', 'Makefile', 'mix.exs') }}
+          restore-keys: mlx-${{ runner.os }}-${{ matrix.variant }}-
 
       # The Bumblebee cache holds tiny-random HuggingFace fixtures
       # downloaded by the conformance suite (~3 MB across 7 repos).
@@ -100,17 +102,15 @@ jobs:
 
   # Tagged-release gate: exercise the Hex tarball the way a downstream
   # consumer would — unpack it into a throwaway project, consume it via
-  # a path dep, compile the vendored MLX source, and run a sanity
-  # snippet against Emily.Backend + Emily.Compiler. Catches missing
-  # package files or broken build inputs before `mix hex.publish`.
+  # a path dep, download the MLX prebuilt, and run a sanity snippet
+  # against Emily.Backend + Emily.Compiler. Catches missing package
+  # files or a broken prebuilt release before `mix hex.publish`.
   smoke-test:
     name: Hex package smoke test
     if: github.event_name == 'push' && github.ref_type == 'tag'
     runs-on: macos-14
     steps:
       - uses: actions/checkout@v6
-        with:
-          submodules: recursive
 
       - name: Setup Beam
         uses: erlef/setup-beam@v1
@@ -118,11 +118,11 @@ jobs:
           version-file: .tool-versions
           version-type: strict
 
-      - name: Cache MLX build
+      - name: Cache MLX prebuilt
         uses: actions/cache@v5
         with:
           path: ~/Library/Caches/emily
-          key: mlx-smoke-${{ runner.os }}-${{ hashFiles('.gitmodules', 'c_src/**', 'Makefile') }}
+          key: mlx-smoke-${{ runner.os }}-${{ hashFiles('c_src/**', 'Makefile', 'mix.exs') }}
           restore-keys: mlx-smoke-${{ runner.os }}-
 
       - run: scripts/smoke-test-package.sh
@@ -134,26 +134,29 @@ jobs:
   # on demand via the Actions "Run workflow" button rather than on
   # every push / PR.
   full-tests:
-    name: full model tests (jit=${{ matrix.jit }})
+    name: full model tests (${{ matrix.os }}, variant=${{ matrix.variant }})
     if: github.event_name == 'workflow_dispatch' && inputs.run_full_tests
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        # Same split as the precommit job: jit=1 requires the macOS
-        # 26.2+ SDK for MetalPerformancePrimitives.h.
         include:
           - os: macos-14
-            jit: "0"
+            variant: no-jit
           - os: macos-26
-            jit: "1"
+            variant: jit
     env:
       MIX_ENV: test
-      EMILY_MLX_JIT: ${{ matrix.jit }}
     steps:
       - uses: actions/checkout@v6
-        with:
-          submodules: recursive
+
+      - name: Select MLX variant
+        if: matrix.variant == 'jit'
+        run: |
+          cat > config/local.exs <<'EOF'
+          import Config
+          config :emily, mlx_variant: :jit
+          EOF
 
       - name: Setup Beam
         uses: erlef/setup-beam@v1
@@ -172,15 +175,15 @@ jobs:
         uses: actions/cache@v5
         with:
           path: _build
-          key: build-${{ runner.os }}-jit${{ matrix.jit }}-${{ hashFiles('mix.lock', 'c_src/**', 'Makefile', '.tool-versions', '.gitmodules') }}
-          restore-keys: build-${{ runner.os }}-jit${{ matrix.jit }}-
+          key: build-${{ runner.os }}-${{ matrix.variant }}-${{ hashFiles('mix.lock', 'c_src/**', 'Makefile', '.tool-versions', 'mix.exs', 'config/config.exs') }}
+          restore-keys: build-${{ runner.os }}-${{ matrix.variant }}-
 
       - name: Cache MLX and NIF objects
         uses: actions/cache@v5
         with:
           path: ~/Library/Caches/emily
-          key: mlx-${{ runner.os }}-jit${{ matrix.jit }}-${{ hashFiles('.gitmodules', 'c_src/**', 'Makefile') }}
-          restore-keys: mlx-${{ runner.os }}-jit${{ matrix.jit }}-
+          key: mlx-${{ runner.os }}-${{ matrix.variant }}-${{ hashFiles('c_src/**', 'Makefile', 'mix.exs') }}
+          restore-keys: mlx-${{ runner.os }}-${{ matrix.variant }}-
 
       # Full checkpoints land here (Bumblebee + scidata MNIST).
       - name: Cache Bumblebee fixtures
