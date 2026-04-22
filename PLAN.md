@@ -1332,6 +1332,48 @@ output values.
   Verified numerically against the fused kernel at max-abs-diff
   ~2e-7 on f32 (well under `@f32_tol = 1.0e-4`).
 
+### M27 — `Emily.Fast.einsum/2` helper
+
+From the 2026-04-22 MLX capability audit (plan file
+`.claude/plans/b1-b2-b4-capability-wraps.md` §"B1"). Neither `Nx` nor
+Bumblebee exposes einsum today, so this is a wholly new user-facing
+helper on top of `mx::einsum` rather than a backend-override redirect.
+
+**Scope (shipped).** Eager-only, raise-on-non-Emily:
+
+- `c_src/ops/linalg.cpp` — new `einsum_nif` (variadic operand count)
+  calling `mx::einsum(subscripts, operand_arrays, stream)`. Threaded
+  through the async worker like the other linalg NIFs. Adds
+  `#include <mlx/einsum.h>`.
+- `lib/emily/native.ex` — new `einsum/3` stub (worker, subscripts,
+  refs list).
+- `lib/emily/fast.ex` — new `einsum(subscripts, operands)` function.
+  Every operand must already live on `Emily.Backend`; any other backend
+  raises `ArgumentError` with a clear "transfer with
+  `Nx.backend_transfer(t, Emily.Backend)` first" message. Follows the
+  same direct-call helper pattern as
+  `Emily.Quantization.quantized_matmul/2`.
+- `test/emily/fast/einsum_test.exs` — two-operand (`"ij,jk->ik"`),
+  batched (`"bij,bjk->bik"`), attention-style (`"bhid,bhjd->bhij"`),
+  three-operand (`"ij,jk,kl->il"` — verified against both hand-chosen
+  contraction orders), and the non-Emily error path.
+
+**Deferred (out of scope for this milestone).** The plan's "raise-on
+non-Emily first" recommendation is what we actually shipped. A defn
+fallback via `Nx.Defn.Expr.optional/3` would require a correct einsum
+string parser (diagonals, ellipsis, contraction path heuristic) — a
+medium-sized piece of work. We will add it if a user asks for
+cross-backend defn composability; until then the helper is documented
+as eager-only and not defn-callable.
+
+**Capability audit impact.** The B1 row in the MLX capability audit
+table (lines below) flips from "Candidate" to "Landed (eager-only)".
+Future readers should note that the defn path was explicitly
+considered and deferred, not forgotten.
+
+**Exit.** `mix precommit` green; `einsum_test.exs` passes on every
+operand arity in the suite; docs note the helper is eager-only.
+
 ## Testing philosophy
 
 | Layer | Oracle | Harness |
@@ -1409,7 +1451,7 @@ change to M6 status.
 
 | # | Capability | MLX location | Emily status | Roadmap fit | Effort | Recommendation |
 |---|---|---|---|---|---|---|
-| B1 | `einsum` with automatic contraction-path optimisation | `vendor/mlx/mlx/einsum.h:14,18` | No references in `c_src/` or `lib/`. `Nx.einsum` decomposes through the Backend via reshape/transpose/tensordot, so contraction ordering is left on the table. | ViT (M7) and any transformer variant with non-trivial contractions. | NIF-only wrap + `Emily.Backend.einsum/3` override. Low. | **Candidate** — wrap when a model surfaces a measurable contraction-ordering loss; not urgent. |
+| B1 | `einsum` with automatic contraction-path optimisation | `vendor/mlx/mlx/einsum.h:14,18` | **Landed in M27 (eager-only).** `Emily.Fast.einsum/2` wraps `mx::einsum` as a direct-call helper that raises on non-Emily operands (matching `Emily.Quantization.quantized_matmul/2`). No `Nx.Defn.Expr.optional/3` hook and no einsum-string parser — neither Nx nor Bumblebee has an einsum path to intercept, so cross-backend defn composability was explicitly deferred. | — | Shipped. | Defn-callable fallback remains open if a user surfaces one; until then, eager-only. |
 | B2 | `fast::scaled_dot_product_attention` attention sinks | `vendor/mlx/mlx/fast.h:47-55` (the `sinks` param) | **Landed in M26.** `Emily.Fast.scaled_dot_product_attention*` now accept a `:sinks` keyword opt; NIF threads the sinks tensor through `fast::sdpa`; fallback implements sink-in-softmax-denominator maths; kernel-vs-fallback max abs diff ~2e-7 on f32 (well inside kernel tolerance). | — | Shipped. | — |
 | B3 | Sparse / MoE matmuls: `gather_qmm`, `gather_mm`, `block_masked_mm`, `segmented_mm` | `vendor/mlx/mlx/ops.h:1524, 1568, 1578, 1591` | Emily wraps only `quantized_matmul` (`c_src/ops/linalg.cpp`). No MoE-dispatch path. | Qwen3-MoE variants, any sparse-attention model. Outside current M4/M7 targets. | NIF wrap + Backend override + design the `Emily.Quantization` API extension. Medium. | **Deferred** — surfaces with the first MoE model target; not a v1 blocker. |
 | B4a | Microscaled quantization modes (`Mxfp4`, `Mxfp8`, `Nvfp4`) | `vendor/mlx/mlx/primitives.h:155` (`QuantizationMode` enum) | **Landed in M25.** `Emily.QuantizedWeight` now carries a `:mode` field; `quantize`/`dequantize`/`quantized_matmul` NIFs accept the mode string; Metal smoke-tested for all four modes (affine max_diff ~3e-5, microscaled modes match MLX's own dequant-then-dot oracle within f32). | — | Shipped. | — |
