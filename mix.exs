@@ -2,7 +2,7 @@ defmodule Emily.MixProject do
   use Mix.Project
 
   @app :emily
-  @version "0.2.0"
+  @version "0.2.1"
   @source_url "https://github.com/ausimian/emily"
 
   # MLX pin. The checksums map keys every supported (os, arch, variant)
