@@ -135,10 +135,87 @@ defmodule Emily.QuantizedWeightTest do
       assert transferred.group_size == 64
       assert transferred.bits == 4
       assert transferred.transpose == true
+      assert transferred.mode == "affine"
 
       # Tensor fields were walked — each now lives on BinaryBackend.
       assert Nx.backend_transfer(transferred.value, Nx.BinaryBackend) == transferred.value
       assert Nx.backend_transfer(transferred.scales, Nx.BinaryBackend) == transferred.scales
+    end
+  end
+
+  describe "microscaled modes (mxfp4 / mxfp8 / nvfp4)" do
+    # MLX's `fp_quantize` path pins {group_size, bits} per mode. See
+    # `vendor/mlx/mlx/ops.cpp:4808-4823` for the canonical constraints.
+    @cases [
+      {"mxfp4", 32, 4, 0.3},
+      {"mxfp8", 32, 8, 0.05},
+      {"nvfp4", 16, 4, 0.3}
+    ]
+
+    for {mode, group_size, bits, tol} <- @cases do
+      test "from_dense(#{mode}) → to_dense round-trips within #{tol}" do
+        mode = unquote(mode)
+        group_size = unquote(group_size)
+        bits = unquote(bits)
+        tol = unquote(tol)
+
+        w =
+          Nx.iota({2, 128}, backend: Emily.Backend, type: :f32)
+          |> Nx.divide(256)
+          |> Nx.subtract(0.25)
+
+        qw = QuantizedWeight.from_dense(w, mode: mode, group_size: group_size, bits: bits)
+
+        assert qw.mode == mode
+        assert qw.group_size == group_size
+        assert qw.bits == bits
+
+        # Microscaled scales pack exponent bits into a u8 tensor.
+        assert Nx.type(qw.scales) == {:u, 8}
+
+        dense = QuantizedWeight.to_dense(qw)
+        assert Nx.shape(dense) == Nx.shape(w)
+        # MLX's fp_dequantize defaults to bfloat16 output when no
+        # out_type is requested (see `validate_mode_with_type` in
+        # `vendor/mlx/mlx/ops.cpp:4442-4446`). Cast before comparing.
+        assert Nx.type(dense) == {:bf, 16}
+        dense_f32 = Nx.as_type(dense, :f32)
+        assert_close(dense_f32, w, tol: tol)
+      end
+    end
+
+    test "mxfp4 rejects non-default group_size" do
+      w = Nx.iota({1, 128}, backend: Emily.Backend, type: :f32)
+
+      assert_raise ArgumentError, ~r/mxfp4.*group_size=32/, fn ->
+        QuantizedWeight.from_dense(w, mode: "mxfp4", group_size: 64, bits: 4)
+      end
+    end
+
+    test "mxfp8 rejects bits != 8" do
+      w = Nx.iota({1, 128}, backend: Emily.Backend, type: :f32)
+
+      assert_raise ArgumentError, ~r/mxfp8.*bits=8/, fn ->
+        QuantizedWeight.from_dense(w, mode: "mxfp8", group_size: 32, bits: 4)
+      end
+    end
+
+    test "unknown mode raises a clear error" do
+      w = Nx.iota({1, 128}, backend: Emily.Backend, type: :f32)
+
+      assert_raise ArgumentError, ~r/:mode must be one of/, fn ->
+        QuantizedWeight.from_dense(w, mode: "int2", group_size: 32, bits: 4)
+      end
+    end
+
+    test "backend_transfer keeps mode metadata for microscaled modes" do
+      w = Nx.iota({2, 128}, backend: Emily.Backend, type: :f32)
+      qw = QuantizedWeight.from_dense(w, mode: "mxfp4", group_size: 32, bits: 4)
+
+      transferred = Nx.backend_transfer(qw, Nx.BinaryBackend)
+      assert transferred.mode == "mxfp4"
+      assert transferred.group_size == 32
+      assert transferred.bits == 4
     end
   end
 end

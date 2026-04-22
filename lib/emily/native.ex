@@ -502,23 +502,47 @@ defmodule Emily.Native do
   # --- Quantization ------------------------------------------------
 
   @doc false
-  @spec quantize_nif(worker(), tensor(), integer(), integer()) :: reference()
-  def quantize_nif(_w, _w_tensor, _group_size, _bits), do: nif()
+  @spec quantize_nif(worker(), tensor(), integer(), integer(), String.t()) ::
+          reference()
+  def quantize_nif(_w, _w_tensor, _group_size, _bits, _mode), do: nif()
 
-  @spec quantize(worker(), tensor(), integer(), integer()) ::
+  # For microscaled modes MLX's `fp_quantize` returns only `(wq, scales)`;
+  # the NIF substitutes a scalar-zero placeholder for the third tuple
+  # element so the return shape is uniform. The Elixir layer
+  # (`QuantizedWeight.to_dense/1`, `Emily.Quantization.quantized_matmul/2`)
+  # passes `nil` for biases on non-affine modes — the placeholder is
+  # never fed back into MLX.
+  @spec quantize(worker(), tensor(), integer(), integer(), String.t()) ::
           {tensor(), tensor(), tensor()}
-  def quantize(w, w_tensor, group_size, bits),
-    do: Async.call(quantize_nif(w, w_tensor, group_size, bits))
+  def quantize(w, w_tensor, group_size, bits, mode),
+    do: Async.call(quantize_nif(w, w_tensor, group_size, bits, mode))
 
   @doc false
-  @spec dequantize_nif(worker(), tensor(), tensor(), tensor(), integer(), integer()) ::
+  @spec dequantize_nif(
+          worker(),
+          tensor(),
+          tensor(),
+          tensor() | nil,
+          integer(),
+          integer(),
+          String.t()
+        ) ::
           reference()
-  def dequantize_nif(_w, _w_q, _scales, _biases, _group_size, _bits), do: nif()
+  def dequantize_nif(_w, _w_q, _scales, _biases, _group_size, _bits, _mode),
+    do: nif()
 
-  @spec dequantize(worker(), tensor(), tensor(), tensor(), integer(), integer()) ::
+  @spec dequantize(
+          worker(),
+          tensor(),
+          tensor(),
+          tensor() | nil,
+          integer(),
+          integer(),
+          String.t()
+        ) ::
           tensor()
-  def dequantize(w, w_q, scales, biases, group_size, bits),
-    do: Async.call(dequantize_nif(w, w_q, scales, biases, group_size, bits))
+  def dequantize(w, w_q, scales, biases, group_size, bits, mode),
+    do: Async.call(dequantize_nif(w, w_q, scales, biases, group_size, bits, mode))
 
   @doc false
   @spec quantized_matmul_nif(
@@ -526,11 +550,13 @@ defmodule Emily.Native do
           tensor(),
           tensor(),
           tensor(),
-          tensor(),
+          tensor() | nil,
           boolean(),
           integer(),
-          integer()
+          integer(),
+          String.t()
         ) :: reference()
+  # credo:disable-for-next-line Credo.Check.Refactor.FunctionArity
   def quantized_matmul_nif(
         _w,
         _x,
@@ -539,7 +565,8 @@ defmodule Emily.Native do
         _biases,
         _transpose,
         _group_size,
-        _bits
+        _bits,
+        _mode
       ),
       do: nif()
 
@@ -548,13 +575,18 @@ defmodule Emily.Native do
           tensor(),
           tensor(),
           tensor(),
-          tensor(),
+          tensor() | nil,
           boolean(),
           integer(),
-          integer()
+          integer(),
+          String.t()
         ) :: tensor()
-  def quantized_matmul(w, x, w_q, scales, biases, transpose, group_size, bits),
-    do: Async.call(quantized_matmul_nif(w, x, w_q, scales, biases, transpose, group_size, bits))
+  # credo:disable-for-next-line Credo.Check.Refactor.FunctionArity
+  def quantized_matmul(w, x, w_q, scales, biases, transpose, group_size, bits, mode),
+    do:
+      Async.call(
+        quantized_matmul_nif(w, x, w_q, scales, biases, transpose, group_size, bits, mode)
+      )
 
   # --- Fast / fused transformer kernels ---------------------------
 

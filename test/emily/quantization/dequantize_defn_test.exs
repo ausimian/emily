@@ -110,5 +110,14 @@ defmodule Emily.Quantization.DequantizeDefnTest do
         Quantization.dequantize_defn(qw)
       end
     end
+
+    test "raises on microscaled mode (defn path is affine-only)" do
+      w = Nx.iota({2, 128}, backend: Emily.Backend, type: :f32) |> Nx.divide(256.0)
+      qw = QuantizedWeight.from_dense(w, mode: "mxfp4", group_size: 32, bits: 4)
+
+      assert_raise ArgumentError, ~r/mode=.*mxfp4.*to_dense/, fn ->
+        Quantization.dequantize_defn(qw)
+      end
+    end
   end
 end

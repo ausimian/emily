@@ -628,7 +628,7 @@ defmodule Emily.NativeTest do
     test "quantize returns packed w_q plus per-group scales and biases" do
       # Single group of 64 elements, all zero: scales and biases collapse.
       wt = f32(List.duplicate(0.0, 64), [1, 64])
-      {q, s, b} = Native.quantize(worker(), wt, 64, 4)
+      {q, s, b} = Native.quantize(worker(), wt, 64, 4, "affine")
 
       # 64 nibbles → 8 u32 values.
       assert Native.shape(q) == [1, 8]
@@ -649,7 +649,7 @@ defmodule Emily.NativeTest do
 
     test "quantize validates last-axis divisibility" do
       bad = f32(List.duplicate(0.0, 30), [1, 30])
-      assert_raise ArgumentError, fn -> Native.quantize(worker(), bad, 64, 4) end
+      assert_raise ArgumentError, fn -> Native.quantize(worker(), bad, 64, 4, "affine") end
     end
 
     test "dequantize recovers the original within int4 tolerance" do
@@ -659,8 +659,8 @@ defmodule Emily.NativeTest do
       values = for i <- 0..63, do: (i - 32) / 32.0
       wt = f32(values, [1, 64])
 
-      {q, s, b} = Native.quantize(worker(), wt, 64, 4)
-      deq = Native.dequantize(worker(), q, s, b, 64, 4)
+      {q, s, b} = Native.quantize(worker(), wt, 64, 4, "affine")
+      deq = Native.dequantize(worker(), q, s, b, 64, 4, "affine")
 
       assert Native.shape(deq) == [1, 64]
       step = 2.0 / 15.0
@@ -675,10 +675,10 @@ defmodule Emily.NativeTest do
       x_vals = for i <- 0..(3 * 64 - 1), do: i / 64.0
       x = f32(x_vals, [3, 64])
 
-      {q, s, b} = Native.quantize(worker(), wt, 64, 4)
+      {q, s, b} = Native.quantize(worker(), wt, 64, 4, "affine")
 
-      qmm = Native.quantized_matmul(worker(), x, q, s, b, true, 64, 4)
-      deq = Native.dequantize(worker(), q, s, b, 64, 4)
+      qmm = Native.quantized_matmul(worker(), x, q, s, b, true, 64, 4, "affine")
+      deq = Native.dequantize(worker(), q, s, b, 64, 4, "affine")
       ref = Native.matmul(worker(), x, Native.transpose(worker(), deq, [1, 0]))
 
       assert Native.shape(qmm) == [3, 2]
@@ -695,10 +695,10 @@ defmodule Emily.NativeTest do
       wt = f32(w_vals, [2, 64])
       x = f32(for(i <- 0..(3 * 2 - 1), do: i / 6.0), [3, 2])
 
-      {q, s, b} = Native.quantize(worker(), wt, 64, 4)
+      {q, s, b} = Native.quantize(worker(), wt, 64, 4, "affine")
 
-      qmm = Native.quantized_matmul(worker(), x, q, s, b, false, 64, 4)
-      deq = Native.dequantize(worker(), q, s, b, 64, 4)
+      qmm = Native.quantized_matmul(worker(), x, q, s, b, false, 64, 4, "affine")
+      deq = Native.dequantize(worker(), q, s, b, 64, 4, "affine")
       ref = Native.matmul(worker(), x, deq)
 
       assert Native.shape(qmm) == [3, 64]
@@ -708,7 +708,7 @@ defmodule Emily.NativeTest do
     test "bits=8 halves the packing density" do
       values = for i <- 0..63, do: i / 64.0
       wt = f32(values, [1, 64])
-      {q, _s, _b} = Native.quantize(worker(), wt, 64, 8)
+      {q, _s, _b} = Native.quantize(worker(), wt, 64, 8, "affine")
 
       # 64 bytes → 16 u32 values.
       assert Native.shape(q) == [1, 16]
@@ -717,7 +717,7 @@ defmodule Emily.NativeTest do
 
     test "smaller group_size produces more scale/bias rows" do
       wt = f32(List.duplicate(0.0, 128), [1, 128])
-      {_q, s, _b} = Native.quantize(worker(), wt, 32, 4)
+      {_q, s, _b} = Native.quantize(worker(), wt, 32, 4, "affine")
 
       # 128 / 32 = 4 groups along the last axis.
       assert Native.shape(s) == [1, 4]

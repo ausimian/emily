@@ -11,6 +11,21 @@
 
 ### Changed
 
+- **Microscaled quantization modes on `Emily.QuantizedWeight`.** The
+  container now carries a `:mode` field (default `"affine"`) and
+  accepts `"mxfp4"`, `"mxfp8"`, `"nvfp4"` — MLX's full
+  `QuantizationMode` enum (`vendor/mlx/mlx/primitives.h:155`).
+  `from_dense/2`, `to_dense/1`, and `Emily.Quantization.quantized_matmul/2`
+  all thread the mode through to MLX; mode-specific
+  `{group_size, bits}` constraints are validated up front with a
+  clear Emily error before the NIF call. Microscaled modes carry
+  a placeholder biases tensor — MLX's `fp_quantize` returns only
+  `(wq, scales)`, and the Native layer substitutes `nil` before
+  the MLX call. `Emily.Quantization.dequantize_defn/1` is
+  affine-only (it's a hand-rolled nibble unpacker) and now raises
+  `ArgumentError` on non-affine modes, pointing users at
+  `to_dense/1`. Smoke-tested end-to-end on Metal for all four modes
+  (Apple Silicon, macOS 26).
 - **MLX JIT build no longer patches vendored MLX.** The
   `patches/mlx-jit-nax-gate.patch` workaround (and the
   `maybe_apply_mlx_patches` plumbing in `mix.exs`) has been removed.

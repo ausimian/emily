@@ -106,4 +106,54 @@ defmodule Emily.Quantization.QuantizedMatmulTest do
       assert Nx.shape(out) == {3, 2}
     end
   end
+
+  describe "quantized_matmul/2 — microscaled modes" do
+    # Each microscaled mode (see `Emily.QuantizedWeight` moduledoc)
+    # pins its own (group_size, bits). Tolerance is the per-mode
+    # reconstruction error observed on a symmetric 2-wide fixture.
+    @cases [
+      {"mxfp4", 32, 4, 0.4},
+      {"mxfp8", 32, 8, 0.1},
+      {"nvfp4", 16, 4, 0.4}
+    ]
+
+    for {mode, group_size, bits, tol} <- @cases do
+      test "mode=#{mode} matches Nx.dot(x, Nx.transpose(to_dense(qw)))" do
+        mode = unquote(mode)
+        group_size = unquote(group_size)
+        bits = unquote(bits)
+        tol = unquote(tol)
+
+        w =
+          Nx.iota({4, 128}, backend: Emily.Backend, type: :f32)
+          |> Nx.divide(256)
+          |> Nx.subtract(0.25)
+
+        x =
+          Nx.iota({3, 128}, backend: Emily.Backend, type: :f32)
+          |> Nx.divide(128)
+          |> Nx.subtract(0.5)
+
+        qw = QuantizedWeight.from_dense(w, mode: mode, group_size: group_size, bits: bits)
+
+        actual = Quantization.quantized_matmul(x, qw)
+
+        # Oracle: dequantize then dot on the BinaryBackend. Cast the
+        # microscaled `to_dense` (bf16) back up to f32 before the
+        # reference dot so we're comparing apples to apples with MLX's
+        # f32-accumulated fused kernel output.
+        dense =
+          qw
+          |> QuantizedWeight.to_dense()
+          |> Nx.as_type(:f32)
+          |> Nx.backend_transfer(Nx.BinaryBackend)
+
+        x_ref = Nx.backend_transfer(x, Nx.BinaryBackend)
+        expected = Nx.dot(x_ref, Nx.transpose(dense))
+
+        assert Nx.shape(actual) == {3, 4}
+        assert_close(actual, expected, tol: tol)
+      end
+    end
+  end
 end
