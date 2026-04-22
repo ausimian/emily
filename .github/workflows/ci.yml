@@ -19,17 +19,22 @@ concurrency:
 
 jobs:
   precommit:
-    name: precommit (variant=${{ matrix.variant }})
+    name: precommit (${{ matrix.os }}, variant=${{ matrix.variant }})
     if: github.event_name != 'push' || github.ref_type == 'branch'
-    # Both lanes run on macos-14. The JIT binary was built on macos-26
-    # (where MetalPerformancePrimitives.h is available) — running it
-    # here on macos-14 doubles as a portability check that the JIT
-    # prebuilt loads on older macOS.
-    runs-on: macos-14
+    # AOT prebuilt is built on macos-14 and is the older-macOS-compatible
+    # path. JIT prebuilt is built on macos-26 and isn't portable back to
+    # macos-14 (the macOS 26 libSystem grew `__fmaxf16` and other half-
+    # float intrinsics that MLX's Metal stack ends up referencing). Each
+    # lane therefore runs on the runner whose SDK the prebuilt targets.
+    runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        variant: [no-jit, jit]
+        include:
+          - os: macos-14
+            variant: no-jit
+          - os: macos-26
+            variant: jit
     env:
       MIX_ENV: test
     steps:
@@ -129,13 +134,17 @@ jobs:
   # on demand via the Actions "Run workflow" button rather than on
   # every push / PR.
   full-tests:
-    name: full model tests (variant=${{ matrix.variant }})
+    name: full model tests (${{ matrix.os }}, variant=${{ matrix.variant }})
     if: github.event_name == 'workflow_dispatch' && inputs.run_full_tests
-    runs-on: macos-14
+    runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        variant: [no-jit, jit]
+        include:
+          - os: macos-14
+            variant: no-jit
+          - os: macos-26
+            variant: jit
     env:
       MIX_ENV: test
     steps:

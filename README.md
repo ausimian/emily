@@ -133,6 +133,15 @@ With JIT on, kernels are compiled on first invocation, so there's a
 small per-kernel warm-up cost at runtime; subsequent calls are cached
 in-process. All of Emily's test suite passes under both variants.
 
+The JIT prebuilt is built against the macOS 26.2+ SDK (MLX's NAX
+kernel sources transitively include
+`<MetalPerformancePrimitives/MetalPerformancePrimitives.h>`, which
+only ships in that SDK) and references half-float intrinsics such as
+`__fmaxf16` that aren't present in older macOS libSystem. It
+therefore also requires **macOS 26.2+ at runtime**; older macOS hosts
+should stick with the default `:no_jit` variant, whose prebuilt is
+built against macOS 14 and runs anywhere.
+
 ## Usage
 
 Install Emily as the global Nx backend and use Nx normally:
