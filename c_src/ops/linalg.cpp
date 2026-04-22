@@ -10,11 +10,13 @@
 #include "../emily/worker.hpp"
 
 #include <fine.hpp>
+#include <mlx/einsum.h>
 #include <mlx/mlx.h>
 
 #include <cstdint>
 #include <string>
 #include <tuple>
+#include <utility>
 #include <vector>
 
 namespace mx = mlx::core;
@@ -100,6 +102,26 @@ static std::optional<mx::array> opt_array(
   if (opt) return (*opt)->array;
   return std::nullopt;
 }
+
+// Variadic-operand einsum. MLX picks its own contraction path internally;
+// we just pass through the equation string and the operand arrays.
+fine::Term einsum_nif(
+    ErlNifEnv *env,
+    fine::ResourcePtr<WorkerThread> w,
+    std::string subscripts,
+    std::vector<fine::ResourcePtr<Tensor>> operands) {
+  return async_encoded(env, w,
+      [subscripts = std::move(subscripts),
+       operands = std::move(operands)](mx::Stream &s) {
+        std::vector<mx::array> operand_arrays;
+        operand_arrays.reserve(operands.size());
+        for (auto &op : operands) {
+          operand_arrays.push_back(op->array);
+        }
+        return wrap(mx::einsum(subscripts, operand_arrays, s));
+      });
+}
+FINE_NIF(einsum_nif, 0);
 
 fine::Term quantize_nif(
     ErlNifEnv *env,

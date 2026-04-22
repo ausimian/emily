@@ -447,6 +447,14 @@ defmodule Emily.Native do
   @spec inner(worker(), tensor(), tensor()) :: tensor()
   def inner(w, a, b), do: Async.call(inner_nif(w, a, b))
 
+  @doc false
+  @spec einsum_nif(worker(), String.t(), [tensor()]) :: reference()
+  def einsum_nif(_w, _subscripts, _operands), do: nif()
+
+  @spec einsum(worker(), String.t(), [tensor()]) :: tensor()
+  def einsum(w, subscripts, operands),
+    do: Async.call(einsum_nif(w, subscripts, operands))
+
   # --- Linalg (decompositions / solvers) ---------------------------
 
   @doc false

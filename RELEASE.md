@@ -1,3 +1,16 @@
+### Added
+
+- **`Emily.Fast.einsum/2`** — eager-only wrapper around MLX's
+  path-optimised `mx::einsum`. Accepts a standard Einstein-summation
+  string and a list of `Emily.Backend`-backed tensors; MLX picks the
+  contraction order internally. Operands on any other backend raise
+  `ArgumentError` with a transfer-first message. The helper is a
+  direct-call eager helper (same pattern as
+  `Emily.Quantization.quantized_matmul/2`) and is intentionally **not**
+  `defn`-callable — a fallback via `Nx.Defn.Expr.optional/3` would
+  require a full einsum-string parser and is deferred until a user
+  needs cross-backend composability.
+
 ### Fixed
 
 - **`Nx.top_k/2` on Emily tensors.** The backend's `top_k/3`
