@@ -27,9 +27,6 @@ UNAME_S := $(shell uname -s)
 ifeq ($(UNAME_S),Darwin)
     LDFLAGS += -undefined dynamic_lookup -flat_namespace
     LDFLAGS += -framework Metal -framework Foundation -framework Accelerate
-    JOBS    := $(shell sysctl -n hw.ncpu)
-else
-    JOBS    := $(shell nproc)
 endif
 
 # Optional: AddressSanitizer build. Set EMILY_ASAN=1 to instrument the
@@ -42,8 +39,6 @@ ifeq ($(EMILY_ASAN),1)
     CXXFLAGS += -fsanitize=address -fno-omit-frame-pointer -g -O1
     LDFLAGS  += -fsanitize=address
 endif
-
-MAKE_JOBS ?= $(JOBS)
 
 .PHONY: all clean bench-native
 
