@@ -87,16 +87,29 @@ defmodule Emily.Quantization do
     %QuantizedWeight{
       value: %T{data: %B{ref: q_ref}},
       scales: %T{data: %B{ref: s_ref}},
-      biases: %T{data: %B{ref: b_ref}},
+      biases: biases,
       group_size: group_size,
       bits: bits,
-      transpose: transpose
+      transpose: transpose,
+      mode: mode
     } = qw
+
+    b_ref = QuantizedWeight.biases_ref(mode, biases)
 
     w = Emily.MlxStream.default_worker()
 
     out_ref =
-      Native.quantized_matmul(w, x_ref, q_ref, s_ref, b_ref, transpose, group_size, bits)
+      Native.quantized_matmul(
+        w,
+        x_ref,
+        q_ref,
+        s_ref,
+        b_ref,
+        transpose,
+        group_size,
+        bits,
+        mode
+      )
 
     shape = out_ref |> Native.shape() |> List.to_tuple()
     type = Native.dtype(out_ref)
@@ -109,17 +122,33 @@ defmodule Emily.Quantization do
     }
   end
 
-  # MLX's quantized_matmul kernel requires x and scales to share a dtype —
-  # mismatches fail inside MLX with a less helpful message than this one.
-  defp validate_dtype_match!(%T{type: x_type}, %QuantizedWeight{scales: %T{type: s_type}})
+  # Affine: MLX's quantized_matmul requires x and scales to share a dtype.
+  # Microscaled modes store scales as a u8 (e8m0 or e4m3 exponent);
+  # MLX promotes internally, so just require `x` to be a real float.
+  defp validate_dtype_match!(%T{type: x_type}, %QuantizedWeight{
+         mode: "affine",
+         scales: %T{type: s_type}
+       })
        when x_type == s_type,
        do: :ok
 
-  defp validate_dtype_match!(%T{type: x_type}, %QuantizedWeight{scales: %T{type: s_type}}) do
+  defp validate_dtype_match!(%T{type: x_type}, %QuantizedWeight{
+         mode: "affine",
+         scales: %T{type: s_type}
+       }) do
     raise ArgumentError,
           "Emily.Quantization.quantized_matmul/2: input dtype #{inspect(x_type)} must " <>
             "match scales dtype #{inspect(s_type)}. Cast the input with " <>
             "`Nx.as_type/2` before calling."
+  end
+
+  defp validate_dtype_match!(%T{type: {:f, _}}, %QuantizedWeight{}), do: :ok
+  defp validate_dtype_match!(%T{type: {:bf, _}}, %QuantizedWeight{}), do: :ok
+
+  defp validate_dtype_match!(%T{type: x_type}, %QuantizedWeight{mode: mode}) do
+    raise ArgumentError,
+          "Emily.Quantization.quantized_matmul/2: microscaled mode #{inspect(mode)} " <>
+            "requires a floating input dtype, got: #{inspect(x_type)}."
   end
 
   # ================================================================
@@ -157,12 +186,24 @@ defmodule Emily.Quantization do
       scales: s,
       biases: b,
       group_size: group_size,
-      bits: bits
+      bits: bits,
+      mode: mode
     } = qw
 
+    validate_defn_mode!(mode)
     validate_defn_bits!(bits)
 
     dequantize_impl(q, s, b, group_size: group_size, bits: bits)
+  end
+
+  defp validate_defn_mode!("affine"), do: :ok
+
+  defp validate_defn_mode!(mode) do
+    raise ArgumentError,
+          "Emily.Quantization.dequantize_defn/1: mode=#{inspect(mode)} is not " <>
+            "supported by the defn-native path (only \"affine\" is). " <>
+            "Use `Emily.QuantizedWeight.to_dense/1` (the Native path) to " <>
+            "dequantize microscaled modes."
   end
 
   defp validate_defn_bits!(bits) when bits in @defn_supported_bits, do: :ok

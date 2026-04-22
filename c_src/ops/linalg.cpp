@@ -1,7 +1,9 @@
 // Linear algebra: matmul, tensordot, outer, inner, decompositions
 // (lu, svd, qr, cholesky, eigh), solvers (solve, solve_triangular),
-// and affine int4/int8 quantization primitives
-// (quantize / dequantize / quantized_matmul).
+// and quantization primitives (quantize / dequantize /
+// quantized_matmul). The `mode` string selects between MLX's
+// `"affine"` (int4/int8) scheme and microscaled variants
+// (`"mxfp4"`, `"mxfp8"`, `"nvfp4"` — see MLX's `QuantizationMode` enum).
 
 #include "../emily/async.hpp"
 #include "../emily/tensor.hpp"
@@ -11,6 +13,7 @@
 #include <mlx/mlx.h>
 
 #include <cstdint>
+#include <string>
 #include <tuple>
 #include <vector>
 
@@ -76,20 +79,46 @@ fine::Term inner_nif(
 }
 FINE_NIF(inner_nif, 0);
 
+// `biases` is returned by MLX's `quantize` only for the affine mode
+// (see `affine_quantize` vs `fp_quantize` in `vendor/mlx/mlx/ops.cpp`).
+// For microscaled modes we return a scalar-zero placeholder in the
+// biases slot so the Elixir-side QuantizedWeight container keeps a
+// uniform three-field tensor shape (Nx.Container can't hold `nil`).
+// The dequantize / matmul NIFs take biases as an `std::optional` and
+// the Elixir layer passes `nil` for microscaled modes, so the
+// placeholder never crosses back into MLX.
+static fine::ResourcePtr<Tensor> wrap_biases_or_placeholder(
+    std::vector<mx::array>& v) {
+  if (v.size() > 2) {
+    return wrap(std::move(v[2]));
+  }
+  return wrap(mx::array(0.0f));
+}
+
+static std::optional<mx::array> opt_array(
+    const std::optional<fine::ResourcePtr<Tensor>>& opt) {
+  if (opt) return (*opt)->array;
+  return std::nullopt;
+}
+
 fine::Term quantize_nif(
     ErlNifEnv *env,
     fine::ResourcePtr<WorkerThread> w,
     fine::ResourcePtr<Tensor> wt,
     int64_t group_size,
-    int64_t bits) {
+    int64_t bits,
+    std::string mode) {
   return async_encoded(env, w,
-      [wt = std::move(wt), group_size, bits](mx::Stream &s) {
+      [wt = std::move(wt), group_size, bits,
+       mode = std::move(mode)](mx::Stream &s) {
         auto result = mx::quantize(wt->array, static_cast<int>(group_size),
-                                   static_cast<int>(bits), "affine",
+                                   static_cast<int>(bits), mode,
                                    std::nullopt, s);
-        return std::make_tuple(wrap(std::move(result[0])),
-                               wrap(std::move(result[1])),
-                               wrap(std::move(result[2])));
+        auto q = wrap(std::move(result[0]));
+        auto scales = wrap(std::move(result[1]));
+        auto biases = wrap_biases_or_placeholder(result);
+        return std::make_tuple(std::move(q), std::move(scales),
+                               std::move(biases));
       });
 }
 FINE_NIF(quantize_nif, 0);
@@ -99,15 +128,17 @@ fine::Term dequantize_nif(
     fine::ResourcePtr<WorkerThread> w,
     fine::ResourcePtr<Tensor> w_q,
     fine::ResourcePtr<Tensor> scales,
-    fine::ResourcePtr<Tensor> biases,
+    std::optional<fine::ResourcePtr<Tensor>> biases,
     int64_t group_size,
-    int64_t bits) {
+    int64_t bits,
+    std::string mode) {
   return async_encoded(env, w,
       [w_q = std::move(w_q), scales = std::move(scales),
-       biases = std::move(biases), group_size, bits](mx::Stream &s) {
-        return wrap(mx::dequantize(w_q->array, scales->array, biases->array,
+       biases = std::move(biases), group_size, bits,
+       mode = std::move(mode)](mx::Stream &s) {
+        return wrap(mx::dequantize(w_q->array, scales->array, opt_array(biases),
                                    static_cast<int>(group_size),
-                                   static_cast<int>(bits), "affine",
+                                   static_cast<int>(bits), mode,
                                    std::nullopt, std::nullopt, s));
       });
 }
@@ -119,18 +150,19 @@ fine::Term quantized_matmul_nif(
     fine::ResourcePtr<Tensor> x,
     fine::ResourcePtr<Tensor> w_q,
     fine::ResourcePtr<Tensor> scales,
-    fine::ResourcePtr<Tensor> biases,
+    std::optional<fine::ResourcePtr<Tensor>> biases,
     bool transpose,
     int64_t group_size,
-    int64_t bits) {
+    int64_t bits,
+    std::string mode) {
   return async_encoded(env, w,
       [x = std::move(x), w_q = std::move(w_q), scales = std::move(scales),
-       biases = std::move(biases), transpose, group_size,
-       bits](mx::Stream &s) {
+       biases = std::move(biases), transpose, group_size, bits,
+       mode = std::move(mode)](mx::Stream &s) {
         return wrap(mx::quantized_matmul(x->array, w_q->array, scales->array,
-                                         biases->array, transpose,
+                                         opt_array(biases), transpose,
                                          static_cast<int>(group_size),
-                                         static_cast<int>(bits), "affine", s));
+                                         static_cast<int>(bits), mode, s));
       });
 }
 FINE_NIF(quantized_matmul_nif, 0);

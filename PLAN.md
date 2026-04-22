@@ -1265,6 +1265,43 @@ the 0.1.0 draft; callback-impl noise removed from the HexDocs nav.
 - Hex release (public), versioned per conventions (`@version` in mix.exs)
 - `RELEASE.md` accumulated across feature branches
 
+### M25 — microscaled quantization modes
+
+Thread a `:mode` string through the quantize / dequantize /
+quantized_matmul pipeline so `Emily.QuantizedWeight` covers MLX's
+full `QuantizationMode` enum (see `vendor/mlx/mlx/primitives.h:155`),
+not just the classical `"affine"` int4/int8 scheme.
+
+- `c_src/ops/linalg.cpp` — `quantize_nif`, `dequantize_nif`,
+  `quantized_matmul_nif` take a `std::string mode` arg. The biases
+  arg on the latter two becomes `std::optional` since MLX's
+  `fp_quantize` returns only `(wq, scales)` for microscaled modes.
+- `lib/emily/native.ex` — stub arities bumped (`quantize/5`,
+  `dequantize/7`, `quantized_matmul/9`).
+- `lib/emily/quantized_weight.ex` — new `:mode` field enforced in
+  `@enforce_keys` / `defstruct` / `@type t` / `Nx.Container :keep`.
+  `from_dense/2` accepts `:mode` (default `"affine"`, else one of
+  `"mxfp4"`, `"mxfp8"`, `"nvfp4"`) and validates mode-specific
+  `{group_size, bits}` before dispatching. Microscaled modes carry a
+  scalar-zero placeholder in `:biases` (the Native layer substitutes
+  `nil` before the MLX call).
+- `lib/emily/quantization.ex` — `quantized_matmul/2` forwards
+  `qw.mode` and passes `nil` biases for microscaled modes.
+  `dequantize_defn/1` raises a clear `ArgumentError` on non-affine
+  modes, pointing callers at `to_dense/1` (the Native path).
+- Tests — per-mode round-trip and `quantized_matmul` equivalence vs
+  `Nx.dot(x, Nx.transpose(to_dense(qw)))` for each microscaled mode;
+  error path for `dequantize_defn` on `"mxfp4"`.
+- Metal smoke tests ran green for all four modes on Apple Silicon
+  (see agent report in the milestone feature branch).
+
+**Deferred (B4b)** — MLX's `to_fp8` / `from_fp8` ops (`vendor/mlx/
+mlx/ops.h:1517-1521`) need an FP8 dtype that Nx doesn't yet model.
+Revisit when M16 (mixed precision) surfaces a concrete FP8 user story,
+or when upstream Nx gains an FP8 variant. Options considered:
+Nx upstream, shadow-type wrapper, opaque-handle operator — none a
+clear win at Emily's current maturity.
+
 ## Testing philosophy
 
 | Layer | Oracle | Harness |
@@ -1345,7 +1382,8 @@ change to M6 status.
 | B1 | `einsum` with automatic contraction-path optimisation | `vendor/mlx/mlx/einsum.h:14,18` | No references in `c_src/` or `lib/`. `Nx.einsum` decomposes through the Backend via reshape/transpose/tensordot, so contraction ordering is left on the table. | ViT (M7) and any transformer variant with non-trivial contractions. | NIF-only wrap + `Emily.Backend.einsum/3` override. Low. | **Candidate** — wrap when a model surfaces a measurable contraction-ordering loss; not urgent. |
 | B2 | `fast::scaled_dot_product_attention` attention sinks | `vendor/mlx/mlx/fast.h:47-55` (the `sinks` param) | Emily passes `std::nullopt` at `c_src/ops/fast.cpp:106`; the `Emily.Fast.scaled_dot_product_attention*` helpers (`lib/emily/fast.ex`) don't expose sinks. | Long-context streaming decode for Qwen3 (M4) and Qwen3-VL (M24). StreamingLLM-style sink tokens are the main use case. | Extend the existing `fast::sdpa` NIF; add a `defn`-callable helper in `Emily.Fast`. Medium (plumbing through the optional-expression hook). | **Candidate** — defer until a model target demands long-context decode; no immediate blocker. |
 | B3 | Sparse / MoE matmuls: `gather_qmm`, `gather_mm`, `block_masked_mm`, `segmented_mm` | `vendor/mlx/mlx/ops.h:1524, 1568, 1578, 1591` | Emily wraps only `quantized_matmul` (`c_src/ops/linalg.cpp`). No MoE-dispatch path. | Qwen3-MoE variants, any sparse-attention model. Outside current M4/M7 targets. | NIF wrap + Backend override + design the `Emily.Quantization` API extension. Medium. | **Deferred** — surfaces with the first MoE model target; not a v1 blocker. |
-| B4 | Microscaled quantization modes (`Mxfp4`, `Mxfp8`, `Nvfp4`) and `to_fp8`/`from_fp8` | `vendor/mlx/mlx/primitives.h:155` (`QuantizationMode` enum); `vendor/mlx/mlx/ops.h:1517-1521` (fp8 casts) | Emily hardcodes `"affine"` as the quant mode at `c_src/ops/linalg.cpp:88,110,133`. FP8 casts and microscaled modes are unreachable from Elixir. | M16 mixed precision naturally extends to FP8 master weights; microscaled quant is the modern inference format for large models. | Plumb the quant mode string through `Emily.Quantization` + NIF; add fp8 dtype. Low-medium, but needs confirmation of Metal-backend FP8 coverage (MLX's primary FP8 support lives on CUDA). | **Candidate for M16** — confirm Metal FP8 coverage, then promote from gap to milestone item. |
+| B4a | Microscaled quantization modes (`Mxfp4`, `Mxfp8`, `Nvfp4`) | `vendor/mlx/mlx/primitives.h:155` (`QuantizationMode` enum) | **Landed in M25.** `Emily.QuantizedWeight` now carries a `:mode` field; `quantize`/`dequantize`/`quantized_matmul` NIFs accept the mode string; Metal smoke-tested for all four modes (affine max_diff ~3e-5, microscaled modes match MLX's own dequant-then-dot oracle within f32). | — | Shipped. | — |
+| B4b | FP8 dtype (`to_fp8` / `from_fp8`) | `vendor/mlx/mlx/ops.h:1517-1521` | **Deferred.** Requires either an FP8 variant in `Nx.Type` (upstream coordination) or a shadow-type wrapper like `QuantizedWeight`. Neither is clearly right without a concrete FP8 user story. Revisit with M16 (mixed precision) or when Nx gains FP8. | M16 extends mixed precision to FP8 master weights. | Blocked on Nx dtype or shadow-type design. | **Deferred** — re-evaluate when M16 surfaces a concrete requirement. |
 | B5 | `ThreadLocalStream` / `new_thread_local_stream` / `set_default_stream` | `vendor/mlx/mlx/stream.h:24-41` | Emily uses `mx::new_stream` per worker thread (`c_src/emily/worker.hpp:102`) and `mx::default_stream(cpu)` for linalg. The newer thread-local APIs are unused. | Could simplify the M14 per-process worker-thread model if MLX's thread-local stream semantics align with Emily's "one stream per BEAM process" guarantee. | Investigative first — may be a no-op if the current model already expresses the same invariant, or a simplification if it doesn't. Low. | **Investigative** — spike to confirm semantics; no code change yet. |
 
 ### Re-affirmed out-of-scope (no action)
