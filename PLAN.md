@@ -221,6 +221,12 @@ If MLX gains matmul-adjacent fusion (bias-fused matmul, attention
 fusion outside `fast::scaled_dot_product_attention`), re-run the bench
 and revisit.
 
+**Re-measured 2026-04-22 on MLX 0.31.1+69 — decision stands.** GPU
+transformer-block speedup rose to 1.09–1.11× median (from 1.04–1.07×
+on 0.25.1); CPU is still a regression at 0.82–0.88×. Both still fail
+the 1.20× gate. See the "MLX 0.31.1+69" section in
+[`bench/compile_microbench.md`](bench/compile_microbench.md).
+
 ### M7 — Bumblebee conformance breadth: ViT + Whisper
 
 DistilBERT (M3) and Qwen3 (M4) cover encoder-only and decoder-only
@@ -1312,3 +1318,48 @@ Additional harnesses:
   extended by M16 (mixed precision) and M17 (conv-pool). Out of scope:
   distributed training and a native optimizer library.
 - **EMLX coordination**: none — quiet ship.
+
+## Capability audit: MLX 0.31.1+69 (2026-04-22)
+
+Earlier milestones were planned against the cocoa-xu prebuilt MLX
+(the same binary elixir-nx/emlx depends on, v0.25.1-era at the time
+M6 was measured). The tree now vendors `8e649be4`
+(`v0.31.1-69-g8e649be4`) and builds from source via CMake. This audit
+re-verifies the ratified decisions above and catalogues in-roadmap
+MLX capabilities Emily isn't yet using. Scope limited to what is
+plausibly in Emily's roadmap; see "Re-affirmed out-of-scope" at the
+bottom for the explicit rejections.
+
+### M6 re-measurement
+
+M6's original drop verdict (≥1.20× gate not met) stands on 0.31.1+69.
+Transformer-block GPU speedup is now 1.09–1.11× median (up from
+1.04–1.07×); CPU still regresses. See the "MLX 0.31.1+69" section in
+[`bench/compile_microbench.md`](bench/compile_microbench.md). No
+change to M6 status.
+
+### In-roadmap capability gaps
+
+| # | Capability | MLX location | Emily status | Roadmap fit | Effort | Recommendation |
+|---|---|---|---|---|---|---|
+| B1 | `einsum` with automatic contraction-path optimisation | `vendor/mlx/mlx/einsum.h:14,18` | No references in `c_src/` or `lib/`. `Nx.einsum` decomposes through the Backend via reshape/transpose/tensordot, so contraction ordering is left on the table. | ViT (M7) and any transformer variant with non-trivial contractions. | NIF-only wrap + `Emily.Backend.einsum/3` override. Low. | **Candidate** — wrap when a model surfaces a measurable contraction-ordering loss; not urgent. |
+| B2 | `fast::scaled_dot_product_attention` attention sinks | `vendor/mlx/mlx/fast.h:47-55` (the `sinks` param) | Emily passes `std::nullopt` at `c_src/ops/fast.cpp:106`; the `Emily.Fast.scaled_dot_product_attention*` helpers (`lib/emily/fast.ex`) don't expose sinks. | Long-context streaming decode for Qwen3 (M4) and Qwen3-VL (M24). StreamingLLM-style sink tokens are the main use case. | Extend the existing `fast::sdpa` NIF; add a `defn`-callable helper in `Emily.Fast`. Medium (plumbing through the optional-expression hook). | **Candidate** — defer until a model target demands long-context decode; no immediate blocker. |
+| B3 | Sparse / MoE matmuls: `gather_qmm`, `gather_mm`, `block_masked_mm`, `segmented_mm` | `vendor/mlx/mlx/ops.h:1524, 1568, 1578, 1591` | Emily wraps only `quantized_matmul` (`c_src/ops/linalg.cpp`). No MoE-dispatch path. | Qwen3-MoE variants, any sparse-attention model. Outside current M4/M7 targets. | NIF wrap + Backend override + design the `Emily.Quantization` API extension. Medium. | **Deferred** — surfaces with the first MoE model target; not a v1 blocker. |
+| B4 | Microscaled quantization modes (`Mxfp4`, `Mxfp8`, `Nvfp4`) and `to_fp8`/`from_fp8` | `vendor/mlx/mlx/primitives.h:155` (`QuantizationMode` enum); `vendor/mlx/mlx/ops.h:1517-1521` (fp8 casts) | Emily hardcodes `"affine"` as the quant mode at `c_src/ops/linalg.cpp:88,110,133`. FP8 casts and microscaled modes are unreachable from Elixir. | M16 mixed precision naturally extends to FP8 master weights; microscaled quant is the modern inference format for large models. | Plumb the quant mode string through `Emily.Quantization` + NIF; add fp8 dtype. Low-medium, but needs confirmation of Metal-backend FP8 coverage (MLX's primary FP8 support lives on CUDA). | **Candidate for M16** — confirm Metal FP8 coverage, then promote from gap to milestone item. |
+| B5 | `ThreadLocalStream` / `new_thread_local_stream` / `set_default_stream` | `vendor/mlx/mlx/stream.h:24-41` | Emily uses `mx::new_stream` per worker thread (`c_src/emily/worker.hpp:102`) and `mx::default_stream(cpu)` for linalg. The newer thread-local APIs are unused. | Could simplify the M14 per-process worker-thread model if MLX's thread-local stream semantics align with Emily's "one stream per BEAM process" guarantee. | Investigative first — may be a no-op if the current model already expresses the same invariant, or a simplification if it doesn't. Low. | **Investigative** — spike to confirm semantics; no code change yet. |
+
+### Re-affirmed out-of-scope (no action)
+
+Catalogued to make the rejection explicit rather than silent:
+
+- **`mlx::distributed::*`** (multi-process collectives, FSDP, ring
+  allreduce). PLAN §"Training" ratifies "no distributed training".
+  Re-affirm; no change.
+- **`mlx::export` / `mlx::import`** (AOT graph serialisation). PLAN
+  §Non-goals ratifies "no AOT compilation". Re-affirm.
+- **`fast::metal_kernel` / `fast::cuda_kernel`** (user-level GPU kernel
+  JIT from Elixir). Orthogonal to Emily's "Nx backend, not a framework"
+  stance. Re-affirm.
+- **Hadamard transform, einsum path planner, shapeless compile,
+  `mlx::event` / `mlx::fence` fine-grained sync.** Noted present;
+  no in-roadmap model target currently demands them.

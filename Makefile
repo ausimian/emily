@@ -60,6 +60,7 @@ all: $(NIF_SO) $(METALLIB)
 
 BENCH_NATIVE_SRC := bench/native/compile_microbench.cpp
 BENCH_NATIVE_BIN := $(BUILD_DIR)/compile_microbench
+BENCH_NATIVE_METALLIB := $(BUILD_DIR)/mlx.metallib
 
 $(BENCH_NATIVE_BIN): $(BENCH_NATIVE_SRC) | $(BUILD_DIR)
 	$(CXX) -std=c++17 -O3 -Wall -Wextra \
@@ -69,7 +70,13 @@ $(BENCH_NATIVE_BIN): $(BENCH_NATIVE_SRC) | $(BUILD_DIR)
 	    -framework Metal -framework Foundation -framework Accelerate \
 	    -o $(BENCH_NATIVE_BIN)
 
-bench-native: $(BENCH_NATIVE_BIN)
+# MLX's Metal device loader looks for `mlx.metallib` colocated with the
+# running binary. The NIF build stages it under priv/; the standalone
+# bench binary lives in BUILD_DIR, so stage a sibling copy there too.
+$(BENCH_NATIVE_METALLIB): $(MLX_LIB_DIR)/mlx.metallib | $(BUILD_DIR)
+	cp $< $@
+
+bench-native: $(BENCH_NATIVE_BIN) $(BENCH_NATIVE_METALLIB)
 	@echo "Running $(BENCH_NATIVE_BIN)"
 	@$(BENCH_NATIVE_BIN) $(BENCH_NATIVE_ARGS)
 
