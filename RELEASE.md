@@ -100,3 +100,10 @@
   gathered with `take`. They now call a new `Native.flip/3` NIF
   that lowers to a single strided slice, saving the index
   allocation and gather kernel per call.
+- **Parallel NIF C++ build.** `elixir_make` doesn't pass `-j` by
+  default and `mix.exs` didn't set `:make_args`, so every `.cpp`
+  in `c_src/` compiled serially. `mix.exs` now passes
+  `-j#{System.schedulers_online()}` through, and the vestigial
+  `JOBS` / `MAKE_JOBS` pair in the `Makefile` (computed but never
+  referenced) has been removed. On an 8-core M-series, a clean NIF
+  build drops from ~19 s to ~7 s.
