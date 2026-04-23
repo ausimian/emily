@@ -116,7 +116,7 @@ use. Emily defaults to the AOT variant. To switch, add to
 `config/config.exs`:
 
 ```elixir
-config :emily, mlx_variant: :jit
+config :emily, variant: :jit
 ```
 
 This changes which prebuilt tarball is downloaded; both variants can
@@ -126,7 +126,7 @@ Artefact sizes on an M-series Mac (release optimisations):
 
 | Mode                            | `libemily.so` | `mlx.metallib` | `priv/` total |
 | ------------------------------- | ------------: | -------------: | ------------: |
-| `:no_jit` (default)             |       ~20 MB  |       ~154 MB  |      ~175 MB  |
+| `:aot` (default)                |       ~20 MB  |       ~154 MB  |      ~175 MB  |
 | `:jit`                          |       ~22 MB  |       ~3.5 MB  |       ~25 MB  |
 
 With JIT on, kernels are compiled on first invocation, so there's a

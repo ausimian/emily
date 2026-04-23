@@ -18,14 +18,6 @@ defmodule Emily.MixProject do
       "8982b126697ed422c4b5a17e8171a3bbcf661383fdac8f01ac9ddf5cc309d9e3"
   }
 
-  # Read once at project load — `:mlx_variant` lives in `config/config.exs`
-  # so CI can flip it via `config/local.exs` without a custom MIX_ENV.
-  # The env key is needed because config/config.exs calls `config_env/0`
-  # to pick a sibling env file.
-  @emily_cfg Path.expand("config/config.exs", __DIR__)
-             |> Config.Reader.read!(env: Mix.env())
-             |> Keyword.fetch!(:emily)
-
   require Logger
 
   def project do
@@ -189,18 +181,10 @@ defmodule Emily.MixProject do
   end
 
   defp mlx_variant do
-    case Keyword.fetch!(@emily_cfg, :mlx_variant) do
-      :no_jit ->
-        "aot"
-
-      :jit ->
-        "jit"
-
-      other ->
-        Mix.raise("""
-        Invalid :mlx_variant #{inspect(other)} in config/config.exs.
-        Expected :no_jit or :jit.
-        """)
+    case Application.get_env(:emily, :variant, :aot) do
+      :aot -> "aot"
+      :jit -> "jit"
+      other -> Mix.raise("Invalid :emily variant #{inspect(other)}. Expected :aot or :jit.")
     end
   end
 

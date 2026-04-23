@@ -32,21 +32,14 @@ jobs:
       matrix:
         include:
           - os: macos-14
-            variant: no-jit
+            variant: aot
           - os: macos-26
             variant: jit
     env:
       MIX_ENV: test
+      EMILY_MLX_VARIANT: ${{ matrix.variant }}
     steps:
       - uses: actions/checkout@v6
-
-      - name: Select MLX variant
-        if: matrix.variant == 'jit'
-        run: |
-          cat > config/local.exs <<'EOF'
-          import Config
-          config :emily, mlx_variant: :jit
-          EOF
 
       - name: Setup Beam
         uses: erlef/setup-beam@v1
@@ -142,21 +135,14 @@ jobs:
       matrix:
         include:
           - os: macos-14
-            variant: no-jit
+            variant: aot
           - os: macos-26
             variant: jit
     env:
       MIX_ENV: test
+      EMILY_MLX_VARIANT: ${{ matrix.variant }}
     steps:
       - uses: actions/checkout@v6
-
-      - name: Select MLX variant
-        if: matrix.variant == 'jit'
-        run: |
-          cat > config/local.exs <<'EOF'
-          import Config
-          config :emily, mlx_variant: :jit
-          EOF
 
       - name: Setup Beam
         uses: erlef/setup-beam@v1
