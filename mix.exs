@@ -5,18 +5,11 @@ defmodule Emily.MixProject do
   @version "0.2.2"
   @source_url "https://github.com/ausimian/emily"
 
-  # MLX pin. The checksums map keys every supported (os, arch, variant)
-  # asset hosted on the `mlx-#{@mlx_version}` release of this repo and
-  # is verified against every downloaded tarball before extraction. Bumps
-  # must ship the new SHA256s in the same commit — see the release-mlx
-  # workflow for how to cut new prebuilts.
+  # MLX pin. Drives the git tag the `:mlx_src` dep is cloned at (see
+  # `deps/0`) and the per-variant cache dir layout. Bump in lockstep with
+  # the submodule ref; CI's `release-nif.yml` rebuilds the NIF against
+  # whatever this resolves to.
   @mlx_version "0.31.2"
-  @mlx_checksums %{
-    "mlx-0.31.2-macos-arm64-aot.tar.gz" =>
-      "d752d33ea9ef050541263c97c87a47cbc72a239f9a2e355ae73b941bf24be012",
-    "mlx-0.31.2-macos-arm64-jit.tar.gz" =>
-      "8982b126697ed422c4b5a17e8171a3bbcf661383fdac8f01ac9ddf5cc309d9e3"
-  }
 
   require Logger
 
@@ -91,7 +84,18 @@ defmodule Emily.MixProject do
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
       {:dialyxir, "~> 1.4", only: [:dev], runtime: false},
       {:ex_doc, "~> 0.34", only: :docs, runtime: false},
-      {:publisho, "~> 1.0", only: :dev, runtime: false}
+      {:publisho, "~> 1.0", only: :dev, runtime: false},
+      # MLX source tree for in-repo/CI source builds of libmlx + the
+      # Metal shader library. Cloned by `mix deps.get` and consumed by
+      # `scripts/build-mlx.sh` via the `compile.emily_mlx` alias below.
+      # Hex consumers never see this — they receive a precompiled NIF,
+      # so MLX source isn't needed at their build time.
+      {:mlx_src,
+       git: "https://github.com/ml-explore/mlx.git",
+       tag: "v#{@mlx_version}",
+       app: false,
+       compile: false,
+       only: [:dev, :test]}
     ]
   end
 
@@ -158,7 +162,7 @@ defmodule Emily.MixProject do
     ]
   end
 
-  # ---------- MLX prebuilt download ----------
+  # ---------- MLX source build (in-repo / CI) ----------
 
   defp make_env do
     dir = mlx_install_dir()
@@ -191,8 +195,6 @@ defmodule Emily.MixProject do
   defp mlx_install_dir,
     do: Path.join(cache_dir(), "mlx-#{@mlx_version}-#{mlx_variant()}")
 
-  defp mlx_asset_name, do: "mlx-#{@mlx_version}-macos-#{arch_tag()}-#{mlx_variant()}.tar.gz"
-
   defp arch_tag do
     case {:os.type(), :erlang.system_info(:system_architecture) |> to_string()} do
       {{:unix, :darwin}, "aarch64" <> _} ->
@@ -200,19 +202,20 @@ defmodule Emily.MixProject do
 
       {{:unix, :darwin}, "x86_64" <> _} ->
         Mix.raise("""
-        No x86_64 macOS prebuilt exists for MLX #{@mlx_version}.
-        Apple Silicon is required; x86_64 Macs aren't supported by this build.
+        x86_64 macOS is not supported for MLX #{@mlx_version}.
+        Apple Silicon is required.
         """)
 
       {os, arch} ->
         Mix.raise("""
-        Emily's MLX prebuilts are macOS-only; cannot build on
+        Emily's MLX build is macOS-only; cannot build on
         #{inspect(os)} / #{arch}.
         """)
     end
   end
 
   defp build_mlx(args) do
+    _ = arch_tag()
     dir = mlx_install_dir()
 
     if "--force" in args do
@@ -222,116 +225,55 @@ defmodule Emily.MixProject do
     if File.dir?(dir) do
       {:ok, []}
     else
-      download_and_extract_mlx(dir)
+      build_mlx_from_source!(dir)
       {:ok, []}
     end
   end
 
-  defp download_and_extract_mlx(install_dir) do
-    asset = mlx_asset_name()
-    url = "https://github.com/ausimian/emily/releases/download/mlx-#{@mlx_version}/#{asset}"
-    tarball = Path.join(cache_dir(), asset)
+  defp build_mlx_from_source!(install_dir) do
+    mlx_src = Path.expand("deps/mlx_src", File.cwd!())
 
-    expected =
-      Map.get(@mlx_checksums, asset) ||
-        Mix.raise("""
-        No SHA256 pinned for #{asset} in @mlx_checksums (mix.exs).
-        This usually means the pinned version was bumped without
-        updating the checksum map.
-        """)
+    unless File.dir?(mlx_src) do
+      Mix.raise("""
+      MLX source not found at #{mlx_src}.
+      Run `mix deps.get` to clone the `:mlx_src` git dep.
+      """)
+    end
+
+    script = Path.expand("scripts/build-mlx.sh", File.cwd!())
+    jit_flag = if mlx_variant() == "jit", do: "1", else: "0"
 
     File.mkdir_p!(cache_dir())
-    File.mkdir_p!(install_dir)
 
-    Mix.shell().info("Downloading MLX prebuilt #{asset}")
-    http_download!(url, tarball)
-    verify_sha256!(tarball, expected)
+    Mix.shell().info("Building MLX #{@mlx_version} (#{mlx_variant()}) from source")
 
-    case System.cmd(
-           "tar",
-           ["-xzf", tarball, "-C", install_dir, "--strip-components=1"],
-           stderr_to_stdout: true
-         ) do
-      {_, 0} ->
+    port_opts = [
+      :binary,
+      :exit_status,
+      :stderr_to_stdout,
+      {:args, [mlx_src, @mlx_version, jit_flag, install_dir]}
+    ]
+
+    port = Port.open({:spawn_executable, String.to_charlist(script)}, port_opts)
+
+    case stream_port(port) do
+      0 ->
         :ok
 
-      {output, code} ->
-        Mix.raise("""
-        tar extract failed (exit #{code}):
-        #{output}
-        """)
-    end
-
-    File.rm(tarball)
-    :ok
-  end
-
-  # Mix prunes the parent VM's code path during dep compilation: the
-  # ebin dirs for :ssl, :public_key, :asn1 and most of :inets become
-  # unreachable even though their apps report as loaded/started. That
-  # broke the previous in-process httpc path, because :public_key and
-  # :asn1 are required to read the OS trust store and decode the
-  # downloaded chain. Run the whole HTTPS round-trip on a peer node
-  # instead — the child VM spawned by :peer has a fresh, un-pruned code
-  # path, so standard httpc + public_key just work.
-  defp http_download!(url, dest) do
-    {:ok, pid, _node} =
-      :peer.start_link(%{connection: :standard_io, name: :peer.random_name()})
-
-    try do
-      {:ok, _} = :peer.call(pid, :application, :ensure_all_started, [:inets])
-      {:ok, _} = :peer.call(pid, :application, :ensure_all_started, [:ssl])
-
-      cacerts = :peer.call(pid, :public_key, :cacerts_get, [])
-      match_fun = :peer.call(pid, :public_key, :pkix_verify_hostname_match_fun, [:https])
-
-      http_opts = [
-        autoredirect: true,
-        ssl: [
-          verify: :verify_peer,
-          cacerts: cacerts,
-          customize_hostname_check: [match_fun: match_fun]
-        ]
-      ]
-
-      request = {String.to_charlist(url), []}
-      opts = [body_format: :binary, stream: String.to_charlist(dest)]
-
-      case :peer.call(pid, :httpc, :request, [:get, request, http_opts, opts]) do
-        {:ok, :saved_to_file} ->
-          :ok
-
-        {:ok, {{_, 200, _}, _headers, _body}} ->
-          :ok
-
-        {:ok, {{_, status, reason}, _headers, _body}} ->
-          File.rm(dest)
-          Mix.raise("MLX download failed (HTTP #{status} #{reason}): #{url}")
-
-        {:error, reason} ->
-          File.rm(dest)
-          Mix.raise("MLX download failed (#{inspect(reason)}): #{url}")
-      end
-    after
-      :peer.stop(pid)
+      code ->
+        File.rm_rf(install_dir)
+        Mix.raise("MLX source build failed (exit #{code})")
     end
   end
 
-  defp verify_sha256!(path, expected) do
-    actual =
-      path
-      |> File.read!()
-      |> then(&:crypto.hash(:sha256, &1))
-      |> Base.encode16(case: :lower)
+  defp stream_port(port) do
+    receive do
+      {^port, {:data, bin}} ->
+        IO.write(bin)
+        stream_port(port)
 
-    if actual != expected do
-      File.rm(path)
-
-      Mix.raise("""
-      MLX prebuilt checksum mismatch for #{Path.basename(path)}.
-        expected: #{expected}
-        actual:   #{actual}
-      """)
+      {^port, {:exit_status, code}} ->
+        code
     end
   end
 end
