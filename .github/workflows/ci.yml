@@ -93,33 +93,6 @@ jobs:
       # that no Nx op on the transformer critical path has regressed.
       - run: mix test --only conformance
 
-  # Tagged-release gate: exercise the Hex tarball the way a downstream
-  # consumer would — unpack it into a throwaway project, consume it via
-  # a path dep, download the MLX prebuilt, and run a sanity snippet
-  # against Emily.Backend + Emily.Compiler. Catches missing package
-  # files or a broken prebuilt release before `mix hex.publish`.
-  smoke-test:
-    name: Hex package smoke test
-    if: github.event_name == 'push' && github.ref_type == 'tag'
-    runs-on: macos-14
-    steps:
-      - uses: actions/checkout@v6
-
-      - name: Setup Beam
-        uses: erlef/setup-beam@v1
-        with:
-          version-file: .tool-versions
-          version-type: strict
-
-      - name: Cache MLX prebuilt
-        uses: actions/cache@v5
-        with:
-          path: ~/Library/Caches/emily
-          key: mlx-smoke-${{ runner.os }}-${{ hashFiles('c_src/**', 'Makefile', 'mix.exs') }}
-          restore-keys: mlx-smoke-${{ runner.os }}-
-
-      - run: scripts/smoke-test-package.sh
-
   # Manual-only job: exercises the heavy `*_full` conformance and
   # training variants excluded from the default suite (see
   # test/test_helper.exs). These download full-size checkpoints

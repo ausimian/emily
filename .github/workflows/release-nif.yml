@@ -1,0 +1,127 @@
+name: Release NIF
+
+# On every bare-semver tag push (e.g. 0.3.0), build the precompiled
+# NIF for each supported (variant × target) cell and upload the
+# tarball + SHA256 to a draft GitHub release named after the tag.
+# The SHA256 is printed in each cell's job summary; paste those into
+# `@nif_checksums` in mix.exs, commit, then tag again and re-run this
+# workflow to produce the final release (same tarballs, same SHAs if
+# the build inputs are unchanged).
+
+on:
+  push:
+    tags: ['[0-9]+.[0-9]+.[0-9]+*']
+
+permissions:
+  contents: write
+
+jobs:
+  # Create the draft release once before the matrix fans out, so
+  # parallel `gh release upload` calls don't race on creation.
+  prepare-release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Create or reuse draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+          REPO: ${{ github.repository }}
+        run: |
+          if ! gh release view "$TAG" --repo "$REPO" >/dev/null 2>&1; then
+            gh release create "$TAG" \
+              --repo "$REPO" \
+              --draft \
+              --title "Emily $TAG" \
+              --notes "Precompiled NIF tarballs for macOS arm64 (AOT + JIT variants)."
+          fi
+
+  build:
+    needs: prepare-release
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # AOT runs on macos-14 so the metallib works back to older
+          # macOS; JIT runs on macos-26 because MLX's NAX kernel
+          # sources transitively include
+          # <MetalPerformancePrimitives/MetalPerformancePrimitives.h>,
+          # first shipped in the macOS 26.2 SDK.
+          - { variant: aot, target: macos-arm64, runs-on: macos-14 }
+          - { variant: jit, target: macos-arm64, runs-on: macos-26 }
+    runs-on: ${{ matrix.runs-on }}
+    env:
+      MIX_ENV: dev
+      EMILY_MLX_VARIANT: ${{ matrix.variant }}
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: erlef/setup-beam@v1
+        with:
+          version-file: .tool-versions
+          version-type: strict
+
+      - name: Cache deps
+        uses: actions/cache@v5
+        with:
+          path: deps
+          key: deps-${{ runner.os }}-${{ hashFiles('mix.lock') }}
+          restore-keys: deps-${{ runner.os }}-
+
+      # MLX install dir keyed by the NIF sources, Makefile, build
+      # script, and the pinned MLX version in mix.exs.
+      - name: Cache MLX install
+        uses: actions/cache@v5
+        with:
+          path: ~/Library/Caches/emily
+          key: mlx-release-${{ runner.os }}-${{ matrix.variant }}-${{ hashFiles('c_src/**', 'Makefile', 'mix.exs', 'scripts/build-mlx.sh') }}
+          restore-keys: mlx-release-${{ runner.os }}-${{ matrix.variant }}-
+
+      - run: mix deps.get
+
+      - run: mix compile
+
+      - name: Package NIF tarball
+        id: pack
+        env:
+          VARIANT: ${{ matrix.variant }}
+          TARGET: ${{ matrix.target }}
+        run: |
+          VERSION="${GITHUB_REF_NAME}"
+          ASSET="emily-nif-${VERSION}-${VARIANT}-${TARGET}.tar.gz"
+          PRIV="_build/dev/lib/emily/priv"
+
+          if [[ ! -d "$PRIV" ]]; then
+            echo "error: expected $PRIV after mix compile" >&2
+            exit 1
+          fi
+
+          # Flat tarball (no wrapping dir) — mix.exs's fetch_nif/1
+          # extracts with `tar -xzf ... -C priv` and expects files at
+          # the top level.
+          (cd "$PRIV" && tar czf "$GITHUB_WORKSPACE/$ASSET" libemily.* mlx.metallib)
+
+          shasum -a 256 "$ASSET" > "${ASSET}.sha256"
+          echo "asset=$ASSET" >> "$GITHUB_OUTPUT"
+
+          {
+            echo "## ${VARIANT}-${TARGET}"
+            echo ""
+            echo '```'
+            cat "${ASSET}.sha256"
+            echo '```'
+            echo ""
+            echo "Paste into \`@nif_checksums\` in mix.exs:"
+            echo ""
+            SHA="$(awk '{print $1}' "${ASSET}.sha256")"
+            echo '```elixir'
+            echo "{:${VARIANT}, \"${TARGET}\"} => \"${SHA}\","
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload to draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+          REPO: ${{ github.repository }}
+          ASSET: ${{ steps.pack.outputs.asset }}
+        run: gh release upload "$TAG" "$ASSET" "${ASSET}.sha256" --repo "$REPO" --clobber
