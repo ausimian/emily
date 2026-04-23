@@ -282,44 +282,54 @@ defmodule Emily.MixProject do
     :ok
   end
 
+  # Mix prunes the parent VM's code path during dep compilation: the
+  # ebin dirs for :ssl, :public_key, :asn1 and most of :inets become
+  # unreachable even though their apps report as loaded/started. That
+  # broke the previous in-process httpc path, because :public_key and
+  # :asn1 are required to read the OS trust store and decode the
+  # downloaded chain. Run the whole HTTPS round-trip on a peer node
+  # instead — the child VM spawned by :peer has a fresh, un-pruned code
+  # path, so standard httpc + public_key just work.
   defp http_download!(url, dest) do
-    {:ok, _} = Application.ensure_all_started(:inets)
-    {:ok, _} = Application.ensure_all_started(:ssl)
-    # `ensure_all_started(:ssl)` transitively starts the :public_key app,
-    # but a consumer's `mix compile` sometimes reaches this point before
-    # the :public_key module itself has been loaded — smoke-test CI on a
-    # clean cache hit "(UndefinedFunctionError) :public_key.cacerts_get/0
-    # ... module :public_key is not available". Force a module load.
-    {:module, :public_key} = :code.ensure_loaded(:public_key)
+    {:ok, pid, _node} =
+      :peer.start_link(%{connection: :standard_io, name: :peer.random_name()})
 
-    http_opts = [
-      autoredirect: true,
-      ssl: [
-        verify: :verify_peer,
-        cacerts: :public_key.cacerts_get(),
-        customize_hostname_check: [
-          match_fun: :public_key.pkix_verify_hostname_match_fun(:https)
+    try do
+      {:ok, _} = :peer.call(pid, :application, :ensure_all_started, [:inets])
+      {:ok, _} = :peer.call(pid, :application, :ensure_all_started, [:ssl])
+
+      cacerts = :peer.call(pid, :public_key, :cacerts_get, [])
+      match_fun = :peer.call(pid, :public_key, :pkix_verify_hostname_match_fun, [:https])
+
+      http_opts = [
+        autoredirect: true,
+        ssl: [
+          verify: :verify_peer,
+          cacerts: cacerts,
+          customize_hostname_check: [match_fun: match_fun]
         ]
       ]
-    ]
 
-    request = {String.to_charlist(url), []}
-    opts = [body_format: :binary, stream: String.to_charlist(dest)]
+      request = {String.to_charlist(url), []}
+      opts = [body_format: :binary, stream: String.to_charlist(dest)]
 
-    case :httpc.request(:get, request, http_opts, opts) do
-      {:ok, :saved_to_file} ->
-        :ok
+      case :peer.call(pid, :httpc, :request, [:get, request, http_opts, opts]) do
+        {:ok, :saved_to_file} ->
+          :ok
 
-      {:ok, {{_, 200, _}, _headers, _body}} ->
-        :ok
+        {:ok, {{_, 200, _}, _headers, _body}} ->
+          :ok
 
-      {:ok, {{_, status, reason}, _headers, _body}} ->
-        File.rm(dest)
-        Mix.raise("MLX download failed (HTTP #{status} #{reason}): #{url}")
+        {:ok, {{_, status, reason}, _headers, _body}} ->
+          File.rm(dest)
+          Mix.raise("MLX download failed (HTTP #{status} #{reason}): #{url}")
 
-      {:error, reason} ->
-        File.rm(dest)
-        Mix.raise("MLX download failed (#{inspect(reason)}): #{url}")
+        {:error, reason} ->
+          File.rm(dest)
+          Mix.raise("MLX download failed (#{inspect(reason)}): #{url}")
+      end
+    after
+      :peer.stop(pid)
     end
   end
 
