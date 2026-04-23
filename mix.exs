@@ -11,6 +11,12 @@ defmodule Emily.MixProject do
   # whatever this resolves to.
   @mlx_version "0.31.2"
 
+  # SHA256 of every precompiled NIF tarball published on the `#{@version}`
+  # GitHub release, keyed by {variant, target}. Populated by hand after
+  # `release-nif.yml` uploads the artefacts for a given tag — the workflow
+  # prints each SHA in the job summary. See MAINTAINING.md for the flow.
+  @nif_checksums %{}
+
   require Logger
 
   def project do
@@ -24,7 +30,7 @@ defmodule Emily.MixProject do
       start_permanent: Mix.env() == :prod,
       deps: deps(),
       aliases: aliases(),
-      compilers: [:emily_mlx, :elixir_make] ++ Mix.compilers(),
+      compilers: compilers(),
       make_env: &make_env/0,
       make_args: ["-j#{System.schedulers_online()}"],
       test_coverage: test_coverage(),
@@ -47,6 +53,19 @@ defmodule Emily.MixProject do
 
   defp elixirc_paths(:test), do: ["lib", "test/support"]
   defp elixirc_paths(_), do: ["lib"]
+
+  # Dev / CI checkout has `c_src/` on disk — compile the NIF from source
+  # against a locally-built libmlx. Hex consumers don't get `c_src/` in
+  # their tarball (see `package[:files]`), so we download a precompiled
+  # NIF tarball instead. Detection by filesystem is the simplest thing
+  # that doesn't need a new env var or runtime flag.
+  defp compilers do
+    if File.dir?("c_src") do
+      [:emily_mlx, :elixir_make] ++ Mix.compilers()
+    else
+      [:emily_nif] ++ Mix.compilers()
+    end
+  end
 
   # Emily.Native is pure NIF stubs — :erlang.load_nif/2 patches the bytecode
   # at load time, so the stub bodies never run and cover reports 0% on them.
@@ -118,7 +137,8 @@ defmodule Emily.MixProject do
         "credo --strict",
         "test"
       ],
-      "compile.emily_mlx": &build_mlx/1
+      "compile.emily_mlx": &build_mlx/1,
+      "compile.emily_nif": &fetch_nif/1
     ]
   end
 
@@ -158,7 +178,7 @@ defmodule Emily.MixProject do
     [
       licenses: ["MIT"],
       links: %{"GitHub" => @source_url},
-      files: ~w(lib c_src Makefile mix.exs config README.md CHANGELOG.md LICENSE)
+      files: ~w(lib mix.exs README.md CHANGELOG.md LICENSE)
     ]
   end
 
@@ -274,6 +294,146 @@ defmodule Emily.MixProject do
 
       {^port, {:exit_status, code}} ->
         code
+    end
+  end
+
+  # ---------- Precompiled NIF download (hex consumer) ----------
+
+  defp fetch_nif(_args) do
+    variant = Application.get_env(:emily, :variant, :aot)
+    target = detect_nif_target!()
+    key = {variant, target}
+
+    expected =
+      Map.get(@nif_checksums, key) ||
+        Mix.raise("""
+        No precompiled NIF pinned for #{inspect(key)} on emily #{@version}.
+        Supported: #{inspect(Map.keys(@nif_checksums))}.
+
+        If you just upgraded, check that a matching prebuilt was uploaded
+        to #{@source_url}/releases/tag/#{@version} and that @nif_checksums
+        in mix.exs is up to date.
+        """)
+
+    asset = "emily-nif-#{@version}-#{variant}-#{target}.tar.gz"
+    url = "#{@source_url}/releases/download/#{@version}/#{asset}"
+
+    cache = cache_dir()
+    File.mkdir_p!(cache)
+    tarball = Path.join(cache, asset)
+
+    priv = Path.join(Mix.Project.app_path(), "priv")
+    File.mkdir_p!(priv)
+
+    unless File.exists?(tarball) and sha256_ok?(tarball, expected) do
+      Mix.shell().info("Downloading precompiled NIF #{asset}")
+      http_download!(url, tarball)
+      verify_sha256!(tarball, expected)
+    end
+
+    case System.cmd("tar", ["-xzf", tarball, "-C", priv], stderr_to_stdout: true) do
+      {_, 0} ->
+        :ok
+
+      {output, code} ->
+        Mix.raise("""
+        tar extract failed (exit #{code}):
+        #{output}
+        """)
+    end
+
+    {:ok, []}
+  end
+
+  defp detect_nif_target! do
+    case {:os.type(), :erlang.system_info(:system_architecture) |> to_string()} do
+      {{:unix, :darwin}, "aarch64" <> _} ->
+        "macos-arm64"
+
+      {{:unix, :darwin}, "x86_64" <> _} ->
+        Mix.raise("""
+        No precompiled NIF for x86_64 macOS — Emily is Apple Silicon only.
+        """)
+
+      {os, arch} ->
+        Mix.raise("""
+        No precompiled NIF for #{inspect(os)} / #{arch}.
+        Supported targets: #{inspect(Enum.uniq(Enum.map(Map.keys(@nif_checksums), &elem(&1, 1))))}.
+        """)
+    end
+  end
+
+  # Mix prunes the parent VM's code path during dep compilation: the
+  # ebin dirs for :ssl, :public_key, :asn1 and most of :inets become
+  # unreachable even though their apps report as loaded/started. Run
+  # the whole HTTPS round-trip on a peer node instead — the child VM
+  # spawned by :peer has a fresh, un-pruned code path, so standard
+  # httpc + public_key just work.
+  defp http_download!(url, dest) do
+    {:ok, pid, _node} =
+      :peer.start_link(%{connection: :standard_io, name: :peer.random_name()})
+
+    try do
+      {:ok, _} = :peer.call(pid, :application, :ensure_all_started, [:inets])
+      {:ok, _} = :peer.call(pid, :application, :ensure_all_started, [:ssl])
+
+      cacerts = :peer.call(pid, :public_key, :cacerts_get, [])
+      match_fun = :peer.call(pid, :public_key, :pkix_verify_hostname_match_fun, [:https])
+
+      http_opts = [
+        autoredirect: true,
+        ssl: [
+          verify: :verify_peer,
+          cacerts: cacerts,
+          customize_hostname_check: [match_fun: match_fun]
+        ]
+      ]
+
+      request = {String.to_charlist(url), []}
+      opts = [body_format: :binary, stream: String.to_charlist(dest)]
+
+      case :peer.call(pid, :httpc, :request, [:get, request, http_opts, opts]) do
+        {:ok, :saved_to_file} ->
+          :ok
+
+        {:ok, {{_, 200, _}, _headers, _body}} ->
+          :ok
+
+        {:ok, {{_, status, reason}, _headers, _body}} ->
+          File.rm(dest)
+          Mix.raise("NIF download failed (HTTP #{status} #{reason}): #{url}")
+
+        {:error, reason} ->
+          File.rm(dest)
+          Mix.raise("NIF download failed (#{inspect(reason)}): #{url}")
+      end
+    after
+      :peer.stop(pid)
+    end
+  end
+
+  defp sha256_ok?(path, expected) do
+    path
+    |> File.read!()
+    |> then(&:crypto.hash(:sha256, &1))
+    |> Base.encode16(case: :lower) == expected
+  end
+
+  defp verify_sha256!(path, expected) do
+    actual =
+      path
+      |> File.read!()
+      |> then(&:crypto.hash(:sha256, &1))
+      |> Base.encode16(case: :lower)
+
+    if actual != expected do
+      File.rm(path)
+
+      Mix.raise("""
+      NIF tarball checksum mismatch for #{Path.basename(path)}.
+        expected: #{expected}
+        actual:   #{actual}
+      """)
     end
   end
 end
