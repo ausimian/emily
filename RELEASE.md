@@ -19,10 +19,12 @@
 
 ### Added
 
-- `.github/workflows/release-nif.yml` — on bare-semver tag push,
-  builds + uploads the precompiled NIF for each `(variant × target)`
-  cell and prints a ready-to-paste `@nif_checksums` line in the job
-  summary.
+- `.github/workflows/release-nif.yml` — builds the precompiled NIF
+  for each `(variant × target)` cell and prints a ready-to-paste
+  `@nif_checksums` line in the job summary. Two triggers:
+  `workflow_dispatch` (uploads to workflow run artefacts — used to
+  collect SHAs before baking them into mix.exs) and tag push
+  (uploads to a draft GitHub release — the consumer-facing URL).
 
 ### Removed
 

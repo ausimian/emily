@@ -1,30 +1,60 @@
 name: Release NIF
 
-# On every bare-semver tag push (e.g. 0.3.0), build the precompiled
-# NIF for each supported (variant × target) cell and upload the
-# tarball + SHA256 to a draft GitHub release named after the tag.
-# The SHA256 is printed in each cell's job summary; paste those into
-# `@nif_checksums` in mix.exs, commit, then tag again and re-run this
-# workflow to produce the final release (same tarballs, same SHAs if
-# the build inputs are unchanged).
+# Builds the precompiled NIF for each supported (variant × target)
+# cell and publishes the resulting tarballs. Two triggers:
+#
+# * `workflow_dispatch` — manual run against any branch. Used to
+#   collect SHA256s before baking them into `@nif_checksums` in
+#   mix.exs. Artefacts are uploaded as workflow run artefacts
+#   (retention 90 days); no GitHub release is touched.
+#
+# * `push` on a bare-semver tag (e.g. 0.3.0) — the publication run.
+#   Artefacts land on a draft GitHub release named after the tag, at
+#   the URL mix.exs's `compile.emily_nif` fetches from.
+#
+# Each cell's job summary prints a ready-to-paste `@nif_checksums`
+# line regardless of trigger.
 
 on:
   push:
     tags: ['[0-9]+.[0-9]+.[0-9]+*']
+  workflow_dispatch:
 
 permissions:
   contents: write
 
 jobs:
-  # Create the draft release once before the matrix fans out, so
-  # parallel `gh release upload` calls don't race on creation.
+  # Resolves the target version once and — on tag trigger only —
+  # creates the draft release up front so the matrix cells don't race
+  # on `gh release create`. On workflow_dispatch the release step is
+  # a no-op; there's no tag to create one against.
   prepare-release:
     runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
     steps:
+      - uses: actions/checkout@v6
+
+      - name: Resolve version
+        id: version
+        run: |
+          if [[ "${{ github.event_name }}" == "push" ]]; then
+            VERSION="${GITHUB_REF_NAME}"
+          else
+            VERSION=$(grep -m1 '@version' mix.exs | awk -F'"' '{print $2}')
+            if [[ -z "$VERSION" ]]; then
+              echo "error: could not parse @version from mix.exs" >&2
+              exit 1
+            fi
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Resolved version: $VERSION"
+
       - name: Create or reuse draft release
+        if: github.event_name == 'push'
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG: ${{ github.ref_name }}
+          TAG: ${{ steps.version.outputs.version }}
           REPO: ${{ github.repository }}
         run: |
           if ! gh release view "$TAG" --repo "$REPO" >/dev/null 2>&1; then
@@ -52,6 +82,7 @@ jobs:
     env:
       MIX_ENV: dev
       EMILY_MLX_VARIANT: ${{ matrix.variant }}
+      VERSION: ${{ needs.prepare-release.outputs.version }}
     steps:
       - uses: actions/checkout@v6
 
@@ -86,7 +117,6 @@ jobs:
           VARIANT: ${{ matrix.variant }}
           TARGET: ${{ matrix.target }}
         run: |
-          VERSION="${GITHUB_REF_NAME}"
           ASSET="emily-nif-${VERSION}-${VARIANT}-${TARGET}.tar.gz"
           PRIV="_build/dev/lib/emily/priv"
 
@@ -118,10 +148,24 @@ jobs:
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
+      # On tag push, publish to the draft GitHub release so consumers
+      # can fetch. On workflow_dispatch, stash as workflow artefacts
+      # for maintainer collection — no release side-effects.
       - name: Upload to draft release
+        if: github.event_name == 'push'
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG: ${{ github.ref_name }}
+          TAG: ${{ needs.prepare-release.outputs.version }}
           REPO: ${{ github.repository }}
           ASSET: ${{ steps.pack.outputs.asset }}
         run: gh release upload "$TAG" "$ASSET" "${ASSET}.sha256" --repo "$REPO" --clobber
+
+      - name: Upload as workflow artefact
+        if: github.event_name == 'workflow_dispatch'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.pack.outputs.asset }}
+          path: |
+            ${{ steps.pack.outputs.asset }}
+            ${{ steps.pack.outputs.asset }}.sha256
+          retention-days: 90

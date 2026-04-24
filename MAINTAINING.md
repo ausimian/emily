@@ -35,65 +35,85 @@ default `aot`) through `config/config.exs` and stash the atom as
 
 ## Cutting a release
 
+The "tag twice" dance is avoided by collecting checksums from a
+`workflow_dispatch` run of `release-nif.yml` *before* tagging.
+Building the NIF is decoupled from tagging — the only thing the tag
+buys us is a GitHub release at a stable URL for hex consumers to
+fetch from.
+
 ### 1. Land changes on `main`
 
 Normal PR flow. The per-matrix CI lane (`precommit` job) is the
 canonical "still works" signal.
 
-### 2. Tag and push
+### 2. Bump `@version`
+
+On a fresh branch, edit `@version` in `mix.exs`, update `RELEASE.md`
+with the changelog notes for this bump, commit, PR, merge. `main`
+now carries the new version with an empty or stale `@nif_checksums`.
+
+### 3. Collect SHA256s via `workflow_dispatch`
 
 ```sh
-mix publisho patch   # or minor / major
+gh workflow run release-nif.yml --repo ausimian/emily --ref main
+gh run watch --repo ausimian/emily   # or click into the run in the UI
 ```
 
-This bumps `@version`, rolls `RELEASE.md` into `CHANGELOG.md` under a
-dated heading, commits, tags (bare semver — no `v` prefix), and
-pushes both the commit and the tag.
-
-### 3. Wait for `release-nif.yml`
-
-The tag push fires `.github/workflows/release-nif.yml`, which fans
-out `{variant × target}`:
+The workflow fans out `{variant × target}`:
 
 | Variant | Target       | Runner      |
 | ------- | ------------ | ----------- |
 | aot     | macos-arm64  | `macos-14`  |
 | jit     | macos-arm64  | `macos-26`  |
 
-Each cell:
-
-1. Clones `:mlx_src` via `mix deps.get`.
-2. Builds MLX + the NIF from source (`scripts/build-mlx.sh` +
-   `elixir_make`).
-3. Tars `priv/libemily.* + priv/mlx.metallib` as
-   `emily-nif-<v>-<variant>-<target>.tar.gz`.
-4. Uploads the tarball + `.sha256` to a draft release named after
-   the tag.
-5. Prints a ready-to-paste `@nif_checksums` line in the job summary.
+Each cell clones `:mlx_src`, builds MLX + the NIF from source
+(`scripts/build-mlx.sh` + `elixir_make`), tars
+`priv/libemily.* + priv/mlx.metallib` as
+`emily-nif-<v>-<variant>-<target>.tar.gz`, uploads that tarball as a
+workflow run artefact, and prints a paste-ready `@nif_checksums`
+line in the job summary.
 
 ### 4. Bake the SHAs into `mix.exs`
 
 Copy the `{:aot, "macos-arm64"} => "..."` lines from each job
-summary into `@nif_checksums` in `mix.exs`. Commit as
-`Version <v> checksums`.
+summary into `@nif_checksums`. Commit on `main` as `Version <v>
+checksums` (or fold into the version-bump PR if it hasn't been
+merged yet).
 
-### 5. Re-tag and re-run
+### 5. Roll the changelog and tag
 
-`mix publisho patch` again to cut a second tag (e.g. if the draft
-was `0.3.0`, this gives you `0.3.1` with the checksums baked in).
-`release-nif.yml` fires a second time, rebuilds the same tarballs,
-and uploads them to a fresh draft.
+The version you bumped to in step 2 is the version `@nif_checksums`
+was computed for — don't let anything bump it between here and the
+tag, or the filenames baked into asset lookup won't match what CI
+uploaded.
 
-If the inputs are unchanged (`mix.lock`, `c_src/**`, `Makefile`,
+That rules out `mix publisho <level>` (it bumps `@version` as part
+of tagging). Do it by hand:
+
+```sh
+# Fold RELEASE.md into CHANGELOG.md under a dated `## <v>` heading
+# by hand, leave RELEASE.md empty (placeholder for the next bump).
+$EDITOR CHANGELOG.md RELEASE.md
+git commit -am "Version <v>"
+
+git tag <v>
+git push origin main "<v>"
+```
+
+`release-nif.yml` fires on the tag push, rebuilds the same tarballs,
+and uploads them to a **draft** GitHub release at
+`https://github.com/ausimian/emily/releases/tag/<v>` — the URL the
+consumer's `compile.emily_nif` step fetches from.
+
+If build inputs haven't changed (`mix.lock`, `c_src/**`, `Makefile`,
 `scripts/build-mlx.sh`, pinned `@mlx_version`), the rebuilt tarballs
-should hash identically to the baked-in SHAs — paste-check before
-publishing.
+should hash identically to the baked-in SHAs — eyeball the new job
+summaries to confirm before promoting.
 
-> The double-tag dance is awkward but aligns with the existing
-> "tag-then-checksum-then-tag" pattern from `@mlx_checksums`. A
-> future `mix emily.checksum` helper (rustler_precompiled-style)
-> could download uploaded artefacts and update `@nif_checksums`
-> in-place, collapsing this to one manual step.
+> Once SHAs are in `@nif_checksums`, `mix publisho` is fine again
+> for future releases *if* you're OK running the full workflow per
+> bump. The typical flow is to re-dispatch after each `@version`
+> bump.
 
 ### 6. Verify the published tarball end-to-end
 
