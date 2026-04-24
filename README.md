@@ -370,6 +370,22 @@ layer, `Emily.Backend` in non-defn mode at the Compiler layer, and
 HuggingFace Transformers reference slices end-to-end. A bug can only
 be introduced in the layer where its test fails.
 
+## Acknowledgements
+
+Emily stands on the shoulders of two projects without which it would not exist:
+
+- **[MLX](https://github.com/ml-explore/mlx)** — Apple's array framework for
+  Apple Silicon, developed by the MLX team at Apple. Emily is a thin Elixir
+  layer over MLX's C++ API; every tensor op ultimately runs through MLX.
+- **[EMLX](https://github.com/elixir-nx/emlx)** — the original Elixir-Nx
+  MLX backend by [Paulo Valente](https://github.com/polvalente) and
+  contributors. EMLX proved the integration shape between Nx and MLX, and
+  Emily used it as a design reference and early ground-truth source.
+
+Thanks also to [Cocoa Xu](https://github.com/cocoa-xu), whose MLX build
+scripts and prebuilt-binary tooling underpin much of the macOS NIF supply
+chain in the Elixir ML ecosystem.
+
 ## License
 
 MIT
