@@ -27,9 +27,6 @@ emily-*.tar
 /priv/mlx/
 /priv/mlx.metallib
 
-# Per-checkout config overrides (see config/config.exs)
-/config/local.exs
-
 # Dialyzer PLTs
 /priv/plts/
 

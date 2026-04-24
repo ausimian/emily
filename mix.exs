@@ -5,26 +5,22 @@ defmodule Emily.MixProject do
   @version "0.2.2"
   @source_url "https://github.com/ausimian/emily"
 
-  # MLX pin. The checksums map keys every supported (os, arch, variant)
-  # asset hosted on the `mlx-#{@mlx_version}` release of this repo and
-  # is verified against every downloaded tarball before extraction. Bumps
-  # must ship the new SHA256s in the same commit — see the release-mlx
-  # workflow for how to cut new prebuilts.
+  # MLX pin. Drives the git tag the `:mlx_src` dep is cloned at (see
+  # `deps/0`) and the per-variant cache dir layout. Bump in lockstep with
+  # the submodule ref; CI's `release-nif.yml` rebuilds the NIF against
+  # whatever this resolves to.
   @mlx_version "0.31.2"
-  @mlx_checksums %{
-    "mlx-0.31.2-macos-arm64-aot.tar.gz" =>
-      "d752d33ea9ef050541263c97c87a47cbc72a239f9a2e355ae73b941bf24be012",
-    "mlx-0.31.2-macos-arm64-jit.tar.gz" =>
-      "8982b126697ed422c4b5a17e8171a3bbcf661383fdac8f01ac9ddf5cc309d9e3"
-  }
 
-  # Read once at project load — `:mlx_variant` lives in `config/config.exs`
-  # so CI can flip it via `config/local.exs` without a custom MIX_ENV.
-  # The env key is needed because config/config.exs calls `config_env/0`
-  # to pick a sibling env file.
-  @emily_cfg Path.expand("config/config.exs", __DIR__)
-             |> Config.Reader.read!(env: Mix.env())
-             |> Keyword.fetch!(:emily)
+  # Precompiled NIF targets this `@version` ships. Used as an
+  # early fail-fast guard in the hex-consumer fetch step (an
+  # unsupported target 404s on the tarball download, but the list
+  # lets us raise with a clearer message). Checksums are not pinned
+  # here; the consumer fetches a `.sha256` sidecar alongside each
+  # tarball at compile time.
+  @supported_targets [
+    {:aot, "macos-arm64"},
+    {:jit, "macos-arm64"}
+  ]
 
   require Logger
 
@@ -39,7 +35,7 @@ defmodule Emily.MixProject do
       start_permanent: Mix.env() == :prod,
       deps: deps(),
       aliases: aliases(),
-      compilers: [:emily_mlx, :elixir_make] ++ Mix.compilers(),
+      compilers: compilers(),
       make_env: &make_env/0,
       make_args: ["-j#{System.schedulers_online()}"],
       test_coverage: test_coverage(),
@@ -62,6 +58,19 @@ defmodule Emily.MixProject do
 
   defp elixirc_paths(:test), do: ["lib", "test/support"]
   defp elixirc_paths(_), do: ["lib"]
+
+  # Dev / CI checkout has `c_src/` on disk — compile the NIF from source
+  # against a locally-built libmlx. Hex consumers don't get `c_src/` in
+  # their tarball (see `package[:files]`), so we download a precompiled
+  # NIF tarball instead. Detection by filesystem is the simplest thing
+  # that doesn't need a new env var or runtime flag.
+  defp compilers do
+    if File.dir?("c_src") do
+      [:emily_mlx, :elixir_make] ++ Mix.compilers()
+    else
+      [:emily_nif] ++ Mix.compilers()
+    end
+  end
 
   # Emily.Native is pure NIF stubs — :erlang.load_nif/2 patches the bytecode
   # at load time, so the stub bodies never run and cover reports 0% on them.
@@ -99,7 +108,18 @@ defmodule Emily.MixProject do
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
       {:dialyxir, "~> 1.4", only: [:dev], runtime: false},
       {:ex_doc, "~> 0.34", only: :docs, runtime: false},
-      {:publisho, "~> 1.0", only: :dev, runtime: false}
+      {:publisho, "~> 1.0", only: :dev, runtime: false},
+      # MLX source tree for in-repo/CI source builds of libmlx + the
+      # Metal shader library. Cloned by `mix deps.get` and consumed by
+      # `scripts/build-mlx.sh` via the `compile.emily_mlx` alias below.
+      # Hex consumers never see this — they receive a precompiled NIF,
+      # so MLX source isn't needed at their build time.
+      {:mlx_src,
+       git: "https://github.com/ml-explore/mlx.git",
+       tag: "v#{@mlx_version}",
+       app: false,
+       compile: false,
+       only: [:dev, :test]}
     ]
   end
 
@@ -122,7 +142,8 @@ defmodule Emily.MixProject do
         "credo --strict",
         "test"
       ],
-      "compile.emily_mlx": &build_mlx/1
+      "compile.emily_mlx": &build_mlx/1,
+      "compile.emily_nif": &fetch_nif/1
     ]
   end
 
@@ -162,11 +183,11 @@ defmodule Emily.MixProject do
     [
       licenses: ["MIT"],
       links: %{"GitHub" => @source_url},
-      files: ~w(lib c_src Makefile mix.exs config README.md CHANGELOG.md LICENSE)
+      files: ~w(lib mix.exs README.md CHANGELOG.md LICENSE)
     ]
   end
 
-  # ---------- MLX prebuilt download ----------
+  # ---------- MLX source build (in-repo / CI) ----------
 
   defp make_env do
     dir = mlx_install_dir()
@@ -189,25 +210,15 @@ defmodule Emily.MixProject do
   end
 
   defp mlx_variant do
-    case Keyword.fetch!(@emily_cfg, :mlx_variant) do
-      :no_jit ->
-        "aot"
-
-      :jit ->
-        "jit"
-
-      other ->
-        Mix.raise("""
-        Invalid :mlx_variant #{inspect(other)} in config/config.exs.
-        Expected :no_jit or :jit.
-        """)
+    case Application.get_env(:emily, :variant, :aot) do
+      :aot -> "aot"
+      :jit -> "jit"
+      other -> Mix.raise("Invalid :emily variant #{inspect(other)}. Expected :aot or :jit.")
     end
   end
 
   defp mlx_install_dir,
     do: Path.join(cache_dir(), "mlx-#{@mlx_version}-#{mlx_variant()}")
-
-  defp mlx_asset_name, do: "mlx-#{@mlx_version}-macos-#{arch_tag()}-#{mlx_variant()}.tar.gz"
 
   defp arch_tag do
     case {:os.type(), :erlang.system_info(:system_architecture) |> to_string()} do
@@ -216,19 +227,20 @@ defmodule Emily.MixProject do
 
       {{:unix, :darwin}, "x86_64" <> _} ->
         Mix.raise("""
-        No x86_64 macOS prebuilt exists for MLX #{@mlx_version}.
-        Apple Silicon is required; x86_64 Macs aren't supported by this build.
+        x86_64 macOS is not supported for MLX #{@mlx_version}.
+        Apple Silicon is required.
         """)
 
       {os, arch} ->
         Mix.raise("""
-        Emily's MLX prebuilts are macOS-only; cannot build on
+        Emily's MLX build is macOS-only; cannot build on
         #{inspect(os)} / #{arch}.
         """)
     end
   end
 
   defp build_mlx(args) do
+    _ = arch_tag()
     dir = mlx_install_dir()
 
     if "--force" in args do
@@ -238,36 +250,97 @@ defmodule Emily.MixProject do
     if File.dir?(dir) do
       {:ok, []}
     else
-      download_and_extract_mlx(dir)
+      build_mlx_from_source!(dir)
       {:ok, []}
     end
   end
 
-  defp download_and_extract_mlx(install_dir) do
-    asset = mlx_asset_name()
-    url = "https://github.com/ausimian/emily/releases/download/mlx-#{@mlx_version}/#{asset}"
-    tarball = Path.join(cache_dir(), asset)
+  defp build_mlx_from_source!(install_dir) do
+    mlx_src = Path.expand("deps/mlx_src", File.cwd!())
 
-    expected =
-      Map.get(@mlx_checksums, asset) ||
-        Mix.raise("""
-        No SHA256 pinned for #{asset} in @mlx_checksums (mix.exs).
-        This usually means the pinned version was bumped without
-        updating the checksum map.
-        """)
+    unless File.dir?(mlx_src) do
+      Mix.raise("""
+      MLX source not found at #{mlx_src}.
+      Run `mix deps.get` to clone the `:mlx_src` git dep.
+      """)
+    end
+
+    script = Path.expand("scripts/build-mlx.sh", File.cwd!())
+    jit_flag = if mlx_variant() == "jit", do: "1", else: "0"
 
     File.mkdir_p!(cache_dir())
-    File.mkdir_p!(install_dir)
 
-    Mix.shell().info("Downloading MLX prebuilt #{asset}")
-    http_download!(url, tarball)
-    verify_sha256!(tarball, expected)
+    Mix.shell().info("Building MLX #{@mlx_version} (#{mlx_variant()}) from source")
 
-    case System.cmd(
-           "tar",
-           ["-xzf", tarball, "-C", install_dir, "--strip-components=1"],
-           stderr_to_stdout: true
-         ) do
+    port_opts = [
+      :binary,
+      :exit_status,
+      :stderr_to_stdout,
+      {:args, [mlx_src, @mlx_version, jit_flag, install_dir]}
+    ]
+
+    port = Port.open({:spawn_executable, String.to_charlist(script)}, port_opts)
+
+    case stream_port(port) do
+      0 ->
+        :ok
+
+      code ->
+        File.rm_rf(install_dir)
+        Mix.raise("MLX source build failed (exit #{code})")
+    end
+  end
+
+  defp stream_port(port) do
+    receive do
+      {^port, {:data, bin}} ->
+        IO.write(bin)
+        stream_port(port)
+
+      {^port, {:exit_status, code}} ->
+        code
+    end
+  end
+
+  # ---------- Precompiled NIF download (hex consumer) ----------
+
+  defp fetch_nif(_args) do
+    variant = Application.get_env(:emily, :variant, :aot)
+    target = detect_nif_target!()
+    key = {variant, target}
+
+    unless key in @supported_targets do
+      Mix.raise("""
+      No precompiled NIF for #{inspect(key)} on emily #{@version}.
+      Supported: #{inspect(@supported_targets)}.
+      """)
+    end
+
+    asset = "emily-nif-#{@version}-#{variant}-#{target}.tar.gz"
+    base_url = "#{@source_url}/releases/download/#{@version}"
+
+    cache = cache_dir()
+    File.mkdir_p!(cache)
+    tarball = Path.join(cache, asset)
+    sha_path = tarball <> ".sha256"
+
+    priv = Path.join(Mix.Project.app_path(), "priv")
+    File.mkdir_p!(priv)
+
+    # Fetch the sidecar on every compile — it's a tiny file and
+    # drives verification of the (much larger) tarball. Lets us
+    # re-verify a cached tarball against whatever's currently
+    # published, instead of trusting the local disk copy blind.
+    http_download!("#{base_url}/#{asset}.sha256", sha_path)
+    expected = sha_path |> File.read!() |> String.split() |> hd()
+
+    unless File.exists?(tarball) and sha256_ok?(tarball, expected) do
+      Mix.shell().info("Downloading precompiled NIF #{asset}")
+      http_download!("#{base_url}/#{asset}", tarball)
+      verify_sha256!(tarball, expected)
+    end
+
+    case System.cmd("tar", ["-xzf", tarball, "-C", priv], stderr_to_stdout: true) do
       {_, 0} ->
         :ok
 
@@ -278,18 +351,33 @@ defmodule Emily.MixProject do
         """)
     end
 
-    File.rm(tarball)
-    :ok
+    {:ok, []}
+  end
+
+  defp detect_nif_target! do
+    case {:os.type(), :erlang.system_info(:system_architecture) |> to_string()} do
+      {{:unix, :darwin}, "aarch64" <> _} ->
+        "macos-arm64"
+
+      {{:unix, :darwin}, "x86_64" <> _} ->
+        Mix.raise("""
+        No precompiled NIF for x86_64 macOS — Emily is Apple Silicon only.
+        """)
+
+      {os, arch} ->
+        Mix.raise("""
+        No precompiled NIF for #{inspect(os)} / #{arch}.
+        Supported targets: #{inspect(Enum.uniq(Enum.map(@supported_targets, &elem(&1, 1))))}.
+        """)
+    end
   end
 
   # Mix prunes the parent VM's code path during dep compilation: the
   # ebin dirs for :ssl, :public_key, :asn1 and most of :inets become
-  # unreachable even though their apps report as loaded/started. That
-  # broke the previous in-process httpc path, because :public_key and
-  # :asn1 are required to read the OS trust store and decode the
-  # downloaded chain. Run the whole HTTPS round-trip on a peer node
-  # instead — the child VM spawned by :peer has a fresh, un-pruned code
-  # path, so standard httpc + public_key just work.
+  # unreachable even though their apps report as loaded/started. Run
+  # the whole HTTPS round-trip on a peer node instead — the child VM
+  # spawned by :peer has a fresh, un-pruned code path, so standard
+  # httpc + public_key just work.
   defp http_download!(url, dest) do
     {:ok, pid, _node} =
       :peer.start_link(%{connection: :standard_io, name: :peer.random_name()})
@@ -322,15 +410,22 @@ defmodule Emily.MixProject do
 
         {:ok, {{_, status, reason}, _headers, _body}} ->
           File.rm(dest)
-          Mix.raise("MLX download failed (HTTP #{status} #{reason}): #{url}")
+          Mix.raise("NIF download failed (HTTP #{status} #{reason}): #{url}")
 
         {:error, reason} ->
           File.rm(dest)
-          Mix.raise("MLX download failed (#{inspect(reason)}): #{url}")
+          Mix.raise("NIF download failed (#{inspect(reason)}): #{url}")
       end
     after
       :peer.stop(pid)
     end
+  end
+
+  defp sha256_ok?(path, expected) do
+    path
+    |> File.read!()
+    |> then(&:crypto.hash(:sha256, &1))
+    |> Base.encode16(case: :lower) == expected
   end
 
   defp verify_sha256!(path, expected) do
@@ -344,7 +439,7 @@ defmodule Emily.MixProject do
       File.rm(path)
 
       Mix.raise("""
-      MLX prebuilt checksum mismatch for #{Path.basename(path)}.
+      NIF tarball checksum mismatch for #{Path.basename(path)}.
         expected: #{expected}
         actual:   #{actual}
       """)

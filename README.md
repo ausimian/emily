@@ -34,11 +34,12 @@ def deps do
 end
 ```
 
-On first `mix compile` Emily downloads a prebuilt `libmlx.a` +
-`mlx.metallib` tarball from this repo's GitHub releases into
-`$EMILY_CACHE` (default `~/Library/Caches/emily`) and links it into
-the NIF. No cmake or Xcode toolchain is required on the consumer
-side. See [Building](#building) for details.
+On first `mix compile` Emily downloads the precompiled NIF for your
+OS/arch/variant (`libemily.{so,dylib}` + `mlx.metallib`) from this
+repo's GitHub releases into `$EMILY_CACHE` (default
+`~/Library/Caches/emily`) and drops it into `priv/`. No cmake, Xcode,
+or C++ toolchain is required on the consumer side — nothing is
+compiled locally. See [Building](#building) for details.
 
 ## Features
 
@@ -75,38 +76,53 @@ side. See [Building](#building) for details.
 
 ## Prerequisites
 
-- **macOS on Apple Silicon (arm64).** Emily's MLX prebuilts are arm64
-  macOS only; x86_64 Macs aren't supported.
+- **macOS on Apple Silicon (arm64).** Emily's precompiled NIFs are
+  arm64 macOS only; x86_64 Macs aren't supported.
 - **Elixir 1.18+ / OTP 27+.** Development is pinned to Elixir 1.19.5
   / OTP 28.3 via `.tool-versions`.
 
-No Xcode, Metal toolchain, or cmake is required on the consumer side
-— Emily downloads a prebuilt `libmlx.a` + `mlx.metallib` from GitHub.
+No Xcode, Metal toolchain, cmake, or C++ compiler is required on the
+consumer side — Emily downloads a precompiled NIF from GitHub
+Releases on first `mix compile`.
 
 ## Building
 
+### As a hex consumer
+
+Add `{:emily, "~> 0.3"}` to `mix.exs`, then:
+
 ```sh
-git clone https://github.com/ausimian/emily.git
-cd emily
 mix deps.get
 mix compile
 ```
 
-On a cold build Emily downloads the pinned MLX prebuilt
-(`mlx-<version>-macos-arm64-<variant>.tar.gz`, ~40 MB AOT / ~5 MB JIT)
-from this repo's releases into `$EMILY_CACHE` (default
-`~/Library/Caches/emily/mlx-<version>-<variant>/`), verifies its
-SHA256 against `@mlx_checksums` in `mix.exs`, extracts it, and links
-it into the NIF. Subsequent builds reuse the cached install.
+On a cold build Emily downloads the matching precompiled tarball
+(`emily-nif-<version>-<variant>-<target>.tar.gz`) from this repo's
+GitHub release for the pinned version, verifies its SHA256 against
+`@nif_checksums` in `mix.exs`, and extracts
+`libemily.{so,dylib}` + `mlx.metallib` into `priv/`. Subsequent
+builds reuse the cached tarball under `$EMILY_CACHE`
+(default `~/Library/Caches/emily`).
 
-Override the cache location with `EMILY_CACHE=/some/path mix
-compile`, or re-fetch with `mix compile.emily_mlx --force`.
+Override the cache location with `EMILY_CACHE=/some/path mix compile`.
 
-The MLX version is pinned in `mix.exs` as `@mlx_version`. Bumps
-happen in this repo — new prebuilts are produced by the manual
-`release-mlx.yml` workflow, which uploads tarballs + SHA256s to a
-`mlx-<version>` release on this repo; the `@mlx_version` /
-`@mlx_checksums` pair in `mix.exs` is then updated in the same commit.
+### From source (contributors)
+
+```sh
+git clone https://github.com/ausimian/emily.git
+cd emily
+mix deps.get    # also clones ml-explore/mlx into deps/mlx_src at the pinned tag
+mix compile
+```
+
+The in-repo checkout keeps `c_src/` on disk, so `mix compile` takes
+the source-build path: `scripts/build-mlx.sh` cmake-builds
+`libmlx.a` + `mlx.metallib` out of `deps/mlx_src/` into
+`$EMILY_CACHE/mlx-<version>-<variant>/`, then `elixir_make` links
+the NIF against it. Xcode + the Metal toolchain are required.
+
+Force an MLX rebuild with `mix compile.emily_mlx --force` after
+editing `scripts/build-mlx.sh` or bumping `@mlx_version`.
 
 ### MLX JIT (optional)
 
@@ -116,7 +132,7 @@ use. Emily defaults to the AOT variant. To switch, add to
 `config/config.exs`:
 
 ```elixir
-config :emily, mlx_variant: :jit
+config :emily, variant: :jit
 ```
 
 This changes which prebuilt tarball is downloaded; both variants can
@@ -126,7 +142,7 @@ Artefact sizes on an M-series Mac (release optimisations):
 
 | Mode                            | `libemily.so` | `mlx.metallib` | `priv/` total |
 | ------------------------------- | ------------: | -------------: | ------------: |
-| `:no_jit` (default)             |       ~20 MB  |       ~154 MB  |      ~175 MB  |
+| `:aot` (default)                |       ~20 MB  |       ~154 MB  |      ~175 MB  |
 | `:jit`                          |       ~22 MB  |       ~3.5 MB  |       ~25 MB  |
 
 With JIT on, kernels are compiled on first invocation, so there's a

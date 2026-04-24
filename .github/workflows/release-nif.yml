@@ -1,0 +1,166 @@
+name: Release NIF
+
+# Builds the precompiled NIF for each supported (variant × target)
+# cell and publishes the resulting tarballs. Two triggers:
+#
+# * `push` on a bare-semver tag (e.g. 0.3.0) — the publication run.
+#   Tarballs and matching `.sha256` sidecars land on a draft GitHub
+#   release named after the tag, at the URL mix.exs's
+#   `compile.emily_nif` step fetches from.
+#
+# * `workflow_dispatch` — manual rebuild against any branch. Useful
+#   for debugging or reproducing a release without cutting a new
+#   tag. Artefacts go to workflow run storage (retention 90 days);
+#   no GitHub release is touched.
+#
+# Consumers verify each tarball against the sidecar fetched from
+# the same release, so there is no checksum list to bake into
+# mix.exs on the maintainer side.
+
+on:
+  push:
+    tags: ['[0-9]+.[0-9]+.[0-9]+*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  # Resolves the target version once and — on tag trigger only —
+  # creates the draft release up front so the matrix cells don't race
+  # on `gh release create`. On workflow_dispatch the release step is
+  # a no-op; there's no tag to create one against.
+  prepare-release:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Resolve version
+        id: version
+        run: |
+          if [[ "${{ github.event_name }}" == "push" ]]; then
+            VERSION="${GITHUB_REF_NAME}"
+          else
+            VERSION=$(grep -m1 '@version' mix.exs | awk -F'"' '{print $2}')
+            if [[ -z "$VERSION" ]]; then
+              echo "error: could not parse @version from mix.exs" >&2
+              exit 1
+            fi
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Resolved version: $VERSION"
+
+      - name: Create or reuse draft release
+        if: github.event_name == 'push'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.version.outputs.version }}
+          REPO: ${{ github.repository }}
+        run: |
+          if ! gh release view "$TAG" --repo "$REPO" >/dev/null 2>&1; then
+            gh release create "$TAG" \
+              --repo "$REPO" \
+              --draft \
+              --title "Emily $TAG" \
+              --notes "Precompiled NIF tarballs for macOS arm64 (AOT + JIT variants)."
+          fi
+
+  build:
+    needs: prepare-release
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # AOT runs on macos-14 so the metallib works back to older
+          # macOS; JIT runs on macos-26 because MLX's NAX kernel
+          # sources transitively include
+          # <MetalPerformancePrimitives/MetalPerformancePrimitives.h>,
+          # first shipped in the macOS 26.2 SDK.
+          - { variant: aot, target: macos-arm64, runs-on: macos-14 }
+          - { variant: jit, target: macos-arm64, runs-on: macos-26 }
+    runs-on: ${{ matrix.runs-on }}
+    env:
+      MIX_ENV: dev
+      EMILY_MLX_VARIANT: ${{ matrix.variant }}
+      VERSION: ${{ needs.prepare-release.outputs.version }}
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: erlef/setup-beam@v1
+        with:
+          version-file: .tool-versions
+          version-type: strict
+
+      - name: Cache deps
+        uses: actions/cache@v5
+        with:
+          path: deps
+          key: deps-${{ runner.os }}-${{ hashFiles('mix.lock') }}
+          restore-keys: deps-${{ runner.os }}-
+
+      # MLX install dir keyed by the NIF sources, Makefile, build
+      # script, and the pinned MLX version in mix.exs.
+      - name: Cache MLX install
+        uses: actions/cache@v5
+        with:
+          path: ~/Library/Caches/emily
+          key: mlx-release-${{ runner.os }}-${{ matrix.variant }}-${{ hashFiles('c_src/**', 'Makefile', 'mix.exs', 'scripts/build-mlx.sh') }}
+          restore-keys: mlx-release-${{ runner.os }}-${{ matrix.variant }}-
+
+      - run: mix deps.get
+
+      - run: mix compile
+
+      - name: Package NIF tarball
+        id: pack
+        env:
+          VARIANT: ${{ matrix.variant }}
+          TARGET: ${{ matrix.target }}
+        run: |
+          ASSET="emily-nif-${VERSION}-${VARIANT}-${TARGET}.tar.gz"
+          PRIV="_build/dev/lib/emily/priv"
+
+          if [[ ! -d "$PRIV" ]]; then
+            echo "error: expected $PRIV after mix compile" >&2
+            exit 1
+          fi
+
+          # Flat tarball (no wrapping dir) — mix.exs's fetch_nif/1
+          # extracts with `tar -xzf ... -C priv` and expects files at
+          # the top level.
+          (cd "$PRIV" && tar czf "$GITHUB_WORKSPACE/$ASSET" libemily.* mlx.metallib)
+
+          shasum -a 256 "$ASSET" > "${ASSET}.sha256"
+          echo "asset=$ASSET" >> "$GITHUB_OUTPUT"
+
+          {
+            echo "## ${VARIANT}-${TARGET}"
+            echo ""
+            echo '```'
+            cat "${ASSET}.sha256"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # On tag push, publish to the draft GitHub release so consumers
+      # can fetch. On workflow_dispatch, stash as workflow artefacts
+      # for maintainer collection — no release side-effects.
+      - name: Upload to draft release
+        if: github.event_name == 'push'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.prepare-release.outputs.version }}
+          REPO: ${{ github.repository }}
+          ASSET: ${{ steps.pack.outputs.asset }}
+        run: gh release upload "$TAG" "$ASSET" "${ASSET}.sha256" --repo "$REPO" --clobber
+
+      - name: Upload as workflow artefact
+        if: github.event_name == 'workflow_dispatch'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.pack.outputs.asset }}
+          path: |
+            ${{ steps.pack.outputs.asset }}
+            ${{ steps.pack.outputs.asset }}.sha256
+          retention-days: 90
