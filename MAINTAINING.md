@@ -35,31 +35,27 @@ default `aot`) through `config/config.exs` and stash the atom as
 
 ## Cutting a release
 
-The "tag twice" dance is avoided by collecting checksums from a
-`workflow_dispatch` run of `release-nif.yml` *before* tagging.
-Building the NIF is decoupled from tagging — the only thing the tag
-buys us is a GitHub release at a stable URL for hex consumers to
-fetch from.
+Consumers verify each NIF tarball against a `.sha256` sidecar
+fetched from the same GitHub release, so there is nothing in
+`mix.exs` that has to be updated per release beyond `@version`.
 
 ### 1. Land changes on `main`
 
 Normal PR flow. The per-matrix CI lane (`precommit` job) is the
 canonical "still works" signal.
 
-### 2. Bump `@version`
-
-On a fresh branch, edit `@version` in `mix.exs`, update `RELEASE.md`
-with the changelog notes for this bump, commit, PR, merge. `main`
-now carries the new version with an empty or stale `@nif_checksums`.
-
-### 3. Collect SHA256s via `workflow_dispatch`
+### 2. Bump `@version`, roll the changelog, tag
 
 ```sh
-gh workflow run release-nif.yml --repo ausimian/emily --ref main
-gh run watch --repo ausimian/emily   # or click into the run in the UI
+mix publisho patch   # or minor / major
 ```
 
-The workflow fans out `{variant × target}`:
+Bumps `@version`, rolls `RELEASE.md` into `CHANGELOG.md` under a
+dated `## <v>` heading, commits `Version <v>`, tags bare semver (no
+`v` prefix), and pushes both the commit and the tag.
+
+The tag push fires `.github/workflows/release-nif.yml`, which fans
+out `{variant × target}`:
 
 | Variant | Target       | Runner      |
 | ------- | ------------ | ----------- |
@@ -69,53 +65,12 @@ The workflow fans out `{variant × target}`:
 Each cell clones `:mlx_src`, builds MLX + the NIF from source
 (`scripts/build-mlx.sh` + `elixir_make`), tars
 `priv/libemily.* + priv/mlx.metallib` as
-`emily-nif-<v>-<variant>-<target>.tar.gz`, uploads that tarball as a
-workflow run artefact, and prints a paste-ready `@nif_checksums`
-line in the job summary.
-
-### 4. Bake the SHAs into `mix.exs`
-
-Copy the `{:aot, "macos-arm64"} => "..."` lines from each job
-summary into `@nif_checksums`. Commit on `main` as `Version <v>
-checksums` (or fold into the version-bump PR if it hasn't been
-merged yet).
-
-### 5. Roll the changelog and tag
-
-The version you bumped to in step 2 is the version `@nif_checksums`
-was computed for — don't let anything bump it between here and the
-tag, or the filenames baked into asset lookup won't match what CI
-uploaded.
-
-That rules out `mix publisho <level>` (it bumps `@version` as part
-of tagging). Do it by hand:
-
-```sh
-# Fold RELEASE.md into CHANGELOG.md under a dated `## <v>` heading
-# by hand, leave RELEASE.md empty (placeholder for the next bump).
-$EDITOR CHANGELOG.md RELEASE.md
-git commit -am "Version <v>"
-
-git tag <v>
-git push origin main "<v>"
-```
-
-`release-nif.yml` fires on the tag push, rebuilds the same tarballs,
-and uploads them to a **draft** GitHub release at
+`emily-nif-<v>-<variant>-<target>.tar.gz`, writes a `.sha256`
+sidecar, and uploads both to a **draft** GitHub release at
 `https://github.com/ausimian/emily/releases/tag/<v>` — the URL the
 consumer's `compile.emily_nif` step fetches from.
 
-If build inputs haven't changed (`mix.lock`, `c_src/**`, `Makefile`,
-`scripts/build-mlx.sh`, pinned `@mlx_version`), the rebuilt tarballs
-should hash identically to the baked-in SHAs — eyeball the new job
-summaries to confirm before promoting.
-
-> Once SHAs are in `@nif_checksums`, `mix publisho` is fine again
-> for future releases *if* you're OK running the full workflow per
-> bump. The typical flow is to re-dispatch after each `@version`
-> bump.
-
-### 6. Verify the published tarball end-to-end
+### 3. Verify end-to-end
 
 In a throwaway project:
 
@@ -128,12 +83,33 @@ iex -S mix
 # Nx.tensor([1.0, 2.0]) |> Nx.add(3) |> Nx.to_flat_list()
 ```
 
-### 7. Promote the draft and publish
+`mix compile` fetches the `.sha256` sidecar first, then the tarball,
+verifies, extracts. A variant-mismatched consumer (`config :emily,
+variant: :jit`) should download the JIT tarball instead — worth
+spot-checking both lanes on the first release of a bump.
+
+### 4. Promote the draft and publish
 
 ```sh
 gh release edit <v> --repo ausimian/emily --draft=false
 mix hex.publish
 ```
+
+### Rebuilding without retagging
+
+If you need to reproduce a release's artefacts out-of-band (say, to
+compare against an earlier build, or to iterate on
+`scripts/build-mlx.sh` without bumping the version), trigger
+`release-nif.yml` manually:
+
+```sh
+gh workflow run release-nif.yml --repo ausimian/emily --ref main
+```
+
+The dispatch run resolves `@version` from `mix.exs`, builds the
+same tarballs, and stashes them as workflow-run artefacts
+(retention 90 days). The GitHub release is untouched, so consumers
+on that version see no change.
 
 ## Bumping MLX
 

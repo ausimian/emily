@@ -3,10 +3,10 @@
 - Hex consumers now receive a precompiled NIF
   (`libemily.{so,dylib}` + `mlx.metallib`) instead of source. First
   `mix compile` downloads the matching `emily-nif-<v>-<variant>-
-  <target>.tar.gz` from the emily GitHub release for the pinned
-  version, verifies a SHA256 pinned in `@nif_checksums`, and extracts
-  into `priv/`. No cmake / Xcode / C++ toolchain is needed on the
-  consumer side.
+  <target>.tar.gz` (and its `.sha256` sidecar) from the emily GitHub
+  release for the pinned version, verifies the tarball against the
+  published SHA256, and extracts into `priv/`. No cmake / Xcode /
+  C++ toolchain is needed on the consumer side.
 - In-repo / CI builds now clone MLX's source via a Mix git dep
   (`:mlx_src`) and build libmlx from source; `release-mlx.yml` is
   retired.
@@ -19,12 +19,11 @@
 
 ### Added
 
-- `.github/workflows/release-nif.yml` — builds the precompiled NIF
-  for each `(variant × target)` cell and prints a ready-to-paste
-  `@nif_checksums` line in the job summary. Two triggers:
-  `workflow_dispatch` (uploads to workflow run artefacts — used to
-  collect SHAs before baking them into mix.exs) and tag push
-  (uploads to a draft GitHub release — the consumer-facing URL).
+- `.github/workflows/release-nif.yml` — on bare-semver tag push,
+  builds the precompiled NIF for each `(variant × target)` cell and
+  uploads tarball + `.sha256` sidecar to a draft GitHub release.
+  `workflow_dispatch` is also wired for out-of-band rebuilds
+  (artefacts go to workflow storage; the release is untouched).
 
 ### Removed
 

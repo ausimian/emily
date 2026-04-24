@@ -3,17 +3,19 @@ name: Release NIF
 # Builds the precompiled NIF for each supported (variant × target)
 # cell and publishes the resulting tarballs. Two triggers:
 #
-# * `workflow_dispatch` — manual run against any branch. Used to
-#   collect SHA256s before baking them into `@nif_checksums` in
-#   mix.exs. Artefacts are uploaded as workflow run artefacts
-#   (retention 90 days); no GitHub release is touched.
-#
 # * `push` on a bare-semver tag (e.g. 0.3.0) — the publication run.
-#   Artefacts land on a draft GitHub release named after the tag, at
-#   the URL mix.exs's `compile.emily_nif` fetches from.
+#   Tarballs and matching `.sha256` sidecars land on a draft GitHub
+#   release named after the tag, at the URL mix.exs's
+#   `compile.emily_nif` step fetches from.
 #
-# Each cell's job summary prints a ready-to-paste `@nif_checksums`
-# line regardless of trigger.
+# * `workflow_dispatch` — manual rebuild against any branch. Useful
+#   for debugging or reproducing a release without cutting a new
+#   tag. Artefacts go to workflow run storage (retention 90 days);
+#   no GitHub release is touched.
+#
+# Consumers verify each tarball against the sidecar fetched from
+# the same release, so there is no checksum list to bake into
+# mix.exs on the maintainer side.
 
 on:
   push:
@@ -138,13 +140,6 @@ jobs:
             echo ""
             echo '```'
             cat "${ASSET}.sha256"
-            echo '```'
-            echo ""
-            echo "Paste into \`@nif_checksums\` in mix.exs:"
-            echo ""
-            SHA="$(awk '{print $1}' "${ASSET}.sha256")"
-            echo '```elixir'
-            echo "{:${VARIANT}, \"${TARGET}\"} => \"${SHA}\","
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 

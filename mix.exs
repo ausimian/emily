@@ -11,11 +11,16 @@ defmodule Emily.MixProject do
   # whatever this resolves to.
   @mlx_version "0.31.2"
 
-  # SHA256 of every precompiled NIF tarball published on the `#{@version}`
-  # GitHub release, keyed by {variant, target}. Populated by hand after
-  # `release-nif.yml` uploads the artefacts for a given tag — the workflow
-  # prints each SHA in the job summary. See MAINTAINING.md for the flow.
-  @nif_checksums %{}
+  # Precompiled NIF targets this `@version` ships. Used as an
+  # early fail-fast guard in the hex-consumer fetch step (an
+  # unsupported target 404s on the tarball download, but the list
+  # lets us raise with a clearer message). Checksums are not pinned
+  # here; the consumer fetches a `.sha256` sidecar alongside each
+  # tarball at compile time.
+  @supported_targets [
+    {:aot, "macos-arm64"},
+    {:jit, "macos-arm64"}
+  ]
 
   require Logger
 
@@ -304,30 +309,34 @@ defmodule Emily.MixProject do
     target = detect_nif_target!()
     key = {variant, target}
 
-    expected =
-      Map.get(@nif_checksums, key) ||
-        Mix.raise("""
-        No precompiled NIF pinned for #{inspect(key)} on emily #{@version}.
-        Supported: #{inspect(Map.keys(@nif_checksums))}.
-
-        If you just upgraded, check that a matching prebuilt was uploaded
-        to #{@source_url}/releases/tag/#{@version} and that @nif_checksums
-        in mix.exs is up to date.
-        """)
+    unless key in @supported_targets do
+      Mix.raise("""
+      No precompiled NIF for #{inspect(key)} on emily #{@version}.
+      Supported: #{inspect(@supported_targets)}.
+      """)
+    end
 
     asset = "emily-nif-#{@version}-#{variant}-#{target}.tar.gz"
-    url = "#{@source_url}/releases/download/#{@version}/#{asset}"
+    base_url = "#{@source_url}/releases/download/#{@version}"
 
     cache = cache_dir()
     File.mkdir_p!(cache)
     tarball = Path.join(cache, asset)
+    sha_path = tarball <> ".sha256"
 
     priv = Path.join(Mix.Project.app_path(), "priv")
     File.mkdir_p!(priv)
 
+    # Fetch the sidecar on every compile — it's a tiny file and
+    # drives verification of the (much larger) tarball. Lets us
+    # re-verify a cached tarball against whatever's currently
+    # published, instead of trusting the local disk copy blind.
+    http_download!("#{base_url}/#{asset}.sha256", sha_path)
+    expected = sha_path |> File.read!() |> String.split() |> hd()
+
     unless File.exists?(tarball) and sha256_ok?(tarball, expected) do
       Mix.shell().info("Downloading precompiled NIF #{asset}")
-      http_download!(url, tarball)
+      http_download!("#{base_url}/#{asset}", tarball)
       verify_sha256!(tarball, expected)
     end
 
@@ -358,7 +367,7 @@ defmodule Emily.MixProject do
       {os, arch} ->
         Mix.raise("""
         No precompiled NIF for #{inspect(os)} / #{arch}.
-        Supported targets: #{inspect(Enum.uniq(Enum.map(Map.keys(@nif_checksums), &elem(&1, 1))))}.
+        Supported targets: #{inspect(Enum.uniq(Enum.map(@supported_targets, &elem(&1, 1))))}.
         """)
     end
   end
