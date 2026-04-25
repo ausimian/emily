@@ -12,16 +12,20 @@ built from source (in this repo / CI) or consumed as a hex package:
   `:emily_mlx → :elixir_make`. The `compile.emily_mlx` alias calls
   `scripts/build-mlx.sh`, which cmake-builds libmlx.a + mlx.metallib
   from the `:mlx_src` Mix git dep (`deps/mlx_src/`) and installs into
-  `~/Library/Caches/emily/mlx-<v>-<variant>`. `elixir_make` then
-  compiles `c_src/*.cpp` against that MLX install and links
-  `priv/libemily.{so,dylib}`.
+  `$EMILY_CACHE/mlx-<v>-<variant>` (default
+  `$(getconf DARWIN_USER_CACHE_DIR)emily/mlx-<v>-<variant>` on macOS,
+  `${XDG_CACHE_HOME:-~/.cache}/emily/mlx-<v>-<variant>` on Linux).
+  `elixir_make` then compiles `c_src/*.cpp` against that MLX install
+  and links `priv/libemily.{so,dylib}`.
 
 - **Hex consumer (no `c_src/` in the tarball).** `mix compile` runs
   `:emily_nif`. The `compile.emily_nif` alias downloads the matching
   `emily-nif-<v>-<variant>-<target>.tar.gz` from the emily GitHub
-  release for the tag, verifies its SHA256 against `@nif_checksums`
-  in mix.exs, and extracts into `priv/`. No compilation; no MLX
-  source tree on the consumer side.
+  release for the tag, verifies its SHA256 against the `.sha256`
+  sidecar fetched alongside it (no checksums baked into mix.exs —
+  the sidecar is the source of truth for the published asset), and
+  extracts into `priv/`. No compilation; no MLX source tree on the
+  consumer side.
 
 The switch is driven by a `File.dir?("c_src")` check in mix.exs's
 `compilers/0` — the hex `package[:files]` list ships only `lib/` and
@@ -121,7 +125,8 @@ so changing the attribute is the entire pin.
 2. `mix deps.update mlx_src`.
 3. Force a local MLX rebuild to sanity-check:
    ```sh
-   rm -rf ~/Library/Caches/emily/mlx-<new>-*
+   rm -rf "$(getconf DARWIN_USER_CACHE_DIR)emily/"mlx-<new>-*   # macOS default
+   # or: rm -rf "${EMILY_CACHE:-${XDG_CACHE_HOME:-$HOME/.cache}/emily}/"mlx-<new>-*
    mix precommit
    ```
 4. Note the bump in `RELEASE.md`.
@@ -145,10 +150,11 @@ mix hex.build                    # produces emily-<v>.tar
 # (see prior scripts/smoke-test-package.sh for the pattern)
 ```
 
-The consumer will hit the real `compile.emily_nif` step — if
-`@nif_checksums` is populated and the tarball is on the GitHub
-release, it downloads + extracts; otherwise you get a clear
-"No precompiled NIF pinned" error.
+The consumer will hit the real `compile.emily_nif` step — if the
+tarball and its `.sha256` sidecar are present on the published
+GitHub release for the tag, it downloads + verifies + extracts;
+otherwise the sidecar fetch 404s with a clear `NIF download failed
+(HTTP 404 Not Found)` error pointing at the missing asset URL.
 
 ## Why the JIT lane can't roam across macOS versions
 
