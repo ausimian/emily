@@ -38,6 +38,12 @@ jobs:
     env:
       MIX_ENV: test
       EMILY_MLX_VARIANT: ${{ matrix.variant }}
+      # Pin the cache to the path the actions/cache step below
+      # populates. Without it, mix.exs's macOS default of
+      # DARWIN_USER_CACHE_DIR (`/private/var/folders/...`) misses
+      # the restored cache and rebuilds MLX from scratch every run.
+      # mix.exs runs `Path.expand` on this, so `~` resolves correctly.
+      EMILY_CACHE: ~/Library/Caches/emily
     steps:
       - uses: actions/checkout@v6
 
@@ -114,6 +120,12 @@ jobs:
     env:
       MIX_ENV: test
       EMILY_MLX_VARIANT: ${{ matrix.variant }}
+      # Pin the cache to the path the actions/cache step below
+      # populates. Without it, mix.exs's macOS default of
+      # DARWIN_USER_CACHE_DIR (`/private/var/folders/...`) misses
+      # the restored cache and rebuilds MLX from scratch every run.
+      # mix.exs runs `Path.expand` on this, so `~` resolves correctly.
+      EMILY_CACHE: ~/Library/Caches/emily
     steps:
       - uses: actions/checkout@v6
 

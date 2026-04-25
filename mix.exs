@@ -143,8 +143,25 @@ defmodule Emily.MixProject do
         "test"
       ],
       "compile.emily_mlx": &build_mlx/1,
-      "compile.emily_nif": &fetch_nif/1
+      "compile.emily_nif": &fetch_nif/1,
+      # The MLX install dir lives in the user-level cache and is
+      # *deliberately* preserved across `mix clean` (rebuilding from
+      # source is ~5–7 min). Wipe it explicitly with `mix clean.mlx`.
+      "clean.mlx": &clean_mlx/1
     ]
+  end
+
+  defp clean_mlx(_args) do
+    case Path.wildcard(Path.join(cache_dir(), "mlx-*")) do
+      [] ->
+        Mix.shell().info("No MLX install dirs to clean in #{cache_dir()}")
+
+      dirs ->
+        for dir <- dirs do
+          File.rm_rf!(dir)
+          Mix.shell().info("Removed #{dir}")
+        end
+    end
   end
 
   defp docs do
@@ -196,16 +213,33 @@ defmodule Emily.MixProject do
       "MLX_DIR" => dir,
       "MLX_INCLUDE_DIR" => Path.join(dir, "include"),
       "MLX_LIB_DIR" => Path.join(dir, "lib"),
-      "FINE_INCLUDE_DIR" => Fine.include_dir(),
-      "EMILY_CACHE_DIR" => cache_dir(),
-      "EMILY_VERSION" => @version
+      "FINE_INCLUDE_DIR" => Fine.include_dir()
     }
   end
 
+  # Default cache location, override with `EMILY_CACHE`. On macOS we
+  # use `DARWIN_USER_CACHE_DIR` (`/private/var/folders/<hash>/C/emily`)
+  # — the per-user sandboxed cache root that Apple's own sandboxed apps
+  # use for transient-but-persistent state. It's per-user, persistent
+  # across reboots (unlike `/tmp`), and lives outside `~/Library/` so
+  # it's not subject to user-facing backup/sync tooling defaults.
+  # Linux / Windows fall back to the XDG convention.
   defp cache_dir do
     case System.get_env("EMILY_CACHE") do
-      nil -> :filename.basedir(:user_cache, ~c"emily") |> to_string()
+      nil -> default_cache_dir()
       dir -> Path.expand(dir)
+    end
+  end
+
+  defp default_cache_dir do
+    case :os.type() do
+      {:unix, :darwin} ->
+        {out, 0} = System.cmd("getconf", ["DARWIN_USER_CACHE_DIR"])
+        Path.join(String.trim(out), "emily")
+
+      _ ->
+        cache_home = System.get_env("XDG_CACHE_HOME") || Path.join(System.user_home!(), ".cache")
+        Path.join(cache_home, "emily")
     end
   end
 
@@ -247,12 +281,21 @@ defmodule Emily.MixProject do
       File.rm_rf!(dir)
     end
 
-    if File.dir?(dir) do
+    if mlx_installed?(dir) do
       {:ok, []}
     else
+      File.rm_rf!(dir)
       build_mlx_from_source!(dir)
       {:ok, []}
     end
+  end
+
+  # `build-mlx.sh` publishes via `mv staging prefix` only after the
+  # critical artefacts are in place, so a directory missing either of
+  # these is by definition a partial install — don't trust it.
+  defp mlx_installed?(dir) do
+    File.exists?(Path.join([dir, "lib", "libmlx.a"])) and
+      File.exists?(Path.join([dir, "lib", "mlx.metallib"]))
   end
 
   defp build_mlx_from_source!(install_dir) do

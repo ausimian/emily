@@ -2,7 +2,7 @@ PRIV_DIR       := $(MIX_APP_PATH)/priv
 NIF_SO         := $(PRIV_DIR)/libemily.so
 METALLIB       := $(PRIV_DIR)/mlx.metallib
 
-BUILD_DIR := $(EMILY_CACHE_DIR)/build-$(EMILY_VERSION)
+BUILD_DIR := $(MIX_APP_PATH)/obj
 
 # Sources — include ops/* and any other subdirs under c_src.
 SOURCES := $(shell find c_src -name '*.cpp')
