@@ -444,7 +444,10 @@ defmodule Emily.MixProject do
       request = {String.to_charlist(url), []}
       opts = [body_format: :binary, stream: String.to_charlist(dest)]
 
-      case :peer.call(pid, :httpc, :request, [:get, request, http_opts, opts]) do
+      # :peer.call/4 defaults to a 5000 ms gen_server.call timeout. The
+      # sha256 sidecar fits; a multi-MB tarball doesn't. Let httpc drive
+      # its own timing and don't let the RPC wrapper abort it.
+      case :peer.call(pid, :httpc, :request, [:get, request, http_opts, opts], :infinity) do
         {:ok, :saved_to_file} ->
           :ok
 
