@@ -3,7 +3,7 @@
 ```elixir
 Mix.install(
   [
-    {:emily, "~> 0.1"},
+    {:emily, "~> 0.3"},
     # Bumblebee 0.6.3 (the latest Hex release) doesn't yet include
     # Qwen3 support, so pin the `main` ref that does. `override: true`
     # because Emily's mix.exs declares `{:bumblebee, "~> 0.6", optional: true}`
