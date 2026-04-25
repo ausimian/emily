@@ -2,7 +2,7 @@ defmodule Emily.MixProject do
   use Mix.Project
 
   @app :emily
-  @version "0.3.0"
+  @version "0.3.1"
   @source_url "https://github.com/ausimian/emily"
 
   # MLX pin. Drives the git tag the `:mlx_src` dep is cloned at (see
