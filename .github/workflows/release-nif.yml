@@ -85,6 +85,11 @@ jobs:
       MIX_ENV: dev
       EMILY_MLX_VARIANT: ${{ matrix.variant }}
       VERSION: ${{ needs.prepare-release.outputs.version }}
+      # Pin the cache to the path the actions/cache step below
+      # populates. Without it, mix.exs's macOS default of
+      # DARWIN_USER_CACHE_DIR (`/private/var/folders/...`) misses
+      # the restored cache and rebuilds MLX from scratch every run.
+      EMILY_CACHE: ~/Library/Caches/emily
     steps:
       - uses: actions/checkout@v6
 
