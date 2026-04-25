@@ -18,7 +18,7 @@ testable against its own oracle:
 Emily.Compiler    (Nx.Defn.Compiler) — validates opts, pins the result backend
 Emily.Backend     (Nx.Backend)       — op-by-op translation to Native
 Emily.Native      (NIF shim)         — one function per MLX op, no policy
-MLX C++           (prebuilt)         — libmlx.a + mlx.metallib fetched from GitHub
+MLX C++                              — statically linked into libemily; mlx.metallib alongside
 ```
 
 
@@ -29,7 +29,7 @@ Add `:emily` to your `mix.exs` deps:
 ```elixir
 def deps do
   [
-    {:emily, "~> 0.1.0"}
+    {:emily, "~> 0.3"}
   ]
 end
 ```
@@ -37,9 +37,11 @@ end
 On first `mix compile` Emily downloads the precompiled NIF for your
 OS/arch/variant (`libemily.{so,dylib}` + `mlx.metallib`) from this
 repo's GitHub releases into `$EMILY_CACHE` (default
-`~/Library/Caches/emily`) and drops it into `priv/`. No cmake, Xcode,
-or C++ toolchain is required on the consumer side — nothing is
-compiled locally. See [Building](#building) for details.
+`$(getconf DARWIN_USER_CACHE_DIR)emily/` on macOS,
+`${XDG_CACHE_HOME:-~/.cache}/emily/` on Linux) and drops it into
+`priv/`. No cmake, Xcode, or C++ toolchain is required on the
+consumer side — nothing is compiled locally. See
+[Building](#building) for details.
 
 ## Features
 
@@ -99,10 +101,15 @@ mix compile
 On a cold build Emily downloads the matching precompiled tarball
 (`emily-nif-<version>-<variant>-<target>.tar.gz`) from this repo's
 GitHub release for the pinned version, verifies its SHA256 against
-`@nif_checksums` in `mix.exs`, and extracts
-`libemily.{so,dylib}` + `mlx.metallib` into `priv/`. Subsequent
-builds reuse the cached tarball under `$EMILY_CACHE`
-(default `~/Library/Caches/emily`).
+the `.sha256` sidecar fetched alongside it (no checksums baked into
+`mix.exs` — the sidecar is the source of truth for the published
+asset), and extracts `libemily.{so,dylib}` + `mlx.metallib` into
+`priv/`. Subsequent builds reuse the cached tarball under
+`$EMILY_CACHE` (default `$(getconf DARWIN_USER_CACHE_DIR)emily/` on
+macOS, `${XDG_CACHE_HOME:-~/.cache}/emily/` on Linux). The sidecar is
+re-fetched on every compile and the cached tarball is re-verified
+against it, so a republish with a new checksum invalidates a stale
+cache automatically.
 
 Override the cache location with `EMILY_CACHE=/some/path mix compile`.
 
@@ -155,7 +162,7 @@ kernel sources transitively include
 only ships in that SDK) and references half-float intrinsics such as
 `__fmaxf16` that aren't present in older macOS libSystem. It
 therefore also requires **macOS 26.2+ at runtime**; older macOS hosts
-should stick with the default `:no_jit` variant, whose prebuilt is
+should stick with the default `:aot` variant, whose prebuilt is
 built against macOS 14 and runs anywhere.
 
 ## Usage
