@@ -772,6 +772,67 @@ defmodule Emily.BackendTest do
       end
     end
 
+    # Issue #84: full_matrices?: false on a tall matrix used to allocate
+    # the full m × m U on device and then slice. Now goes through the
+    # Gram thin path. Verify shapes, reconstruction, and that singular
+    # values match BinaryBackend's reference SVD.
+    test "svd: full_matrices?: false reconstructs tall matrices via Gram path" do
+      a =
+        Nx.tensor(
+          [
+            [1.0, 2.0, 0.5],
+            [0.5, 1.0, 2.0],
+            [2.0, 0.5, 1.0],
+            [1.5, 1.5, 0.5],
+            [0.5, 1.5, 1.5],
+            [1.0, 1.0, 1.0]
+          ],
+          type: {:f, 32},
+          backend: Nx.BinaryBackend
+        )
+
+      emily_a = to_emily(a)
+      {u, s, vt} = Nx.LinAlg.svd(emily_a, full_matrices?: false)
+
+      assert Nx.shape(u) == {6, 3}
+      assert Nx.shape(s) == {3}
+      assert Nx.shape(vt) == {3, 3}
+
+      # Reconstruct: U · diag(S) · Vᵀ ≈ A.
+      reconstructed = u |> Nx.multiply(Nx.reshape(s, {1, 3})) |> Nx.dot(vt)
+      assert_close(reconstructed, emily_a, tol: 1.0e-3)
+
+      # Singular values match reference (sorted descending by SVD convention).
+      {_u_ref, s_ref, _vt_ref} = Nx.LinAlg.svd(a, full_matrices?: false)
+      assert_close(Nx.sort(s, direction: :desc), Nx.sort(s_ref, direction: :desc), tol: 1.0e-3)
+    end
+
+    test "svd: full_matrices?: false reconstructs wide matrices via Gram path" do
+      a =
+        Nx.tensor(
+          [
+            [1.0, 0.5, 2.0, 1.5, 0.5, 1.0],
+            [2.0, 1.0, 0.5, 1.5, 1.5, 1.0],
+            [0.5, 2.0, 1.0, 0.5, 1.5, 1.0]
+          ],
+          type: {:f, 32},
+          backend: Nx.BinaryBackend
+        )
+
+      emily_a = to_emily(a)
+      {u, s, vt} = Nx.LinAlg.svd(emily_a, full_matrices?: false)
+
+      assert Nx.shape(u) == {3, 3}
+      assert Nx.shape(s) == {3}
+      assert Nx.shape(vt) == {3, 6}
+
+      reconstructed = u |> Nx.multiply(Nx.reshape(s, {1, 3})) |> Nx.dot(vt)
+      assert_close(reconstructed, emily_a, tol: 1.0e-3)
+
+      {_u_ref, s_ref, _vt_ref} = Nx.LinAlg.svd(a, full_matrices?: false)
+      assert_close(Nx.sort(s, direction: :desc), Nx.sort(s_ref, direction: :desc), tol: 1.0e-3)
+    end
+
     property "qr: Q * R ≈ A for random well-conditioned matrices" do
       check all(a <- square_matrix(), max_runs: @max_runs) do
         a_safe = make_well_conditioned(a)
