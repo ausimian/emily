@@ -67,7 +67,7 @@ test_labels = labels.(test_labels_raw)
 ```
 
 Pixels are normalised into `[0.0, 1.0]` and labels are one-hot encoded
-so `Axon.Loop.trainer/2` can use `:categorical_cross_entropy`
+so `Axon.Loop.trainer/3` can use `:categorical_cross_entropy`
 directly.
 
 ## Defining the model

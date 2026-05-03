@@ -600,7 +600,7 @@ defmodule Emily.Fast do
   ## Eager-only, not defn-callable
 
   Unlike the other helpers in this module, `einsum/2` does **not**
-  emit an `Nx.Defn.Expr.optional/3` node. It takes refs directly off
+  emit an `Nx.Defn.Expr` `optional/3` node. It takes refs directly off
   Emily-backed tensors and calls the NIF eagerly, in the same
   "direct-call helper" style as `Emily.Quantization.quantized_matmul/2`.
   Every operand must live on `Emily.Backend`; anything else raises
