@@ -44,6 +44,19 @@ defmodule Emily.Backend do
       unordered on duplicates, while `Nx.BinaryBackend` is
       deterministic last-write. `indexed_add` is commutative so
       duplicates accumulate identically on both backends.
+    * `svd` with `full_matrices?: false` on rank-2 inputs uses a
+      Gram-matrix thin SVD (`G = MᵀM` for tall, `MMᵀ` for wide; eigh
+      then recover the missing factor). MLX's native SVD has no thin
+      switch and would allocate the full m × m U on device — a
+      151936 × 1024 embedding kernel needs ~92 GB that way. The Gram
+      route stays at min(m, n)² in the decomposition step. **Numerical
+      caveat:** forming the Gram matrix squares M's condition number,
+      so the smallest singular values lose ~half their float
+      precision. Well-conditioned weight matrices are fine; for
+      ill-conditioned inputs where small σ's matter, ask for
+      `full_matrices?: true` (slower, but goes through MLX's bidiagonal
+      SVD). Batched (rank ≥ 3) SVD still routes through MLX's full
+      path with a post-slice — same as before.
 
   ## Fallbacks
 
@@ -1454,13 +1467,22 @@ defmodule Emily.Backend do
   @impl true
   def svd({u_out, s_out, v_out}, t, _opts) do
     w = worker()
-    {u_ref, s_ref, v_ref} = Native.linalg_svd(w, ref(t))
     rank = tuple_size(t.shape)
     m = elem(t.shape, rank - 2)
     n = elem(t.shape, rank - 1)
-    u_ref = maybe_slice_svd(u_ref, u_out.shape, {m, m}, w)
-    v_ref = maybe_slice_svd(v_ref, v_out.shape, {n, n}, w)
-    {wrap(u_ref, u_out, w), wrap(s_ref, s_out, w), wrap(v_ref, v_out, w)}
+    # Thin SVD requested when the output U or V leading axis is min(m, n)
+    # rather than m or n respectively. We can only Gram-route the 2D
+    # case — Native.linalg_eigh / matmul on rank-2 inputs is the path
+    # we trust. Higher-rank batched SVD stays on MLX's native path
+    # (which materialises full U/V and we slice).
+    if rank == 2 and elem(u_out.shape, 1) != m do
+      thin_svd_gram({u_out, s_out, v_out}, t, w, m, n)
+    else
+      {u_ref, s_ref, v_ref} = Native.linalg_svd(w, ref(t))
+      u_ref = maybe_slice_svd(u_ref, u_out.shape, {m, m}, w)
+      v_ref = maybe_slice_svd(v_ref, v_out.shape, {n, n}, w)
+      {wrap(u_ref, u_out, w), wrap(s_ref, s_out, w), wrap(v_ref, v_out, w)}
+    end
   end
 
   defp maybe_slice_svd(ref, out_shape, full_last2, w) do
@@ -1473,6 +1495,72 @@ defmodule Emily.Backend do
       strides = List.duplicate(1, rank)
       Native.slice(w, ref, starts, Tuple.to_list(out_shape), strides)
     end
+  end
+
+  # Thin SVD via the Gram matrix. MLX's `mx::linalg::svd` always
+  # materialises the full m × m U on device, so for tall matrices like
+  # the 151936 × 1024 embedding kernel that would need ~92 GB even
+  # though the caller asked for `full_matrices?: false`. Issue #84.
+  #
+  # Tall path (m >= n):  G = MᵀM (n × n) → eigh → S, V; U = MV / S.
+  # Wide path (m  < n):  decompose Mᵀ as tall, then U_M = V_a, V_Mᵀ = U_aᵀ.
+  #
+  # Numerical note: forming MᵀM squares the condition number of M, so
+  # the smallest singular values lose ~half their float precision.
+  # Documented on the Emily.Backend moduledoc.
+  defp thin_svd_gram({u_out, s_out, v_out}, t, w, m, n) when m >= n do
+    type = t.type
+    a_ref = ref(t)
+    a_t = Native.transpose(w, a_ref, [1, 0])
+    gram = Native.matmul(w, a_t, a_ref)
+    {eigvals_asc, eigvecs_asc} = Native.linalg_eigh(w, gram, "L")
+
+    # eigh returns ascending; flip to descending so σ_0 is largest.
+    s_squared = Native.flip(w, eigvals_asc, 0)
+    v = Native.flip(w, eigvecs_asc, 1)
+
+    zero = scalar_ref(0.0, type)
+    s_squared = Native.maximum(w, s_squared, zero)
+    s = Native.sqrt(w, s_squared)
+
+    # U = M @ V / S (broadcast S across the m rows of m × n).
+    mv = Native.matmul(w, a_ref, v)
+    one = scalar_ref(1.0, type)
+    s_safe = Native.where(w, Native.greater(w, s, zero), s, one)
+    s_row = Native.reshape(w, s_safe, [1, n])
+    u = Native.divide(w, mv, s_row)
+
+    v_t = Native.transpose(w, v, [1, 0])
+
+    {wrap(u, u_out, w), wrap(s, s_out, w), wrap(v_t, v_out, w)}
+  end
+
+  defp thin_svd_gram({u_out, s_out, v_out}, t, w, m, n) when m < n do
+    # Wide: form the *small* Gram MMᵀ (m × m) instead of MᵀM (n × n).
+    # MMᵀ = U S² Uᵀ, so eigh gives U directly; recover V = Mᵀ U / S.
+    type = t.type
+    a_ref = ref(t)
+    a_t_ref = Native.transpose(w, a_ref, [1, 0])
+    gram = Native.matmul(w, a_ref, a_t_ref)
+    {eigvals_asc, eigvecs_asc} = Native.linalg_eigh(w, gram, "L")
+
+    s_squared = Native.flip(w, eigvals_asc, 0)
+    u = Native.flip(w, eigvecs_asc, 1)
+
+    zero = scalar_ref(0.0, type)
+    s_squared = Native.maximum(w, s_squared, zero)
+    s = Native.sqrt(w, s_squared)
+
+    # V = Mᵀ @ U / S — shape n × m, broadcast S across the n rows.
+    mt_u = Native.matmul(w, a_t_ref, u)
+    one = scalar_ref(1.0, type)
+    s_safe = Native.where(w, Native.greater(w, s, zero), s, one)
+    s_row = Native.reshape(w, s_safe, [1, m])
+    v = Native.divide(w, mt_u, s_row)
+
+    v_t = Native.transpose(w, v, [1, 0])
+
+    {wrap(u, u_out, w), wrap(s, s_out, w), wrap(v_t, v_out, w)}
   end
 
   @impl true
