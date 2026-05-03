@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 <!-- %% CHANGELOG_ENTRIES %% -->
 
+## 0.3.5 - 2026-05-03
+
 ## 0.3.4 - 2026-05-03
 
 ### Fixed
