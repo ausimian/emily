@@ -183,7 +183,7 @@ See `MAINTAINING.md` for the updated release flow.
   `ArgumentError` with a transfer-first message. The helper is a
   direct-call eager helper (same pattern as
   `Emily.Quantization.quantized_matmul/2`) and is intentionally **not**
-  `defn`-callable — a fallback via `Nx.Defn.Expr.optional/3` would
+  `defn`-callable — a fallback via `Nx.Defn.Expr`'s `optional/3` would
   require a full einsum-string parser and is deferred until a user
   needs cross-backend composability.
 

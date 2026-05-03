@@ -39,7 +39,7 @@ if Code.ensure_loaded?(Axon) and Code.ensure_loaded?(Bumblebee.Layers) do
 
     ## Coverage
 
-      * `:rms_norm` (Bumblebee's `Bumblebee.Layers.rms_norm/2`).
+      * `:rms_norm` (Bumblebee's `rms_norm/2`).
       * `:layer_norm` (Axon's built-in normalization layer).
       * `Bumblebee.Layers.apply_rotary_embedding/5` — supports the
         default schedule plus the `:linear`, `:dynamic`, `:longrope`,

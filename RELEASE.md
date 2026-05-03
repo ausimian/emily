@@ -10,3 +10,12 @@
   at min(m, n)². See the `Emily.Backend` moduledoc Divergences section
   for the numerical caveat (the Gram step squares M's condition
   number). Refs #84.
+- `mix docs` runs cleanly. The MNIST notebook referenced
+  `Axon.Loop.trainer/2` (no such arity); three other inline references
+  resolved to `@doc false` callees in upstream libraries
+  (`Nx.Defn.Expr.optional/3`, `Bumblebee.Layers.rms_norm/2`) and
+  triggered autolinker warnings on every doc build. The notebook now
+  uses the correct `trainer/3` arity, and the prose references have
+  been reshaped so the autolinker no longer follows them, keeping the
+  build warning-free for future `--warnings-as-errors` enforcement.
+  Refs #83.
