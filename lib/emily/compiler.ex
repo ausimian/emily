@@ -35,7 +35,8 @@ defmodule Emily.Compiler do
   ## Design notes
 
   `__jit__/5` and `__compile__/4` delegate to `Nx.Defn.Evaluator`
-  after option validation. There is no external JIT cache beyond the
+  after filtering the option list down to the keys this module
+  consumes. There is no external JIT cache beyond the
   closure `Nx.Defn.compile/3` already returns: Bumblebee and
   `Nx.Serving` hold that closure on warmup, so subsequent calls skip
   the walk.
@@ -61,6 +62,13 @@ defmodule Emily.Compiler do
       and Bumblebee passes `:cache` through for its own per-scope
       cache suffixing. Neither is used by the Evaluator walk, but
       rejecting them would break those servings.
+
+  Any other option is silently dropped. This matches how
+  `Nx.Defn.Evaluator` and EXLA handle their own option lists, and is
+  the contract higher-level libraries rely on when they forward
+  caller-supplied options to the JIT compiler — e.g. `Axon.build/2`,
+  whose docs state that "all other options are forwarded to the
+  underlying JIT compiler".
 
   ## Examples
 
@@ -93,19 +101,19 @@ defmodule Emily.Compiler do
 
   @impl true
   def __jit__(key, vars, fun, args_list, opts) do
-    opts = validate_opts!(opts)
+    opts = take_known_opts(opts)
     Evaluator.__jit__(key, vars, fun, args_list, opts)
   end
 
   @impl true
   def __compile__(key, vars, fun, opts) do
-    opts = validate_opts!(opts)
+    opts = take_known_opts(opts)
     Evaluator.__compile__(key, vars, fun, opts)
   end
 
   @impl true
   def __partitions_options__(opts) do
-    opts = validate_opts!(opts)
+    opts = take_known_opts(opts)
 
     case Keyword.get(opts, :max_concurrency, 1) do
       n when n in [nil, 1] ->
@@ -123,19 +131,9 @@ defmodule Emily.Compiler do
 
   @impl true
   def __to_backend__(opts) do
-    opts = validate_opts!(opts)
+    opts = take_known_opts(opts)
     {Emily.Backend, [device: Keyword.get(opts, :device, :gpu)]}
   end
 
-  defp validate_opts!(opts) do
-    case Enum.reject(Keyword.keys(opts), &(&1 in @valid_opts)) do
-      [] ->
-        opts
-
-      unknown ->
-        raise ArgumentError,
-              "Emily.Compiler received unknown option(s): #{inspect(unknown)}. " <>
-                "Valid options: #{inspect(@valid_opts)}"
-    end
-  end
+  defp take_known_opts(opts), do: Keyword.take(opts, @valid_opts)
 end

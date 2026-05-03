@@ -55,10 +55,29 @@ defmodule Emily.CompilerTest do
       end
     end
 
-    test "rejects unknown options" do
-      assert_raise ArgumentError, ~r/unknown option/, fn ->
-        Emily.Compiler.__to_backend__(bogus: true)
-      end
+    # Higher-level libraries (notably Axon) forward caller-supplied
+    # options through Nx.Defn.jit verbatim and document this as a
+    # contract. EXLA and Nx.Defn.Evaluator silently ignore options
+    # they don't recognise; Emily must do the same so that swapping
+    # the compiler doesn't break consumers. Regression for
+    # https://github.com/ausimian/emily/issues/81.
+    test "silently ignores unknown options" do
+      assert {Emily.Backend, [device: :gpu]} ==
+               Emily.Compiler.__to_backend__(bogus: true)
+
+      assert [[]] == Emily.Compiler.__partitions_options__(bogus: true)
+    end
+
+    test "jit silently ignores unknown forwarded options (Axon contract)" do
+      fun = fn x -> Nx.add(x, 1.0) end
+
+      result =
+        Nx.Defn.jit_apply(fun, [Nx.tensor([1.0, 2.0])],
+          compiler: Emily.Compiler,
+          global_layer_options: [output_hidden_states: true]
+        )
+
+      assert_close(result, Nx.tensor([2.0, 3.0]))
     end
 
     # Nx.Serving prepends :batch_keys to defn_options for arity-1
