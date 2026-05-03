@@ -169,3 +169,20 @@ jobs:
             ${{ steps.pack.outputs.asset }}
             ${{ steps.pack.outputs.asset }}.sha256
           retention-days: 90
+
+  # Once every matrix cell has uploaded its tarball + sidecar to the
+  # draft release, flip the release out of draft so consumers can
+  # fetch. `needs: build` requires all matrix cells to succeed; the
+  # event guard keeps workflow_dispatch runs (which don't touch a
+  # release) from triggering this step.
+  publish-release:
+    needs: [prepare-release, build]
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Mark release as published
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.prepare-release.outputs.version }}
+          REPO: ${{ github.repository }}
+        run: gh release edit "$TAG" --repo "$REPO" --draft=false
