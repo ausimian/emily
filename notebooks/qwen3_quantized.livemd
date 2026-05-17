@@ -103,18 +103,21 @@ defmodule DenseTransform do
   end
 
   defp quantized_dense_layer(x, units, opts) do
-    kernel =
-      Axon.param("kernel", &Axon.Shape.dense_kernel(&1, units),
-        initializer: :glorot_uniform
-      )
+    # Axon 0.8 dropped `Axon.Shape.dense_kernel/dense_bias`; derive
+    # the shapes inline from the input — `{batch, …, in_features}` →
+    # kernel `{in_features, units}`, bias `{units}`.
+    kernel_shape = fn input_shape ->
+      in_features = elem(input_shape, tuple_size(input_shape) - 1)
+      {in_features, units}
+    end
+
+    bias_shape = fn _input_shape -> {units} end
+
+    kernel = Axon.param("kernel", kernel_shape, initializer: :glorot_uniform)
 
     {inputs, op} =
       if opts[:use_bias] do
-        bias =
-          Axon.param("bias", &Axon.Shape.dense_bias(&1, units),
-            initializer: :zeros
-          )
-
+        bias = Axon.param("bias", bias_shape, initializer: :zeros)
         {[x, kernel, bias], &Layers.quantized_dense/4}
       else
         {[x, kernel], &Layers.quantized_dense/3}
