@@ -145,8 +145,15 @@ defmodule Emily.Quantization.Transform do
         bias_initializer: :zeros
       ])
 
-    kernel_shape = &Axon.Shape.dense_kernel(&1, units)
-    bias_shape = &Axon.Shape.dense_bias(&1, units)
+    # Axon 0.8 dropped `Axon.Shape.dense_kernel/dense_bias`; inline
+    # the shape derivation — input is `{batch, …, in_features}`,
+    # kernel is `{in_features, units}`, bias is `{units}`.
+    kernel_shape = fn input_shape ->
+      in_features = elem(input_shape, tuple_size(input_shape) - 1)
+      {in_features, units}
+    end
+
+    bias_shape = fn _input_shape -> {units} end
 
     kernel = Axon.param("kernel", kernel_shape, initializer: opts[:kernel_initializer])
 

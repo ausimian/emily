@@ -2,34 +2,32 @@ defmodule Emily.Fast do
   @moduledoc """
   Fused transformer kernels as `defn`-callable helpers.
 
-  Each function here emits an optional-expression node whose op name
-  matches a custom callback on `Emily.Backend`. Under Emily the
-  Defn evaluator dispatches directly to the MLX `mx::fast::*`
-  kernel; under any other backend the defn-composed fallback runs
-  and produces a mathematically equivalent result. That means
-  Bumblebee models rewritten to use these helpers (via the test-only
-  `Emily.Bumblebee.FastKernels` shim) keep running on
-  `Nx.BinaryBackend` / EXLA for conformance — just without the
-  fusion speedup.
+  Each function here emits a `Nx.block/4` node carrying an
+  `Emily.Fast.Block.*` struct. Under Emily the Defn evaluator
+  dispatches to `Emily.Backend.block/4`, which calls the matching
+  `mx::fast::*` kernel directly. Under any other backend the
+  composed-defn fallback runs and produces a mathematically
+  equivalent result. That means Bumblebee models rewritten to use
+  these helpers (via the test-only `Emily.Bumblebee.FastKernels`
+  shim) keep running on `Nx.BinaryBackend` / EXLA for conformance —
+  just without the fusion speedup.
 
   ## Hook mechanism
 
-  Each helper wraps `Nx.Defn.Expr.optional(name, in_args, fallback)`,
-  which creates an `:optional` Expr node. At eval time the Nx
-  evaluator looks for `function_exported?(backend, name,
-  length(in_args) + 1)` on the active backend and, if present, calls
-  `backend.name(out, args...)` directly. Otherwise the fallback defn
-  runs. This is Nx's extension point for vendor-fused kernels (the
-  same pattern EXLA uses for its native ops).
+  Each helper wraps `Nx.block(struct, args, output, fun)`, where
+  `struct` is one of the `Emily.Fast.Block.*` structs that carries
+  the helper's static configuration (eps, dims, scale, …). At eval
+  time `Emily.Backend.block/4` pattern-matches on the struct and
+  dispatches to the matching `mx::fast::*` NIF; other backends fall
+  through to `fun`, which runs the composed-defn fallback. This is
+  the Nx 0.12 successor to `Nx.Defn.Expr.optional/3` and is the same
+  extension point EXLA uses for its native ops.
 
   ## Tensor vs option arguments
 
-  The optional-expression contract splits `in_args` at the first
-  list: every leading non-list argument is treated as a tensor param;
-  the list (typically a keyword list) is passed through as opts. Every
-  `Emily.Fast.*` function's final argument is a keyword list of
-  scalars (dims, epsilons, flags), and all tensor inputs come before
-  it.
+  Configuration lives on the struct; runtime tensors travel in the
+  `Nx.block/4` args list. Each helper builds its struct from the
+  validated keyword list and threads the tensors through.
 
   ## Covered kernels
 
@@ -71,9 +69,11 @@ defmodule Emily.Fast do
   """
 
   alias Emily.Backend, as: B
+  alias Emily.Fast.Block, as: FB
   alias Emily.Native
-  alias Nx.Defn.Expr
   alias Nx.Tensor, as: T
+
+  defp output_like(%T{} = t), do: Nx.template(t.shape, t.type, names: t.names)
 
   # =================================================================
   # RMSNorm
@@ -104,7 +104,11 @@ defmodule Emily.Fast do
   @spec rms_norm(Nx.Tensor.t(), Nx.Tensor.t(), keyword()) :: Nx.Tensor.t()
   def rms_norm(x, weight, opts \\ []) do
     opts = Keyword.validate!(opts, eps: 1.0e-6)
-    Expr.optional(:fast_rms_norm, [x, weight, opts], &rms_norm_fallback/3)
+    block = struct!(FB.RMSNorm, opts)
+
+    Nx.block(block, [x, weight], output_like(x), fn ^block, x, weight ->
+      rms_norm_fallback(x, weight, opts)
+    end)
   end
 
   defp rms_norm_fallback(x, weight, opts) do
@@ -154,7 +158,11 @@ defmodule Emily.Fast do
           Nx.Tensor.t()
   def layer_norm(x, weight, bias, opts \\ []) do
     opts = Keyword.validate!(opts, eps: 1.0e-5)
-    Expr.optional(:fast_layer_norm, [x, weight, bias, opts], &layer_norm_fallback/4)
+    block = struct!(FB.LayerNorm, opts)
+
+    Nx.block(block, [x, weight, bias], output_like(x), fn ^block, x, weight, bias ->
+      layer_norm_fallback(x, weight, bias, opts)
+    end)
   end
 
   defp layer_norm_fallback(x, weight, bias, opts) do
@@ -212,7 +220,11 @@ defmodule Emily.Fast do
   @spec rope(Nx.Tensor.t(), Nx.Tensor.t(), keyword()) :: Nx.Tensor.t()
   def rope(x, offset, opts) do
     opts = Keyword.validate!(opts, [:dims, traditional: false, base: 10_000.0, scale: 1.0])
-    Expr.optional(:fast_rope, [x, offset, opts], &rope_fallback/3)
+    block = struct!(FB.RoPE, opts)
+
+    Nx.block(block, [x, offset], output_like(x), fn ^block, x, offset ->
+      rope_fallback(x, offset, opts)
+    end)
   end
 
   defp rope_fallback(x, offset, opts) do
@@ -258,7 +270,11 @@ defmodule Emily.Fast do
           Nx.Tensor.t()
   def rope_with_freqs(x, offset, freqs, opts) do
     opts = Keyword.validate!(opts, [:dims, traditional: false, scale: 1.0])
-    Expr.optional(:fast_rope_with_freqs, [x, offset, freqs, opts], &rope_freqs_fallback/4)
+    block = struct!(FB.RoPEWithFreqs, opts)
+
+    Nx.block(block, [x, offset, freqs], output_like(x), fn ^block, x, offset, freqs ->
+      rope_freqs_fallback(x, offset, freqs, opts)
+    end)
   end
 
   defp rope_freqs_fallback(x, offset, freqs, opts) do
@@ -387,14 +403,18 @@ defmodule Emily.Fast do
 
     case Keyword.pop(opts, :sinks) do
       {nil, opts} ->
-        Expr.optional(:fast_scaled_dot_product_attention, [q, k, v, opts], &sdpa_fallback/4)
+        block = struct!(FB.SDPA, opts)
+
+        Nx.block(block, [q, k, v], output_like(q), fn ^block, q, k, v ->
+          sdpa_fallback(q, k, v, opts)
+        end)
 
       {sinks, opts} ->
-        Expr.optional(
-          :fast_scaled_dot_product_attention_with_sinks,
-          [q, k, v, sinks, opts],
-          &sdpa_sinks_fallback/5
-        )
+        block = struct!(FB.SDPAWithSinks, opts)
+
+        Nx.block(block, [q, k, v, sinks], output_like(q), fn ^block, q, k, v, sinks ->
+          sdpa_sinks_fallback(q, k, v, sinks, opts)
+        end)
     end
   end
 
@@ -495,17 +515,22 @@ defmodule Emily.Fast do
 
     case Keyword.pop(opts, :sinks) do
       {nil, opts} ->
-        Expr.optional(
-          :fast_scaled_dot_product_attention_with_mask,
-          [q, k, v, mask, opts],
-          &sdpa_masked_fallback/5
-        )
+        block = struct!(FB.SDPAWithMask, opts)
+
+        Nx.block(block, [q, k, v, mask], output_like(q), fn ^block, q, k, v, mask ->
+          sdpa_masked_fallback(q, k, v, mask, opts)
+        end)
 
       {sinks, opts} ->
-        Expr.optional(
-          :fast_scaled_dot_product_attention_with_mask_and_sinks,
-          [q, k, v, mask, sinks, opts],
-          &sdpa_masked_sinks_fallback/6
+        block = struct!(FB.SDPAWithMaskAndSinks, opts)
+
+        Nx.block(
+          block,
+          [q, k, v, mask, sinks],
+          output_like(q),
+          fn ^block, q, k, v, mask, sinks ->
+            sdpa_masked_sinks_fallback(q, k, v, mask, sinks, opts)
+          end
         )
     end
   end
@@ -600,13 +625,13 @@ defmodule Emily.Fast do
   ## Eager-only, not defn-callable
 
   Unlike the other helpers in this module, `einsum/2` does **not**
-  emit an `Nx.Defn.Expr` `optional/3` node. It takes refs directly off
-  Emily-backed tensors and calls the NIF eagerly, in the same
-  "direct-call helper" style as `Emily.Quantization.quantized_matmul/2`.
-  Every operand must live on `Emily.Backend`; anything else raises
-  `ArgumentError`. Writing a correct einsum-string parser (for
-  diagonals, ellipsis, and contraction ordering) is deferred until a
-  user needs cross-backend compatibility.
+  emit an `Nx.Defn.Expr` node. It takes refs directly off Emily-backed
+  tensors and calls the NIF eagerly, in the same "direct-call helper"
+  style as `Emily.Quantization.quantized_matmul/2`. Every operand must
+  live on `Emily.Backend`; anything else raises `ArgumentError`.
+  Writing a correct einsum-string parser (for diagonals, ellipsis, and
+  contraction ordering) is deferred until a user needs cross-backend
+  compatibility.
 
   ## Examples
 

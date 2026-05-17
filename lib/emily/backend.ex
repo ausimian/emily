@@ -30,6 +30,8 @@ defmodule Emily.Backend do
 
     * `{:f, 64}` is not supported — Metal cannot execute f64.
       Allocations at f64 raise `ArgumentError`; cast to f32 instead.
+    * `{:f8_e4m3fn, 8}` (Nx 0.12+) is not supported — MLX has no f8
+      dtype. Use `:f16` or `:bf16` instead.
     * `from_pointer`, `to_pointer`, `population_count`,
       `count_leading_zeros`, and interior-padding `pad` raise —
       MLX has no primitive.
@@ -159,6 +161,12 @@ defmodule Emily.Backend do
   defp check_dtype!({:f, 64}) do
     raise ArgumentError,
           "Emily.Backend does not support {:f, 64} — Metal has no f64. Use {:f, 32}."
+  end
+
+  defp check_dtype!({:f8_e4m3fn, 8}) do
+    raise ArgumentError,
+          "Emily.Backend does not support {:f8_e4m3fn, 8} — MLX has no f8. " <>
+            "Use {:f, 16} or {:bf, 16} instead."
   end
 
   defp check_dtype!(_type), do: :ok
@@ -490,10 +498,11 @@ defmodule Emily.Backend do
         "Emily.Backend does not implement population_count (MLX has no primitive)"
       )
 
-  # logical_not is listed under @optional_callbacks in Nx.Backend; we
-  # implement it directly.
-  @impl true
-  def logical_not(out, t) do
+  # `logical_not` is no longer an `Nx.Backend` callback in Nx 0.12 —
+  # `Nx.logical_not/1` emits a `%Nx.Block.LogicalNot{}` block. The
+  # entry point is `block/4` below; this helper carries the body.
+  @doc false
+  def native_logical_not(out, t) do
     w = worker()
     Native.logical_not(w, ref(t)) |> wrap(out, w)
   end
@@ -836,25 +845,24 @@ defmodule Emily.Backend do
   # tensors. Transposing the target axis to the end first usually
   # works but hits the same factoring issue on a subset of shapes, so
   # we route those through BinaryBackend: correct, slow, rare.
+  # In Nx 0.12 these are dispatched via `block/4` under
+  # `Nx.Block.Cumulative{Sum,Product,Min,Max}`. Each clause keeps the
+  # axis fast-path (MLX native `cumsum`/`cumprod`/`cummin`/`cummax`)
+  # for the last axis only — interior-axis cumulation hits MLX's
+  # "Unable to safely factor shape" wall on some 4-D+ tensors. Other
+  # axes fall through to the supplied composed-defn `fun`.
   for {nx_name, native_name} <- [
         cumulative_sum: :cumsum,
         cumulative_product: :cumprod,
         cumulative_max: :cummax,
         cumulative_min: :cummin
       ] do
-    @impl true
-    def unquote(nx_name)(%T{} = out, t, opts) do
-      axis = opts[:axis] || 0
-      reverse = opts[:reverse] || false
-      rank = tuple_size(t.shape)
-
-      if axis == rank - 1 do
-        w = worker()
-        Native.unquote(native_name)(w, ref(t), axis, reverse, true) |> wrap(out, w)
-      else
-        nx_fun = unquote(nx_name)
-        via_binary(nx_fun, out, [t], &apply(Nx, nx_fun, [&1, opts]))
-      end
+    @doc false
+    def unquote(:"native_#{nx_name}")(%T{} = out, t, opts) do
+      w = worker()
+      axis = opts[:axis]
+      reverse = opts[:reverse]
+      Native.unquote(native_name)(w, ref(t), axis, reverse, true) |> wrap(out, w)
     end
   end
 
@@ -974,10 +982,9 @@ defmodule Emily.Backend do
   # than a handrolled implementation would be without a true dual-output
   # primitive.
 
-  # all_close with absolute/relative tolerance:
-  # all(abs(a - b) <= atol + rtol * abs(b)).
-  @impl true
-  def all_close(%T{} = out, a, b, opts) do
+  # `all_close` is dispatched via `block/4` (Nx 0.12). Body unchanged.
+  @doc false
+  def native_all_close(%T{} = out, a, b, opts) do
     w = worker()
     rtol = opts[:rtol] || 1.0e-5
     atol = opts[:atol] || 1.0e-8
@@ -1012,8 +1019,9 @@ defmodule Emily.Backend do
     Native.all(w, close, axes, false) |> wrap(out, w)
   end
 
-  @impl true
-  def take(%T{} = out, input, indices, opts) do
+  # `take` / `take_along_axis` dispatched via `block/4` (Nx 0.12).
+  @doc false
+  def native_take(%T{} = out, input, indices, opts) do
     w = worker()
     axis = opts[:axis] || 0
     idx_ref = Native.astype(w, ref(indices), {:s, 32})
@@ -1024,8 +1032,8 @@ defmodule Emily.Backend do
     Native.take(w, ref(input), idx_ref, axis) |> wrap(out, w)
   end
 
-  @impl true
-  def take_along_axis(%T{} = out, input, indices, opts) do
+  @doc false
+  def native_take_along_axis(%T{} = out, input, indices, opts) do
     w = worker()
     axis = opts[:axis] || 0
     idx_ref = Native.astype(w, ref(indices), {:s, 32})
@@ -1056,20 +1064,37 @@ defmodule Emily.Backend do
     Native.ifftn(w, ref(t), [length], [axis]) |> wrap(out, w)
   end
 
-  @impl true
-  def fft2(%T{} = out, t, opts) do
+  # `fft2` / `ifft2` are dispatched via `block/4` (Nx 0.12).
+  @doc false
+  def native_fft2(%T{} = out, t, opts) do
     w = worker()
-    lengths = opts[:lengths]
-    axes = opts[:axes]
-    Native.fftn(w, ref(t), lengths, axes) |> wrap(out, w)
+    Native.fftn(w, ref(t), opts[:lengths], opts[:axes]) |> wrap(out, w)
   end
 
-  @impl true
-  def ifft2(%T{} = out, t, opts) do
+  @doc false
+  def native_ifft2(%T{} = out, t, opts) do
     w = worker()
-    lengths = opts[:lengths]
-    axes = opts[:axes]
-    Native.ifftn(w, ref(t), lengths, axes) |> wrap(out, w)
+    Native.ifftn(w, ref(t), opts[:lengths], opts[:axes]) |> wrap(out, w)
+  end
+
+  # Real-valued FFT pair (Nx 0.12+). Emily already exposes the MLX
+  # primitives via `Native.rfftn/irfftn`; these wrappers route the
+  # `Nx.Block.{RFFT,IRFFT}` 1D structs through them. Higher-rank
+  # variants `rfft2`/`irfft2` are not surfaced by Nx 0.12.
+  @doc false
+  def native_rfft(%T{} = out, t, opts) do
+    w = worker()
+    length = opts[:length]
+    axis = opts[:axis] || tuple_size(t.shape) - 1
+    Native.rfftn(w, ref(t), [length], [axis]) |> wrap(out, w)
+  end
+
+  @doc false
+  def native_irfft(%T{} = out, t, opts) do
+    w = worker()
+    length = opts[:length]
+    axis = opts[:axis] || tuple_size(t.shape) - 1
+    Native.irfftn(w, ref(t), [length], [axis]) |> wrap(out, w)
   end
 
   # =================================================================
@@ -1454,8 +1479,10 @@ defmodule Emily.Backend do
   # Native linalg — decompositions & solvers via mx::linalg::*
   # =================================================================
 
-  @impl true
-  def lu({p_out, l_out, u_out}, t, _opts) do
+  # `lu`, `svd`, `qr`, `cholesky`, `eigh`, `solve` are dispatched via
+  # `block/4` (Nx 0.12) under `Nx.Block.LinAlg.*` structs.
+  @doc false
+  def native_lu({p_out, l_out, u_out}, t, _opts) do
     w = worker()
     {perm_ref, l_ref, u_ref} = Native.linalg_lu(w, ref(t))
     n = elem(t.shape, tuple_size(t.shape) - 1)
@@ -1464,8 +1491,8 @@ defmodule Emily.Backend do
     {wrap(p_ref, p_out, w), wrap(l_ref, l_out, w), wrap(u_ref, u_out, w)}
   end
 
-  @impl true
-  def svd({u_out, s_out, v_out}, t, _opts) do
+  @doc false
+  def native_svd({u_out, s_out, v_out}, t, _opts) do
     w = worker()
     rank = tuple_size(t.shape)
     m = elem(t.shape, rank - 2)
@@ -1602,8 +1629,8 @@ defmodule Emily.Backend do
     Enum.to_list(0..(rank - 3)//1) ++ [rank - 1, rank - 2]
   end
 
-  @impl true
-  def qr({q_out, r_out}, t, opts) do
+  @doc false
+  def native_qr({q_out, r_out}, t, opts) do
     case opts[:mode] do
       :reduced ->
         w = worker()
@@ -1615,38 +1642,164 @@ defmodule Emily.Backend do
     end
   end
 
-  @impl true
-  def cholesky(%T{} = out, t) do
+  @doc false
+  def native_cholesky(%T{} = out, t) do
     w = worker()
     Native.linalg_cholesky(w, ref(t), false) |> wrap(out, w)
   end
 
-  @impl true
-  def eigh({vals_out, vecs_out}, t, _opts) do
+  @doc false
+  def native_eigh({vals_out, vecs_out}, t, _opts) do
     w = worker()
     {vals_ref, vecs_ref} = Native.linalg_eigh(w, ref(t), "L")
     {wrap(vals_ref, vals_out, w), wrap(vecs_ref, vecs_out, w)}
   end
 
-  @impl true
-  def solve(%T{} = out, a, b) do
+  @doc false
+  def native_solve(%T{} = out, a, b) do
     w = worker()
     Native.linalg_solve(w, ref(a), ref(b)) |> wrap(out, w)
   end
 
   # =================================================================
-  # Custom fused-kernel callbacks for Emily.Fast
+  # Block dispatch (Nx 0.12+)
   # =================================================================
   #
-  # These aren't part of the `Nx.Backend` behaviour — they're the
-  # dispatch target for `Nx.Defn.Expr.optional/3` nodes emitted by
-  # `Emily.Fast.*`. The Evaluator's `:optional` case looks up
-  # `function_exported?(backend, op, arity)` and calls it with
-  # `(out, args...)`. Non-Emily backends don't export these, so the
-  # Evaluator runs the composed-defn fallback instead.
+  # `Nx.Backend.block/4` is the generic extension hook in Nx 0.12. It
+  # replaces both the old `@optional_callbacks` list (lu/svd/qr/take/…)
+  # and the `Nx.Defn.Expr.optional/3` mechanism used by `Emily.Fast.*`
+  # in Nx 0.10. Nx emits `%Nx.Block.*{}` structs; `Emily.Fast.*` emits
+  # `%Emily.Fast.Block.*{}` structs. Each clause forwards to the
+  # existing native helper (kept around so the bodies don't move).
   #
-  # Arities: one more than the `in_args` the `Emily.Fast.*` caller
-  # passes (the leading `out` is the template tensor).
+  # The catch-all clause runs the supplied default `fun` — that's the
+  # composed-defn / BinaryBackend fallback Nx ships. We emit a
+  # `[:emily, :block, :fallback]` event there so soak runs flag any
+  # op we used to handle natively that's now landing on the slow path.
+
+  alias Emily.Fast.Block, as: FB
+
+  @impl true
+  def block(struct, output, args, fun)
+
+  # ---- standard Nx blocks ----
+  def block(%Nx.Block.LogicalNot{}, out, [t], _fun),
+    do: native_logical_not(out, t)
+
+  def block(%Nx.Block.AllClose{} = s, out, [a, b], _fun),
+    do: native_all_close(out, a, b, equal_nan: s.equal_nan, rtol: s.rtol, atol: s.atol)
+
+  def block(%Nx.Block.Take{axis: axis}, out, [input, indices], _fun),
+    do: native_take(out, input, indices, axis: axis)
+
+  def block(%Nx.Block.TakeAlongAxis{axis: axis}, out, [input, indices], _fun),
+    do: native_take_along_axis(out, input, indices, axis: axis)
+
+  def block(%Nx.Block.FFT2{lengths: lengths, axes: axes}, out, [t], _fun),
+    do: native_fft2(out, t, lengths: lengths, axes: axes)
+
+  def block(%Nx.Block.IFFT2{lengths: lengths, axes: axes}, out, [t], _fun),
+    do: native_ifft2(out, t, lengths: lengths, axes: axes)
+
+  def block(%Nx.Block.RFFT{length: length, axis: axis}, out, [t], _fun),
+    do: native_rfft(out, t, length: length, axis: axis)
+
+  def block(%Nx.Block.IRFFT{length: length, axis: axis}, out, [t], _fun),
+    do: native_irfft(out, t, length: length, axis: axis)
+
+  def block(%Nx.Block.LinAlg.LU{}, out, [t], _fun),
+    do: native_lu(out, t, [])
+
+  def block(%Nx.Block.LinAlg.SVD{} = s, out, [t], _fun),
+    do: native_svd(out, t, full_matrices?: s.full_matrices?)
+
+  def block(%Nx.Block.LinAlg.QR{mode: mode}, out, [t], _fun),
+    do: native_qr(out, t, mode: mode)
+
+  def block(%Nx.Block.LinAlg.Cholesky{}, out, [t], _fun),
+    do: native_cholesky(out, t)
+
+  def block(%Nx.Block.LinAlg.Eigh{}, out, [t], _fun),
+    do: native_eigh(out, t, [])
+
+  def block(%Nx.Block.LinAlg.Solve{}, out, [a, b], _fun),
+    do: native_solve(out, a, b)
+
+  for {block_mod, helper} <- [
+        {Nx.Block.CumulativeSum, :native_cumulative_sum},
+        {Nx.Block.CumulativeProduct, :native_cumulative_product},
+        {Nx.Block.CumulativeMin, :native_cumulative_min},
+        {Nx.Block.CumulativeMax, :native_cumulative_max}
+      ] do
+    def block(%unquote(block_mod){axis: axis, reverse: reverse} = s, out, [t], fun) do
+      if axis == tuple_size(t.shape) - 1,
+        do: unquote(helper)(out, t, axis: axis, reverse: reverse),
+        else: fun.(s, t)
+    end
+  end
+
+  # ---- Emily.Fast custom blocks ----
+  def block(%FB.RMSNorm{eps: eps}, out, [x, weight], _fun),
+    do: fast_rms_norm(out, x, weight, eps: eps)
+
+  def block(%FB.LayerNorm{eps: eps}, out, [x, weight, bias], _fun),
+    do: fast_layer_norm(out, x, weight, bias, eps: eps)
+
+  def block(%FB.RoPE{} = s, out, [x, offset], _fun),
+    do:
+      fast_rope(out, x, offset,
+        dims: s.dims,
+        traditional: s.traditional,
+        base: s.base,
+        scale: s.scale
+      )
+
+  def block(%FB.RoPEWithFreqs{} = s, out, [x, offset, freqs], _fun),
+    do:
+      fast_rope_with_freqs(out, x, offset, freqs,
+        dims: s.dims,
+        traditional: s.traditional,
+        scale: s.scale
+      )
+
+  def block(%FB.SDPA{scale: scale, causal: causal}, out, [q, k, v], _fun),
+    do: fast_scaled_dot_product_attention(out, q, k, v, scale: scale, causal: causal)
+
+  def block(%FB.SDPAWithSinks{scale: scale, causal: causal}, out, [q, k, v, sinks], _fun),
+    do:
+      fast_scaled_dot_product_attention_with_sinks(out, q, k, v, sinks,
+        scale: scale,
+        causal: causal
+      )
+
+  def block(%FB.SDPAWithMask{scale: scale}, out, [q, k, v, mask], _fun),
+    do: fast_scaled_dot_product_attention_with_mask(out, q, k, v, mask, scale: scale)
+
+  def block(%FB.SDPAWithMaskAndSinks{scale: scale}, out, [q, k, v, mask, sinks], _fun),
+    do:
+      fast_scaled_dot_product_attention_with_mask_and_sinks(out, q, k, v, mask, sinks,
+        scale: scale
+      )
+
+  # ---- generic fallthrough: run Nx's composed-defn fallback ----
+  def block(struct, _out, args, fun) do
+    :telemetry.execute(
+      [:emily, :block, :fallback],
+      %{},
+      %{struct: struct.__struct__, args_count: length(args)}
+    )
+
+    apply(fun, [struct | args])
+  end
+
+  # =================================================================
+  # Native helpers for `Emily.Fast` block dispatch
+  # =================================================================
+  #
+  # These were originally dispatched via `Nx.Defn.Expr.optional/3` —
+  # the evaluator looked them up by name with `function_exported?/3`.
+  # In Nx 0.12 the dispatch goes through `block/4` above; the bodies
+  # are unchanged.
 
   @doc false
   def fast_rms_norm(%T{} = out, x, weight, opts) do

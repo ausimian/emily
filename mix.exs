@@ -2,7 +2,7 @@ defmodule Emily.MixProject do
   use Mix.Project
 
   @app :emily
-  @version "0.3.5"
+  @version "0.4.0"
   @source_url "https://github.com/ausimian/emily"
 
   # MLX pin. Drives the git tag the `:mlx_src` dep is cloned at (see
@@ -82,7 +82,7 @@ defmodule Emily.MixProject do
     [
       {:elixir_make, "~> 0.9"},
       {:fine, "~> 0.1"},
-      {:nx, "~> 0.10"},
+      {:nx, "~> 0.12"},
       # Bumblebee + Axon are declared `optional: true` because the
       # only Emily module that touches either — `Emily.Bumblebee.FastKernels`
       # — is wrapped in a `Code.ensure_loaded?/1` gate and elides when
@@ -97,9 +97,9 @@ defmodule Emily.MixProject do
       # `Code.ensure_loaded?(Bumblebee.Layers)` at Emily's compile
       # time returns false and the shim elides even when the consumer
       # has both deps declared.
-      {:bumblebee, "~> 0.6", optional: true},
+      {:bumblebee, "~> 0.7", optional: true},
       {:tokenizers, "~> 0.5", optional: true},
-      {:axon, "~> 0.7", optional: true},
+      {:axon, "~> 0.8", optional: true},
       # `scidata` loads MNIST / CIFAR / etc. for the `:training_full`
       # opt-in convergence canary (M9). Kept test-only — Emily itself
       # doesn't depend on dataset loading.
