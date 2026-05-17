@@ -1,0 +1,116 @@
+# ModernBERT sequence classification on Emily
+
+```elixir
+Mix.install(
+  [
+    {:emily, "~> 0.4"},
+    {:bumblebee, "~> 0.7"},
+    {:tokenizers, "~> 0.5"},
+    {:nx, "~> 0.12"},
+    {:kino, "~> 0.14"}
+  ],
+  config: [
+    nx: [default_backend: Emily.Backend]
+  ]
+)
+```
+
+## Overview
+
+This notebook runs a ModernBERT sequence-classification fine-tune
+on `Emily.Backend`. ModernBERT is one of the three new model
+families that landed with Bumblebee 0.7 — a long-context (8192
+token) BERT successor with RoPE positional encoding, GeGLU
+activations, and alternating local/global attention. It's the most
+interesting of the three for Emily because it's the first
+*encoder* with rotary embeddings to land in the conformance suite,
+and it exercises both local and global attention paths in a single
+forward.
+
+The integration with Emily is the `Mix.install` config line above;
+no further setup is required.
+
+## Loading the model
+
+```elixir
+repo = "tasksource/ModernBERT-base-nli"
+
+{:ok, model_info} = Bumblebee.load_model({:hf, repo})
+{:ok, tokenizer} = Bumblebee.load_tokenizer({:hf, repo})
+```
+
+`tasksource/ModernBERT-base-nli` is an NLI fine-tune (entailment /
+neutral / contradiction across MNLI, ANLI, FEVER, …). Swap in any
+ModernBERT-based `*ForSequenceClassification` checkpoint — the
+Bumblebee 0.7 auto-detect resolves the architecture and the
+serving pipeline is identical. The base checkpoint is ~600 MB on
+first fetch.
+
+## Building a classification serving
+
+```elixir
+serving =
+  Bumblebee.Text.text_classification(model_info, tokenizer,
+    top_k: 3,
+    defn_options: [compiler: Emily.Compiler]
+  )
+```
+
+`Emily.Compiler` pins the result backend to `Emily.Backend` and
+caps partition concurrency at 1. For an encoder this size, a
+single MLX command queue saturates the GPU on a single inference
+job — use `Emily.Stream` if you need parallel inferences.
+
+## Classifying a few examples
+
+ModernBERT NLI fine-tunes expect the sentence-pair format
+`<premise> [SEP] <hypothesis>`. Bumblebee's tokenizer accepts a
+`{premise, hypothesis}` tuple and emits the right framing.
+
+```elixir
+examples = [
+  {"Elixir runs on the BEAM virtual machine.", "Elixir runs on a virtual machine."},
+  {"Elixir runs on the BEAM virtual machine.", "Elixir is a compiled language with no runtime."},
+  {"Cats sleep most of the day.", "Cats are nocturnal predators."}
+]
+
+Nx.Serving.run(serving, examples)
+```
+
+Each result is a `%{predictions: [%{label: _, score: _} | _]}`
+map. With this fine-tune the top label will be one of
+`"entailment"`, `"neutral"`, or `"contradiction"`.
+
+## Local-vs-global attention path
+
+ModernBERT alternates `:sliding_attention` (local window, default
+128 tokens) with `:full_attention` (global, every block sees every
+other) across its 22 layers. Both paths run on `Emily.Backend`
+through the standard scaled-dot-product attention kernel — the
+local window is realised as an additive mask, so there's no
+separate code path on the Emily side. Long-document inputs (~2k+
+tokens) are where the saved compute on local layers actually
+shows up in throughput.
+
+## Telemetry
+
+Emily emits `:telemetry` events at the evaluation boundary. Attach
+a handler to sample timing for each forward pass:
+
+```elixir
+:telemetry.attach(
+  "modernbert-cls",
+  [:emily, :eval, :stop],
+  fn _event, %{duration: duration}, _meta, _config ->
+    ms = System.convert_time_unit(duration, :native, :millisecond)
+    IO.puts("eval #{ms} ms")
+  end,
+  nil
+)
+
+Nx.Serving.run(serving, hd(examples))
+```
+
+See `Emily.Telemetry` for the full event catalogue, including the
+`[:emily, :block, :fallback]` event that fires whenever an op
+routes through `Nx.BinaryBackend`.

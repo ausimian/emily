@@ -1,0 +1,127 @@
+# NomicBERT text embeddings on Emily
+
+```elixir
+Mix.install(
+  [
+    {:emily, "~> 0.4"},
+    {:bumblebee, "~> 0.7"},
+    {:tokenizers, "~> 0.5"},
+    {:nx, "~> 0.12"},
+    {:kino, "~> 0.14"}
+  ],
+  config: [
+    nx: [default_backend: Emily.Backend]
+  ]
+)
+```
+
+## Overview
+
+This notebook runs the `nomic-ai/nomic-embed-text-v1` encoder on
+`Emily.Backend` to produce sentence embeddings. NomicBERT is one of
+the three new model families shipped with Bumblebee 0.7. It's a
+long-context (8192-token) BERT variant with rotary position
+embeddings and SwiGLU FFNs — used as a drop-in replacement for
+`sentence-transformers` style embedders.
+
+The integration with Emily is the `Mix.install` config above; no
+further setup is required.
+
+## Loading the model
+
+```elixir
+{:ok, model_info} =
+  Bumblebee.load_model({:hf, "nomic-ai/nomic-embed-text-v1"},
+    module: Bumblebee.Text.NomicBert,
+    architecture: :base
+  )
+
+{:ok, tokenizer} =
+  Bumblebee.load_tokenizer({:hf, "nomic-ai/nomic-embed-text-v1"})
+```
+
+The checkpoint is ~550 MB on first fetch. `module:` and
+`architecture:` are passed explicitly because the upstream config
+predates the Bumblebee 0.7 auto-detect mapping for this repo.
+
+## Building an embedding serving
+
+```elixir
+serving =
+  Bumblebee.Text.text_embedding(model_info, tokenizer,
+    output_attribute: :hidden_state,
+    output_pool: :mean_pooling,
+    embedding_processor: :l2_norm,
+    defn_options: [compiler: Emily.Compiler]
+  )
+```
+
+NomicBERT's `:base` graph returns `:hidden_state`, so the serving
+applies mean pooling over the sequence axis and then L2-normalises —
+matching the recipe the upstream `sentence-transformers` adapter
+uses. `Emily.Compiler` pins the result backend to `Emily.Backend`
+and caps partition concurrency at 1.
+
+## Embedding a few texts
+
+```elixir
+texts = [
+  "search_document: Elixir is a functional language for the BEAM.",
+  "search_document: Rust is a systems language with strict ownership rules.",
+  "search_query: which language runs on the BEAM?"
+]
+
+[doc_a, doc_b, query] =
+  for %{embedding: e} <- Nx.Serving.run(serving, texts), do: e
+```
+
+NomicBERT expects the `search_document:` / `search_query:` prefix
+on every input — without it the query/document embedding spaces
+don't align and similarities collapse. See
+[the model card](https://huggingface.co/nomic-ai/nomic-embed-text-v1)
+for the full prefix list (`classification:`, `clustering:`, etc).
+
+## Cosine similarity
+
+```elixir
+defmodule Cosine do
+  def sim(a, b) do
+    a
+    |> Nx.multiply(b)
+    |> Nx.sum()
+    |> Nx.to_number()
+  end
+end
+
+%{
+  query_vs_elixir: Cosine.sim(query, doc_a),
+  query_vs_rust: Cosine.sim(query, doc_b)
+}
+```
+
+Because the embeddings are L2-normalised, the dot product *is* the
+cosine similarity. The Elixir document should score noticeably
+higher than the Rust one.
+
+## Telemetry
+
+Emily emits `:telemetry` events at the evaluation boundary. Attach
+a handler to sample timing for each forward pass:
+
+```elixir
+:telemetry.attach(
+  "nomic-embed",
+  [:emily, :eval, :stop],
+  fn _event, %{duration: duration}, _meta, _config ->
+    ms = System.convert_time_unit(duration, :native, :millisecond)
+    IO.puts("eval #{ms} ms")
+  end,
+  nil
+)
+
+Nx.Serving.run(serving, "search_query: how fast is Emily?")
+```
+
+See `Emily.Telemetry` for the full event catalogue, including the
+`[:emily, :block, :fallback]` event that fires whenever an op
+routes through `Nx.BinaryBackend`.
