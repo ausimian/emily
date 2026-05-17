@@ -173,6 +173,9 @@ defmodule Emily.MixProject do
         "CHANGELOG.md",
         "notebooks/distilbert_qa.livemd",
         "notebooks/qwen3_quantized.livemd",
+        "notebooks/nomic_embeddings.livemd",
+        "notebooks/smollm3_chat.livemd",
+        "notebooks/modernbert_classification.livemd",
         "notebooks/mnist_training.livemd",
         "notebooks/whisper_transcription.livemd",
         "notebooks/fast_kernels.livemd"

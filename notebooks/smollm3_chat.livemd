@@ -1,0 +1,154 @@
+# SmolLM3-3B chat generation on Emily
+
+```elixir
+Mix.install(
+  [
+    {:emily, "~> 0.4"},
+    {:bumblebee, "~> 0.7"},
+    {:tokenizers, "~> 0.5"},
+    {:nx, "~> 0.12"},
+    {:kino, "~> 0.14"}
+  ],
+  config: [
+    nx: [default_backend: Emily.Backend]
+  ]
+)
+```
+
+## Overview
+
+This notebook loads `HuggingFaceTB/SmolLM3-3B` through Bumblebee
+and greedy-decodes a chat-style completion on `Emily.Backend`.
+SmolLM3 is one of the three new model families that landed with
+Bumblebee 0.7 — a 3B-parameter Llama-style decoder with GQA, RoPE,
+and RMSNorm. It targets the "small but capable" niche between
+Qwen3-0.6B and Qwen3-4B.
+
+The checkpoint is ~6 GB on first fetch. Budget several minutes for
+the cold run.
+
+## Loading the model
+
+```elixir
+{:ok, model_info} =
+  Bumblebee.load_model({:hf, "HuggingFaceTB/SmolLM3-3B"})
+
+{:ok, tokenizer} =
+  Bumblebee.load_tokenizer({:hf, "HuggingFaceTB/SmolLM3-3B"})
+
+{:ok, generation_config} =
+  Bumblebee.load_generation_config({:hf, "HuggingFaceTB/SmolLM3-3B"})
+```
+
+Bumblebee 0.7's auto-detect maps `SmolLM3ForCausalLM` to
+`{Bumblebee.Text.SmolLm3, :for_causal_language_modeling}`, so no
+`module:`/`architecture:` overrides are needed.
+
+## Building a generation serving
+
+```elixir
+config =
+  Bumblebee.configure(generation_config,
+    max_new_tokens: 128,
+    strategy: %{type: :greedy_search}
+  )
+
+serving =
+  Bumblebee.Text.generation(model_info, tokenizer, config,
+    defn_options: [compiler: Emily.Compiler]
+  )
+```
+
+`Emily.Compiler` pins the result backend to `Emily.Backend` and
+caps partition concurrency at 1. Per-process parallelism is the
+job of `Emily.Stream` (see further down).
+
+## Running a chat-style completion
+
+SmolLM3 is instruction-tuned around the `<|im_start|>` /
+`<|im_end|>` chat template. Bumblebee 0.7 doesn't ship a Jinja
+runtime, so the framing has to be assembled in plain Elixir — the
+helper below mirrors the [official chat template](https://huggingface.co/HuggingFaceTB/SmolLM3-3B/blob/main/chat_template.jinja)
+closely enough for the common system / user / assistant case.
+
+```elixir
+defmodule ChatPrompt do
+  def build(messages, opts \\ []) do
+    think? = Keyword.get(opts, :think, false)
+    body = Enum.map_join(messages, "\n", &format/1)
+    think_tag = if think?, do: "", else: "<think>\n\n</think>\n\n"
+    body <> "\n<|im_start|>assistant\n" <> think_tag
+  end
+
+  defp format(%{role: role, content: content}) do
+    "<|im_start|>" <> role <> "\n" <> content <> "<|im_end|>"
+  end
+end
+
+messages = [
+  %{role: "system", content: "You are a terse assistant. Answer in one sentence."},
+  %{role: "user", content: "Why is Elixir well suited to building chat servers?"}
+]
+
+prompt = ChatPrompt.build(messages)
+
+%{results: [%{text: reply}]} = Nx.Serving.run(serving, prompt)
+
+reply
+```
+
+> **Reasoning mode.** SmolLM3 is a hybrid reasoning model — by
+> default it emits a `<think>…</think>` block before the answer.
+> The helper above injects an empty `<think>\n\n</think>` after the
+> assistant role to short-circuit that prelude, which is what you
+> want for plain chat. Pass `think: true` to keep the
+> chain-of-thought output.
+
+## Concurrent serving via `Emily.Stream`
+
+For concurrent inference on a shared model, each worker should own
+its own MLX command queue. `Emily.Stream.with_stream/2` does that
+per-process:
+
+```elixir
+task1 =
+  Task.async(fn ->
+    Emily.Stream.with_stream(Emily.Stream.new(:gpu), fn ->
+      Nx.Serving.run(serving, prompt)
+    end)
+  end)
+
+task2 =
+  Task.async(fn ->
+    Emily.Stream.with_stream(Emily.Stream.new(:gpu), fn ->
+      Nx.Serving.run(serving, prompt)
+    end)
+  end)
+
+{Task.await(task1, :infinity), Task.await(task2, :infinity)}
+```
+
+Weights are shared across streams — no duplication — so the memory
+cost of adding a stream is the Metal command buffer, not the
+model. Create streams once at worker init, not per-request.
+
+## Telemetry
+
+Emily emits `:telemetry` events at the evaluation boundary. Attach
+a handler to sample timing for each forward pass:
+
+```elixir
+:telemetry.attach(
+  "smollm3-eval",
+  [:emily, :eval, :stop],
+  fn _event, %{duration: duration}, _meta, _config ->
+    ms = System.convert_time_unit(duration, :native, :millisecond)
+    IO.puts("eval #{ms} ms")
+  end,
+  nil
+)
+
+Nx.Serving.run(serving, prompt)
+```
+
+See `Emily.Telemetry` for the full event catalogue.

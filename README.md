@@ -194,6 +194,34 @@ The low-level tensor API (`Emily.from_binary/3`, `to_binary/1`,
 `shape/1`, `dtype/1`, `eval/1`) remains available for diagnostics
 and direct MLX round-trips, but most users should go through Nx.
 
+## Notebooks
+
+End-to-end Livebooks under `notebooks/`. Each one declares its own
+`Mix.install/2` block and pins `Emily.Backend` as the default Nx
+backend, so they're self-contained — open in Livebook and run.
+
+- **`distilbert_qa.livemd`** — question answering with
+  `distilbert-base-uncased-distilled-squad`.
+- **`qwen3_quantized.livemd`** — Qwen3-0.6B int4-quantized via the
+  `Emily.Quantization` stack, with concurrent serving over
+  `Emily.Stream`.
+- **`nomic_embeddings.livemd`** — `nomic-embed-text-v1` sentence
+  embeddings on the new Bumblebee 0.7 NomicBERT family, with mean
+  pooling, L2 normalisation, and a cosine-similarity demo.
+- **`smollm3_chat.livemd`** — chat completion against
+  `HuggingFaceTB/SmolLM3-3B` (new in Bumblebee 0.7), including a
+  toggle for SmolLM3's hybrid reasoning mode.
+- **`modernbert_classification.livemd`** — sequence classification
+  with a ModernBERT NLI fine-tune (new in Bumblebee 0.7) — the
+  first encoder in the suite with RoPE and alternating
+  local/global attention.
+- **`mnist_training.livemd`** — Axon training loop with bf16 mixed
+  precision via `Emily.MixedPrecision`.
+- **`whisper_transcription.livemd`** — Whisper speech-to-text
+  against canned audio clips or live microphone input.
+- **`fast_kernels.livemd`** — direct use of the fused
+  transformer kernels exposed by `Emily.Fast`.
+
 ## Concurrency model
 
 MLX dispatches GPU work through Metal command queues. Emily owns one

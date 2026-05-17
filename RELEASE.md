@@ -31,6 +31,13 @@
   (`:smollm3`), and ModernBERT (`:modernbert`). All three drive a
   tiny synthetic spec end-to-end through `Axon.predict` so they
   remain offline-friendly; tagged `:conformance`.
+- Runnable Livebooks for each of the three new Bumblebee 0.7
+  families: `notebooks/nomic_embeddings.livemd` (NomicBERT
+  embeddings with cosine similarity), `notebooks/smollm3_chat.livemd`
+  (SmolLM3-3B chat completion with a `<think>` toggle for hybrid
+  reasoning), and `notebooks/modernbert_classification.livemd`
+  (ModernBERT NLI fine-tune). All three are published under the
+  HexDocs Notebooks group.
 - A `[:emily, :block, :fallback]` telemetry event fires whenever
   `Emily.Backend.block/4` falls through to the supplied default
   `fun`. Surfaces ops we used to handle natively but now land on
