@@ -38,10 +38,10 @@ defmodule Emily.Telemetry do
   ### Memory stats (poll-driven)
 
   `[:emily, :memory, :stats]` — discrete event, not a span. Call
-  `Emily.Telemetry.memory_stats/0` to sample; measurements:
+  `Emily.Memory.stats/0` to sample; measurements:
 
     * `:active` — bytes currently held by MLX
-    * `:peak` — high-water mark since last `Native.reset_peak_memory/0`
+    * `:peak` — high-water mark since last `Emily.Memory.reset_peak/0`
     * `:cache` — bytes cached for reuse
 
   Wire this into a periodic task (e.g. `Process.send_after/3` loop) to
@@ -61,12 +61,13 @@ defmodule Emily.Telemetry do
 
   require Logger
 
-  alias Emily.Native
-
   @dedup_table :emily_fallback_dedup
 
   @doc """
   Sample the MLX allocator and emit `[:emily, :memory, :stats]`.
+
+  Prefer `Emily.Memory.stats/0` in new code. This function remains as
+  the telemetry-oriented entry point for existing callers.
 
   Returns the measurements map so callers can also log or plot
   inline.
@@ -84,14 +85,7 @@ defmodule Emily.Telemetry do
           cache: non_neg_integer()
         }
   def memory_stats do
-    measurements = %{
-      active: Native.get_active_memory(),
-      peak: Native.get_peak_memory(),
-      cache: Native.get_cache_memory()
-    }
-
-    :telemetry.execute([:emily, :memory, :stats], measurements, %{})
-    measurements
+    Emily.Memory.stats()
   end
 
   @doc false

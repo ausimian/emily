@@ -359,6 +359,24 @@ config :emily, :warn_on_fallback, true
 The warning is off by default so library consumers and CI logs stay
 quiet. The telemetry event fires regardless.
 
+### Memory
+
+MLX buffers live outside the BEAM heap, so long-running serving and
+training processes should observe MLX allocator state directly.
+`Emily.Memory.stats/0` returns active, peak, and cached bytes and emits
+the same `[:emily, :memory, :stats]` telemetry event:
+
+```elixir
+stats = Emily.Memory.stats()
+# %{active: ..., peak: ..., cache: ...}
+```
+
+Use `Emily.Memory.reset_peak/0` before a benchmark or soak window, and
+`Emily.Memory.clear_cache/0` when you want MLX to release reusable
+cached buffers. `clear_cache/0` does not free live tensors or binaries
+returned by `Nx.to_binary/1`; those buffers are released only after the
+owning BEAM references are garbage collected.
+
 ## Debug assertions
 
 Two compile-time flags re-enable runtime checks that MLX (and every

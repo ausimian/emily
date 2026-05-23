@@ -192,7 +192,7 @@ defmodule Emily.MixProject do
         ],
         Training: [Emily.MixedPrecision, Emily.MixedPrecision.LossScaler],
         Performance: [Emily.Fast, Emily.Bumblebee.FastKernels],
-        Observability: [Emily.Telemetry]
+        Observability: [Emily.Telemetry, Emily.Memory]
       ]
     ]
   end
