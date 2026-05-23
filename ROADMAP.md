@@ -8,8 +8,8 @@ as the historical record; the current shape of the library is in
 
   * **Correctness over performance at every layer.** Every layer has
     its own oracle.
-  * **Structural impossibility of bidirectional NIF deadlocks.** No
-    C++→BEAM callbacks. No GenServer on the hot path.
+  * **No synchronous C++ → BEAM calls and no NIF that blocks on a
+    BEAM operation.** No GenServer on the hot path.
   * **Bumblebee-first.** DistilBERT, Qwen3, ViT, Whisper, plus the
     Bumblebee 0.7 family (NomicBERT, SmolLM3, ModernBERT).
   * **Shippable at every milestone.** Backend-only mode is useful on
