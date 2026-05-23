@@ -168,6 +168,8 @@ defmodule Emily.MixProject do
       source_url_pattern: "#{@source_url}/blob/#{@version}/%{path}#L%{line}",
       extras: [
         "README.md",
+        "ARCHITECTURE.md",
+        "ROADMAP.md",
         "CHANGELOG.md",
         "notebooks/distilbert_qa.livemd",
         "notebooks/qwen3_quantized.livemd",
@@ -180,6 +182,11 @@ defmodule Emily.MixProject do
       ],
       groups_for_extras: [
         README: ~r{README.md},
+        Project: [
+          "ARCHITECTURE.md",
+          "ROADMAP.md",
+          "CHANGELOG.md"
+        ],
         Notebooks: ~r{^notebooks/}
       ],
       groups_for_modules: [
@@ -201,7 +208,7 @@ defmodule Emily.MixProject do
     [
       licenses: ["MIT"],
       links: %{"GitHub" => @source_url},
-      files: ~w(lib mix.exs README.md CHANGELOG.md LICENSE)
+      files: ~w(lib mix.exs README.md ARCHITECTURE.md ROADMAP.md CHANGELOG.md LICENSE)
     ]
   end
 

@@ -1,5 +1,34 @@
 ### Added
 
+- `ARCHITECTURE.md` — current shape of the library extracted from
+  `PLAN.md`. Covers the four-layer dispatch model, the worker-thread
+  + per-process-stream concurrency model, the public `Emily.Memory`
+  allocator API, the telemetry event catalogue, the
+  `:debug_bounds_check` / `:debug_detect_nan_inf` compile-time flags,
+  build/packaging notes, the per-layer testing oracle table, and the
+  active risk register. Linked from the README under a new
+  Documentation section and grouped under "Project" in the HexDocs
+  sidebar.
+- `ROADMAP.md` — active and future work, separated from the
+  historical milestone log. Lists deferred-to-post-1.0 items
+  (typed exceptions, GPU interop pointers, source-build doctor
+  probes) and the open in-roadmap MLX capability gaps (sparse / MoE
+  matmuls, FP8 dtype, `ThreadLocalStream`).
+
+### Changed
+
+- `PLAN.md` slimmed to its milestone-history role. The current-shape
+  sections (architecture diagram, core design decisions, testing
+  philosophy, risks-and-mitigations) moved to `ARCHITECTURE.md`;
+  goals, non-goals, and deferred-milestone summaries moved to
+  `ROADMAP.md`. The M0–M27 milestone narratives, the ratified
+  project decisions, and the 2026-04-22 MLX capability audit stay in
+  `PLAN.md` as the historical record. The stale "narrow
+  `with_stream/2` + `new/1` + `synchronize/1` surface" reference (no
+  `synchronize/1` ever shipped) and the planned `set_default_stream/1`
+  primary deliverable (removed during the post-M14 fixes) drop out
+  with the prologue rewrite.
+
 - `mix emily.doctor` — diagnostic Mix task that verifies the local
   Emily runtime installation. Checks the host platform (OS, arch,
   macOS version against the active variant's minimum), the active
