@@ -163,8 +163,8 @@ end
 > recursive rewriter. The `transpose: true` default stores weights as
 > `[out, in]` (MLX / AWQ convention, groups along the reduction axis);
 > set `false` if you're feeding a checkpoint that's already laid out
-> the other way. Bits must be one of `[2, 4, 8]` — the defn-native
-> `dequantize_defn/1` path doesn't cover `{3, 6}`.
+> the other way. Bits must be one of `[2, 3, 4, 6, 8]` for the
+> defn-native `dequantize_defn/1` path.
 
 ## Quantized inference
 

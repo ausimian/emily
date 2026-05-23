@@ -2,9 +2,9 @@ defmodule Emily.Quantization.DequantizeDefnTest do
   @moduledoc """
   Equality tests for `Emily.Quantization.dequantize_defn/1` against
   `QuantizedWeight.to_dense/1` (the Native path). Covers every
-  `bits ∈ {2, 4, 8}` × `group_size ∈ {32, 64, 128}` combo, plus a
-  rank-3 case and defn composability. `bits ∈ {3, 6}` are rejected by
-  the defn path; negative test below.
+  `bits ∈ {2, 3, 4, 6, 8}` × `group_size ∈ {32, 64, 128}` combo,
+  plus a rank-3 case and defn composability. Microscaled modes are
+  rejected by the defn path; negative test below.
   """
 
   use ExUnit.Case, async: true
@@ -15,7 +15,7 @@ defmodule Emily.Quantization.DequantizeDefnTest do
 
   import Emily.BackendGenerators, only: [assert_close: 3]
 
-  @bits [2, 4, 8]
+  @bits [2, 3, 4, 6, 8]
   @group_sizes [32, 64, 128]
 
   describe "dequantize_defn/1 — equality with QuantizedWeight.to_dense/1" do
@@ -66,6 +66,29 @@ defmodule Emily.Quantization.DequantizeDefnTest do
       assert Nx.shape(actual) == {2, 3, 128}
       assert_close(actual, expected, tol: 1.0e-6)
     end
+
+    for bits <- @bits do
+      test "bits=#{bits} works after transfer to Nx.BinaryBackend" do
+        bits = unquote(bits)
+
+        w =
+          Nx.iota({2, 128}, backend: Emily.Backend, type: :f32)
+          |> Nx.divide(256.0)
+          |> Nx.subtract(0.25)
+
+        qw = QuantizedWeight.from_dense(w, group_size: 64, bits: bits)
+        expected = QuantizedWeight.to_dense(qw) |> Nx.backend_transfer(Nx.BinaryBackend)
+
+        actual =
+          qw
+          |> Nx.backend_transfer(Nx.BinaryBackend)
+          |> Quantization.dequantize_defn()
+
+        assert Nx.shape(actual) == Nx.shape(expected)
+        assert Nx.backend_transfer(actual, Nx.BinaryBackend) == actual
+        assert_close(actual, expected, tol: 1.0e-6)
+      end
+    end
   end
 
   describe "dequantize_defn/1 — composes inside defn" do
@@ -75,42 +98,28 @@ defmodule Emily.Quantization.DequantizeDefnTest do
       Emily.Quantization.dequantize_defn(qw) * factor
     end
 
-    test "runs under Nx.Defn.jit" do
-      w =
-        Nx.iota({2, 128}, backend: Emily.Backend, type: :f32)
-        |> Nx.divide(128.0)
-        |> Nx.subtract(0.5)
+    for bits <- @bits do
+      test "bits=#{bits} runs under Nx.Defn.jit" do
+        bits = unquote(bits)
 
-      qw = QuantizedWeight.from_dense(w, group_size: 64, bits: 4)
-      factor = Nx.tensor(2.0, backend: Emily.Backend, type: :f32)
+        w =
+          Nx.iota({2, 128}, backend: Emily.Backend, type: :f32)
+          |> Nx.divide(128.0)
+          |> Nx.subtract(0.5)
 
-      actual = dequantize_then_scale(qw, factor)
-      expected = QuantizedWeight.to_dense(qw) |> Nx.multiply(2.0)
+        qw = QuantizedWeight.from_dense(w, group_size: 64, bits: bits)
+        factor = Nx.tensor(2.0, backend: Emily.Backend, type: :f32)
 
-      assert Nx.shape(actual) == {2, 128}
-      assert_close(actual, expected, tol: 1.0e-6)
+        actual = dequantize_then_scale(qw, factor)
+        expected = QuantizedWeight.to_dense(qw) |> Nx.multiply(2.0)
+
+        assert Nx.shape(actual) == {2, 128}
+        assert_close(actual, expected, tol: 1.0e-6)
+      end
     end
   end
 
   describe "dequantize_defn/1 — validation" do
-    test "raises on bits=3 (cross-u32 packing not supported)" do
-      w = Nx.iota({2, 64}, backend: Emily.Backend, type: :f32) |> Nx.divide(128.0)
-      qw = QuantizedWeight.from_dense(w, group_size: 64, bits: 3)
-
-      assert_raise ArgumentError, ~r/bits=3 uses cross-u32/, fn ->
-        Quantization.dequantize_defn(qw)
-      end
-    end
-
-    test "raises on bits=6 (cross-u32 packing not supported)" do
-      w = Nx.iota({2, 64}, backend: Emily.Backend, type: :f32) |> Nx.divide(128.0)
-      qw = QuantizedWeight.from_dense(w, group_size: 64, bits: 6)
-
-      assert_raise ArgumentError, ~r/bits=6 uses cross-u32/, fn ->
-        Quantization.dequantize_defn(qw)
-      end
-    end
-
     test "raises on microscaled mode (defn path is affine-only)" do
       w = Nx.iota({2, 128}, backend: Emily.Backend, type: :f32) |> Nx.divide(256.0)
       qw = QuantizedWeight.from_dense(w, mode: "mxfp4", group_size: 32, bits: 4)

@@ -17,11 +17,7 @@ defmodule Emily.Quantization do
       dequantize_defn(qw))` runs in two kernels (dequantize then
       dense matmul) instead of one.
     * `defn_supported_bits/0` — enumerates the bit widths the
-      defn-native path supports (`#{inspect([2, 4, 8])}`).
-
-  `bits ∈ {3, 6}` use cross-u32 lane packing; only
-  `Emily.QuantizedWeight.to_dense/1` (the native-NIF path) handles
-  them.
+      defn-native path supports (`#{inspect([2, 3, 4, 6, 8])}`).
 
   See `Emily.QuantizedWeight` for the container struct and
   `Emily.QuantizedWeight.from_dense/2` for building one.
@@ -34,21 +30,20 @@ defmodule Emily.Quantization do
   alias Emily.QuantizedWeight
   alias Nx.Tensor, as: T
 
-  @defn_supported_bits [2, 4, 8]
+  @defn_supported_bits [2, 3, 4, 6, 8]
 
   @doc """
   Bit widths supported by `dequantize_defn/1` (and therefore by
   `Emily.Quantization.Layers.quantized_dense/4` and any Axon graph
   rewrite that wires it in).
 
-  `bits ∈ {3, 6}` use cross-u32 lane packing and aren't supported by
-  the defn-native path; `QuantizedWeight.to_dense/1` (the Native path)
-  still handles them.
+  `bits ∈ {3, 6}` use cross-u32 lane packing and therefore take a
+  denser unpacking path than the integral-lanes-per-u32 bit widths.
 
   ## Examples
 
       iex> Emily.Quantization.defn_supported_bits()
-      [2, 4, 8]
+      [2, 3, 4, 6, 8]
 
   """
   @spec defn_supported_bits() :: [pos_integer()]
@@ -168,7 +163,7 @@ defmodule Emily.Quantization do
   and `g = div(i, group_size)` is the group index along the last axis.
 
   Supported: `bits ∈ #{inspect(@defn_supported_bits)}`. `bits ∈ {3, 6}`
-  pack across u32 boundaries and are out of scope here.
+  pack across u32 boundaries and use a dense bitstream unpacking path.
 
   ## Examples
 
@@ -210,9 +205,8 @@ defmodule Emily.Quantization do
 
   defp validate_defn_bits!(bits) do
     raise ArgumentError,
-          "Emily.Quantization.dequantize_defn/1: bits=#{bits} uses cross-u32 " <>
-            "lane packing, which is out of scope for the defn-native path. " <>
-            "Supported: #{inspect(@defn_supported_bits)}. Use " <>
+          "Emily.Quantization.dequantize_defn/1: bits=#{bits} is not supported " <>
+            "by the defn-native path. Supported: #{inspect(@defn_supported_bits)}. Use " <>
             "`Emily.QuantizedWeight.to_dense/1` (the Native path) for unsupported " <>
             "bit widths."
   end
@@ -225,25 +219,61 @@ defmodule Emily.Quantization do
     group_size = opts[:group_size]
     bits = opts[:bits]
 
-    # Unpack: (..., packed) → (..., packed, lpu) via broadcast-shift
-    # with a length-lpu shift vector, then mask to `bits`-width nibbles.
-    shifts = build_shifts(bits)
-    mask = build_mask(bits)
+    masked =
+      if rem(32, bits) == 0 do
+        unpack_integral_lanes(w_q, bits)
+      else
+        unpack_cross_word_lanes(w_q, bits)
+      end
 
-    # new_axis appends a length-1 axis; right_shift broadcasts against shifts.
-    shifted = Nx.right_shift(Nx.new_axis(w_q, -1), shifts)
-    masked = Nx.bitwise_and(shifted, mask)
-
-    # Flatten (packed, lpu) → orig_last, then regroup to (..., groups,
+    # Integral lanes unpack to (..., packed, lpu); cross-word lanes
+    # already unpack to (..., orig_last). Regroup to (..., groups,
     # group_size) so per-group scale/bias broadcast trivially.
-    grouped = masked |> Nx.flatten(axes: [-2, -1]) |> group_last_axis(group_size)
+    grouped = masked |> flatten_unpacked(bits) |> group_last_axis(group_size)
 
-    # Cast u32 → scales dtype, then per-group affine recombine; flatten
-    # back to (..., orig_last).
+    # Cast unpacked integers → scales dtype, then per-group affine
+    # recombine; flatten back to (..., orig_last).
     grouped_f = Nx.as_type(grouped, Nx.type(scales))
     dequantized = grouped_f * Nx.new_axis(scales, -1) + Nx.new_axis(biases, -1)
 
     Nx.flatten(dequantized, axes: [-2, -1])
+  end
+
+  defnp unpack_integral_lanes(w_q, bits) do
+    # Unpack: (..., packed) → (..., packed, lpu) via broadcast-shift
+    # with a length-lpu shift vector, then mask to `bits`-width lanes.
+    shifts = build_shifts(bits)
+    mask = build_mask(bits)
+
+    # new_axis appends a length-1 axis; right_shift broadcasts against shifts.
+    w_q
+    |> Nx.new_axis(-1)
+    |> Nx.right_shift(shifts)
+    |> Nx.bitwise_and(mask)
+  end
+
+  defnp unpack_cross_word_lanes(w_q, bits) do
+    {word_indices, next_word_indices} = build_word_indices(w_q, bits)
+    bit_indices = build_bit_indices(w_q, bits)
+
+    w_q_u64 = Nx.as_type(w_q, :u64)
+    current = Nx.take(w_q_u64, word_indices, axis: -1)
+    next = Nx.take(w_q_u64, next_word_indices, axis: -1)
+
+    next_shifted = Nx.left_shift(next, Nx.tensor(32, type: :u64))
+
+    current
+    |> Nx.bitwise_or(next_shifted)
+    |> Nx.right_shift(bit_indices)
+    |> Nx.bitwise_and(build_mask64(bits))
+  end
+
+  deftransformp flatten_unpacked(t, bits) do
+    if rem(32, bits) == 0 do
+      Nx.flatten(t, axes: [-2, -1])
+    else
+      t
+    end
   end
 
   deftransformp build_shifts(bits) do
@@ -255,6 +285,42 @@ defmodule Emily.Quantization do
   deftransformp build_mask(bits) do
     import Bitwise
     Nx.tensor((1 <<< bits) - 1, type: :u32)
+  end
+
+  deftransformp build_mask64(bits) do
+    import Bitwise
+    Nx.tensor((1 <<< bits) - 1, type: :u64)
+  end
+
+  deftransformp build_word_indices(w_q, bits) do
+    shape = Nx.shape(w_q)
+    rank = tuple_size(shape)
+    packed = elem(shape, rank - 1)
+    unpacked = div(packed * 32, bits)
+    max_word = packed - 1
+
+    words =
+      for i <- 0..(unpacked - 1) do
+        div(i * bits, 32)
+      end
+
+    next_words = Enum.map(words, &min(&1 + 1, max_word))
+
+    {Nx.tensor(words, type: :s64), Nx.tensor(next_words, type: :s64)}
+  end
+
+  deftransformp build_bit_indices(w_q, bits) do
+    shape = Nx.shape(w_q)
+    rank = tuple_size(shape)
+    packed = elem(shape, rank - 1)
+    unpacked = div(packed * 32, bits)
+
+    bit_indices =
+      for i <- 0..(unpacked - 1) do
+        rem(i * bits, 32)
+      end
+
+    Nx.tensor(bit_indices, type: :u64)
   end
 
   # Reshape `(..., n)` → `(..., n / group_size, group_size)`. Uses
