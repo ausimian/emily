@@ -1,5 +1,17 @@
 ### Added
 
+- `Emily.Quantization.dequantize_defn/1` now supports the `mxfp4`
+  microscaled mode in addition to `affine`. Each 4-bit lane code
+  decodes through MLX's FP4-E2M1 lookup table (`+0.0, +0.5, +1.0,
+  +1.5, +2.0, +3.0, +4.0, +6.0` and their negatives); each u8 scale
+  byte decodes through `2^(s - 127)` (FP8-E8M0). Output dtype is
+  bf16 to match `QuantizedWeight.to_dense/1`, and the round-trip is
+  bit-identical (max abs diff = 0.0) on realistic scale bytes
+  because every FP4 LUT entry and every E8M0 power-of-two is exact
+  in bf16. `Emily.Quantization.Transform` gains a `:mode` option
+  (default `"affine"`, accepts `"mxfp4"`); `mxfp8` and `nvfp4` are
+  still defn-unsupported and route through the Native NIF.
+
 - `Emily.Quantization.dequantize_defn/1` now supports int3 and int6
   weights in addition to int2/int4/int8. The new path reads each
   lane's two adjacent u32 words as a u64, shifts by the in-word bit

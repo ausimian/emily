@@ -169,6 +169,12 @@ defmodule Emily.Quantization do
       adjacent u32 pairs as a u64, then shift by `rem(i * bits, 32)`
       and mask.
 
+  Supported modes: `"affine"` and `"mxfp4"`. `mxfp4` decodes each
+  4-bit lane through MLX's FP4-E2M1 lookup table and each u8 scale
+  byte through `2^(s - 127)` (FP8-E8M0); the output dtype is `bf16`
+  to match `QuantizedWeight.to_dense/1`. `mxfp8` and `nvfp4` are not
+  yet wired and still raise — use the Native path for those.
+
   ## Examples
 
       iex> w = Nx.iota({4, 64}, backend: Emily.Backend, type: :f32)
@@ -192,17 +198,23 @@ defmodule Emily.Quantization do
     validate_defn_mode!(mode)
     validate_defn_bits!(bits)
 
-    dequantize_impl(q, s, b, group_size: group_size, bits: bits)
+    case mode do
+      "affine" -> dequantize_impl(q, s, b, group_size: group_size, bits: bits)
+      "mxfp4" -> dequantize_mxfp4_impl(q, s, group_size: group_size)
+    end
   end
 
-  defp validate_defn_mode!("affine"), do: :ok
+  defp validate_defn_mode!(mode) when mode in ["affine", "mxfp4"], do: :ok
+
+  @supported_defn_modes ~w[affine mxfp4]
 
   defp validate_defn_mode!(mode) do
     raise ArgumentError,
           "Emily.Quantization.dequantize_defn/1: mode=#{inspect(mode)} is not " <>
-            "supported by the defn-native path (only \"affine\" is). " <>
-            "Use `Emily.QuantizedWeight.to_dense/1` (the Native path) to " <>
-            "dequantize microscaled modes."
+            "supported by the defn-native path (supported: " <>
+            "#{inspect(@supported_defn_modes)}). Use " <>
+            "`Emily.QuantizedWeight.to_dense/1` (the Native path) to " <>
+            "dequantize the remaining microscaled modes."
   end
 
   defp validate_defn_bits!(bits) when bits in @defn_supported_bits, do: :ok
@@ -248,6 +260,78 @@ defmodule Emily.Quantization do
     dequantized = grouped_f * Nx.new_axis(scales, -1) + Nx.new_axis(biases, -1)
 
     Nx.flatten(dequantized, axes: [-2, -1])
+  end
+
+  # MLX `mxfp4`: bits=4 lanes packed in u32 stream, scales=u8 FP8-E8M0
+  # exponent bytes (one per group of 32 lanes), no biases. Lane codes
+  # decode through a 16-entry FP4-E2M1 LUT; scale bytes decode through
+  # `2^(s - 127)` (a 256-entry LUT built once at trace time).
+  #
+  # Output dtype is bf16 to match `QuantizedWeight.to_dense/1` on mxfp4.
+  # All values involved (FP4 lane LUT entries, E8M0 scale powers, and
+  # their products) are exact in bf16 for realistic inputs, so the
+  # defn path is bit-identical to MLX's NIF dequant in practice.
+  defnp dequantize_mxfp4_impl(w_q, scales, opts \\ []) do
+    opts = keyword!(opts, [:group_size])
+    group_size = opts[:group_size]
+
+    # Unpack 4-bit lane codes: bits=4 → lpu=8, rem(32, 4) == 0 so the
+    # integral path applies. Result shape: (..., packed, 8).
+    lane_codes =
+      w_q
+      |> unpack_integral_lanes(4)
+      |> Nx.flatten(axes: [-2, -1])
+
+    # FP4-E2M1 decode via 16-entry LUT.
+    lanes_f = Nx.take(fp4_lut(), lane_codes)
+
+    # Group: (..., orig_last) → (..., groups, group_size) so scales
+    # broadcast cleanly via a trailing length-1 axis.
+    grouped = group_last_axis(lanes_f, group_size)
+
+    # FP8-E8M0 scale decode via 256-entry LUT; result shape matches
+    # scales (..., groups), then add the length-1 axis for broadcast.
+    scales_f = Nx.take(e8m0_lut(), scales)
+
+    dequantized = grouped * Nx.new_axis(scales_f, -1)
+    Nx.flatten(dequantized, axes: [-2, -1])
+  end
+
+  deftransformp fp4_lut do
+    # MLX FP4-E2M1 lane table (sign bit at code bit 3, low 3 bits index
+    # the magnitude). Matches `FP4_LUT` in `deps/mlx_src/mlx/backend/cpu/quantized.cpp`.
+    Nx.tensor(
+      [
+        +0.0,
+        +0.5,
+        +1.0,
+        +1.5,
+        +2.0,
+        +3.0,
+        +4.0,
+        +6.0,
+        -0.0,
+        -0.5,
+        -1.0,
+        -1.5,
+        -2.0,
+        -3.0,
+        -4.0,
+        -6.0
+      ],
+      type: {:bf, 16}
+    )
+  end
+
+  deftransformp e8m0_lut do
+    # FP8-E8M0: 8 exponent bits, no sign or mantissa; value = 2^(s - 127).
+    # `s = 0xFF` is NaN per the OCP MX spec; `s = 0x00` is the subnormal
+    # representation of zero. The formula below produces a very large
+    # finite value at s=255 (saturates to +inf in bf16) and 2^-127 at
+    # s=0 (subnormal in bf16, but realistic MLX scales never go that
+    # low). Practical correctness holds for every scale MLX emits.
+    values = for s <- 0..255, do: :math.pow(2.0, s - 127)
+    Nx.tensor(values, type: {:bf, 16})
   end
 
   defnp unpack_integral_lanes(w_q, bits) do

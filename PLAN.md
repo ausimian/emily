@@ -443,6 +443,26 @@ expanded set up automatically. Round-trip equality vs.
 `{bits, group_size}` combo on both `Emily.Backend` and
 `Nx.BinaryBackend`.
 
+**Post-M10.5 note — microscaled mxfp4 mode landed.**
+M10.5 left the microscaled modes (`mxfp4`, `mxfp8`, `nvfp4`) on
+the Native path because they require additional decode work
+beyond integer-lane unpacking: lane codes are FP4-E2M1 indices
+into a 16-entry LUT (not raw integers), and per-group scales are
+FP8-E8M0 bytes (not floats). A follow-up patch wired `mxfp4`
+through the defn-native path by adding two precomputed LUT
+helpers (`fp4_lut/0` and `e8m0_lut/0` in
+`lib/emily/quantization.ex`): `unpack_integral_lanes/2` still
+extracts the 4-bit codes, then `Nx.take(fp4_lut, codes)` decodes
+each lane to bf16 and `Nx.take(e8m0_lut, scales)` decodes each
+per-group scale byte to bf16. Output dtype matches
+`QuantizedWeight.to_dense/1`'s bf16, and the FP4 lane values plus
+E8M0 power-of-two scales are exact in bf16 across every realistic
+scale byte, so the round-trip is bit-identical (max abs diff =
+0.0) to MLX's NIF dequant. `Emily.Quantization.Transform` gains a
+`:mode` option (default `"affine"`, accepts `"mxfp4"`); `mxfp8`
+and `nvfp4` are still defn-rejected and route through the Native
+NIF as deferred follow-ups.
+
 ### M11 — `mlx::fast::*` fused kernels
 
 Orthogonal to the M6 generic-fusion drop. MLX ships handwritten fused

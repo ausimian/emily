@@ -16,6 +16,11 @@ defmodule Emily.Quantization.Transform do
       axis (transposes `[in, out]` → `[out, in]` before quantizing —
       the AWQ-accuracy convention for LLMs). Set `false` to keep the
       kernel's stored layout.
+    * `:mode` — default `"affine"`. `"mxfp4"` selects MLX's microscaled
+      FP4 mode (FP4-E2M1 lanes, FP8-E8M0 per-group scales,
+      `group_size` pinned to 32, `bits` pinned to 4). Other microscaled
+      modes (`"mxfp8"`, `"nvfp4"`) are not yet wired through the
+      defn-native dequant path; use the Native NIF directly for those.
     * `:except` — list of layer-name substrings to skip. Only honored
       by `quantize_model_state/3`; pass the same list to
       `quantize_dense_layers/2` for API symmetry.
@@ -36,7 +41,8 @@ defmodule Emily.Quantization.Transform do
   alias Emily.Quantization.Layers
   alias Emily.QuantizedWeight
 
-  @default_opts [bits: 4, group_size: 128, transpose: true, except: []]
+  @default_opts [bits: 4, group_size: 128, transpose: true, mode: "affine", except: []]
+  @supported_modes ~w[affine mxfp4]
 
   @doc """
   Rewrite model graph + model state in one call. See moduledoc for
@@ -115,6 +121,7 @@ defmodule Emily.Quantization.Transform do
     bits = opts[:bits]
     group_size = opts[:group_size]
     transpose = opts[:transpose]
+    mode = opts[:mode]
     except = opts[:except]
 
     dense_layer_names =
@@ -125,7 +132,12 @@ defmodule Emily.Quantization.Transform do
 
     Enum.reduce(dense_layer_names, state, fn layer_name, acc ->
       update_in(acc, [Access.key!(:data), layer_name, "kernel"], fn kernel ->
-        quantize_kernel(kernel, bits: bits, group_size: group_size, transpose: transpose)
+        quantize_kernel(kernel,
+          bits: bits,
+          group_size: group_size,
+          transpose: transpose,
+          mode: mode
+        )
       end)
     end)
   end
@@ -187,7 +199,8 @@ defmodule Emily.Quantization.Transform do
     QuantizedWeight.from_dense(source,
       group_size: opts[:group_size],
       bits: opts[:bits],
-      transpose: transpose
+      transpose: transpose,
+      mode: opts[:mode]
     )
   end
 
@@ -218,6 +231,12 @@ defmodule Emily.Quantization.Transform do
       raise ArgumentError,
             "Emily.Quantization.Transform: :transpose must be a boolean, " <>
               "got: #{inspect(opts[:transpose])}"
+    end
+
+    unless opts[:mode] in @supported_modes do
+      raise ArgumentError,
+            "Emily.Quantization.Transform: :mode must be one of " <>
+              "#{inspect(@supported_modes)}. Got: #{inspect(opts[:mode])}"
     end
 
     opts

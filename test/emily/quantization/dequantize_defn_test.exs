@@ -127,15 +127,37 @@ defmodule Emily.Quantization.DequantizeDefnTest do
         assert_close(actual, expected, tol: 1.0e-6)
       end
     end
+
+    test "mxfp4 runs under Nx.Defn.jit" do
+      w =
+        Nx.iota({2, 128}, backend: Emily.Backend, type: :f32)
+        |> Nx.divide(128.0)
+        |> Nx.subtract(0.5)
+
+      qw = QuantizedWeight.from_dense(w, mode: "mxfp4", group_size: 32, bits: 4)
+      # mxfp4 output is bf16; use a bf16 scalar so the multiply doesn't
+      # promote and diverge from to_dense's bf16 path.
+      factor = Nx.tensor(2.0, backend: Emily.Backend, type: {:bf, 16})
+
+      actual = dequantize_then_scale(qw, factor)
+      expected = QuantizedWeight.to_dense(qw) |> Nx.multiply(2.0)
+
+      assert Nx.shape(actual) == {2, 128}
+      assert_close(actual, expected, tol: 0.0)
+    end
   end
 
   describe "dequantize_defn/1 — validation" do
-    test "raises on microscaled mode (defn path is affine-only)" do
-      w = Nx.iota({2, 128}, backend: Emily.Backend, type: :f32) |> Nx.divide(256.0)
-      qw = QuantizedWeight.from_dense(w, mode: "mxfp4", group_size: 32, bits: 4)
+    test "raises on mxfp8 / nvfp4 modes (still defn-unsupported)" do
+      # mxfp4 is now defn-supported; the other two microscaled modes
+      # remain on the Native path until a follow-up wires their LUTs.
+      for {mode, group_size, bits} <- [{"mxfp8", 32, 8}, {"nvfp4", 16, 4}] do
+        w = Nx.iota({2, 128}, backend: Emily.Backend, type: :f32) |> Nx.divide(256.0)
+        qw = QuantizedWeight.from_dense(w, mode: mode, group_size: group_size, bits: bits)
 
-      assert_raise ArgumentError, ~r/mode=.*mxfp4.*to_dense/, fn ->
-        Quantization.dequantize_defn(qw)
+        assert_raise ArgumentError, ~r/mode=.*#{mode}.*to_dense/, fn ->
+          Quantization.dequantize_defn(qw)
+        end
       end
     end
 
@@ -157,6 +179,148 @@ defmodule Emily.Quantization.DequantizeDefnTest do
       assert_raise ArgumentError, ~r/bits=5 is not supported by the defn-native path/, fn ->
         Quantization.dequantize_defn(qw)
       end
+    end
+  end
+
+  describe "dequantize_defn/1 — mxfp4" do
+    test "matches QuantizedWeight.to_dense/1 on rank-2 input" do
+      w =
+        Nx.iota({4, 64}, backend: Emily.Backend, type: :f32)
+        |> Nx.divide(64.0)
+        |> Nx.subtract(0.5)
+
+      qw = QuantizedWeight.from_dense(w, mode: "mxfp4", group_size: 32, bits: 4)
+
+      actual = Quantization.dequantize_defn(qw)
+      expected = QuantizedWeight.to_dense(qw)
+
+      assert Nx.shape(actual) == Nx.shape(expected)
+      assert Nx.type(actual) == {:bf, 16}
+      assert Nx.type(expected) == {:bf, 16}
+      # FP4 lane LUT entries and E8M0 scale powers are all exact in
+      # bf16, so the defn path is bit-identical to MLX's NIF dequant
+      # on every realistic scale value.
+      assert_close(actual, expected, tol: 0.0)
+    end
+
+    test "matches QuantizedWeight.to_dense/1 on rank-3 input" do
+      w =
+        Nx.iota({2, 3, 128}, backend: Emily.Backend, type: :f32)
+        |> Nx.divide(128.0)
+        |> Nx.subtract(0.5)
+
+      qw = QuantizedWeight.from_dense(w, mode: "mxfp4", group_size: 32, bits: 4)
+
+      actual = Quantization.dequantize_defn(qw)
+      expected = QuantizedWeight.to_dense(qw)
+
+      assert Nx.shape(actual) == {2, 3, 128}
+      assert_close(actual, expected, tol: 0.0)
+    end
+
+    test "works after transfer to Nx.BinaryBackend" do
+      w =
+        Nx.iota({4, 64}, backend: Emily.Backend, type: :f32)
+        |> Nx.divide(64.0)
+        |> Nx.subtract(0.5)
+
+      qw = QuantizedWeight.from_dense(w, mode: "mxfp4", group_size: 32, bits: 4)
+      expected = QuantizedWeight.to_dense(qw) |> Nx.backend_transfer(Nx.BinaryBackend)
+
+      actual =
+        qw
+        |> Nx.backend_transfer(Nx.BinaryBackend)
+        |> Quantization.dequantize_defn()
+
+      assert Nx.shape(actual) == Nx.shape(expected)
+      assert match?(%Nx.Tensor{data: %Nx.BinaryBackend{}}, actual)
+      assert_close(actual, expected, tol: 0.0)
+    end
+  end
+
+  describe "dequantize_defn/1 — mxfp4 hand-packed oracle" do
+    # Independent oracle: hand-pack a known FP4 lane sequence + a known
+    # E8M0 scale byte and compare against pure-Elixir LUT decoding —
+    # no MLX NIF in the comparison path. Breaks the shared-buffer
+    # circularity of the round-trip-vs-to_dense tests.
+
+    @fp4_lut [
+      +0.0,
+      +0.5,
+      +1.0,
+      +1.5,
+      +2.0,
+      +3.0,
+      +4.0,
+      +6.0,
+      -0.0,
+      -0.5,
+      -1.0,
+      -1.5,
+      -2.0,
+      -3.0,
+      -4.0,
+      -6.0
+    ]
+
+    test "mxfp4: dequantize_defn matches pure-Elixir LUT decode" do
+      # 4 u32 = 32 lanes (lpu=8) = one group of 32. Lane codes
+      # [0,1,2,...,15,0,1,2,...,15] sweep every FP4 code. Scale byte
+      # 0x7F = 127 → 2^0 = 1.0, so dequant returns the raw FP4_LUT
+      # values pointwise.
+      packed = [0x76543210, 0xFEDCBA98, 0x76543210, 0xFEDCBA98]
+      scale_byte = 0x7F
+
+      expected =
+        Enum.flat_map(0..1, fn _ ->
+          Enum.map(0..15, &Enum.at(@fp4_lut, &1))
+        end)
+
+      qw = %QuantizedWeight{
+        value: Nx.tensor([packed], type: :u32, backend: Emily.Backend),
+        scales: Nx.tensor([[scale_byte]], type: {:u, 8}, backend: Emily.Backend),
+        biases: Nx.tensor(0.0, type: :f32, backend: Emily.Backend),
+        group_size: 32,
+        bits: 4,
+        transpose: true,
+        mode: "mxfp4"
+      }
+
+      actual = qw |> Quantization.dequantize_defn() |> Nx.to_flat_list()
+      assert actual == expected
+    end
+
+    test "mxfp4: per-group scales apply independently" do
+      # Two groups: 8 packed u32 = 64 lanes = 2 groups of 32 lanes
+      # each (group_size is pinned at 32 for mxfp4). Distinct scales
+      # 0x7F → 1.0 and 0x80 → 2.0 across the two groups, with
+      # identical lane codes in each group so any output divergence
+      # isolates to the scale multiplication.
+      packed_one_group = [0x76543210, 0xFEDCBA98, 0x76543210, 0xFEDCBA98]
+      packed = packed_one_group ++ packed_one_group
+      scales_bytes = [0x7F, 0x80]
+      scales_decoded = [1.0, 2.0]
+
+      lanes_per_group =
+        Enum.flat_map(0..1, fn _ -> Enum.map(0..15, &Enum.at(@fp4_lut, &1)) end)
+
+      expected =
+        Enum.flat_map(scales_decoded, fn s ->
+          Enum.map(lanes_per_group, &(&1 * s))
+        end)
+
+      qw = %QuantizedWeight{
+        value: Nx.tensor([packed], type: :u32, backend: Emily.Backend),
+        scales: Nx.tensor([scales_bytes], type: {:u, 8}, backend: Emily.Backend),
+        biases: Nx.tensor(0.0, type: :f32, backend: Emily.Backend),
+        group_size: 32,
+        bits: 4,
+        transpose: true,
+        mode: "mxfp4"
+      }
+
+      actual = qw |> Quantization.dequantize_defn() |> Nx.to_flat_list()
+      assert actual == expected
     end
   end
 
