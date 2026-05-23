@@ -14,9 +14,16 @@ Worker threads    (one OS thread per stream)
 MLX C++                              — statically linked into libemily; mlx.metallib alongside
 ```
 
-Dispatch is unidirectional: Elixir → C++ → MLX. C++ never calls back
-into BEAM. Each layer has its own oracle so a bug can only be
-introduced in the layer where its test fails — see
+Dispatch is unidirectional in the deadlock-class sense: every NIF
+enqueues its work on a worker and returns immediately. The worker
+posts its result back to the caller via `enif_send` — fire-and-forget,
+no synchronous return value — and the Elixir wrapper awaits the
+message with a plain `receive`. C++ never calls into Elixir code, and
+no NIF ever blocks on a BEAM operation, so the bidirectional /
+synchronous-callback deadlock class that motivated the design (see
+[EMLX #88](https://github.com/elixir-nx/emlx/issues/88)) is
+structurally impossible. Each layer has its own oracle so a bug can
+only be introduced in the layer where its test fails — see
 [Testing philosophy](#testing-philosophy).
 
 ## Core design decisions
