@@ -16,12 +16,12 @@ defmodule Emily.Quantization.Transform do
       axis (transposes `[in, out]` → `[out, in]` before quantizing —
       the AWQ-accuracy convention for LLMs). Set `false` to keep the
       kernel's stored layout.
-    * `:mode` — default `"affine"`. `"mxfp4"` and `"mxfp8"` select
-      MLX's microscaled modes — FP4-E2M1 / FP8-E4M3 lanes, FP8-E8M0
-      per-group scales. Both pin `group_size` to 32; bits is pinned
-      to 4 (mxfp4) or 8 (mxfp8). The remaining microscaled mode
-      `"nvfp4"` is not yet wired through the defn-native dequant
-      path; use the Native NIF directly for it.
+    * `:mode` — default `"affine"`. One of `"mxfp4"`, `"mxfp8"`, or
+      `"nvfp4"` selects MLX's microscaled modes. `mxfp4` and `nvfp4`
+      use FP4-E2M1 lanes; `mxfp8` uses FP8-E4M3 lanes. `mxfp4` and
+      `mxfp8` use FP8-E8M0 per-group scales (`group_size = 32`);
+      `nvfp4` uses FP8-E4M3 per-group scales (`group_size = 16`,
+      finer-grained per the NVIDIA convention).
     * `:except` — list of layer-name substrings to skip. Only honored
       by `quantize_model_state/3`; pass the same list to
       `quantize_dense_layers/2` for API symmetry.
@@ -43,7 +43,7 @@ defmodule Emily.Quantization.Transform do
   alias Emily.QuantizedWeight
 
   @default_opts [bits: 4, group_size: 128, transpose: true, mode: "affine", except: []]
-  @supported_modes ~w[affine mxfp4 mxfp8]
+  @supported_modes ~w[affine mxfp4 mxfp8 nvfp4]
 
   @doc """
   Rewrite model graph + model state in one call. See moduledoc for

@@ -169,14 +169,14 @@ defmodule Emily.Quantization do
       adjacent u32 pairs as a u64, then shift by `rem(i * bits, 32)`
       and mask.
 
-  Supported modes: `"affine"`, `"mxfp4"`, and `"mxfp8"`. The
-  microscaled modes share the FP8-E8M0 per-group scale decode
-  (`2^(s - 127)`); they differ in lane decode — `mxfp4` uses a
-  16-entry FP4-E2M1 LUT and `mxfp8` uses a 256-entry FP8-E4M3 LUT
-  matching MLX's `FromFP8` bit-trick. Output dtype is `bf16` to
-  match `QuantizedWeight.to_dense/1` on either microscaled mode.
-  `nvfp4` is not yet wired (its per-group scale is FP8-E4M3 instead
-  of FP8-E8M0) — use the Native path for it.
+  Supported modes: `"affine"`, `"mxfp4"`, `"mxfp8"`, and `"nvfp4"`
+  — every MLX `QuantizationMode` value runs through the defn-native
+  path. Lane decode: 16-entry FP4-E2M1 LUT for `mxfp4` and `nvfp4`,
+  256-entry FP8-E4M3 LUT (matching MLX's `FromFP8` bit-trick) for
+  `mxfp8`. Scale decode: 256-entry FP8-E8M0 LUT (`2^(s - 127)`) for
+  `mxfp4` and `mxfp8`, the same FP8-E4M3 LUT for `nvfp4`'s
+  finer-grained per-group scales. Output dtype is `bf16` to match
+  `QuantizedWeight.to_dense/1`.
 
   ## Examples
 
@@ -205,12 +205,13 @@ defmodule Emily.Quantization do
       "affine" -> dequantize_impl(q, s, b, group_size: group_size, bits: bits)
       "mxfp4" -> dequantize_mxfp4_impl(q, s, group_size: group_size)
       "mxfp8" -> dequantize_mxfp8_impl(q, s, group_size: group_size)
+      "nvfp4" -> dequantize_nvfp4_impl(q, s, group_size: group_size)
     end
   end
 
-  defp validate_defn_mode!(mode) when mode in ["affine", "mxfp4", "mxfp8"], do: :ok
+  defp validate_defn_mode!(mode) when mode in ["affine", "mxfp4", "mxfp8", "nvfp4"], do: :ok
 
-  @supported_defn_modes ~w[affine mxfp4 mxfp8]
+  @supported_defn_modes ~w[affine mxfp4 mxfp8 nvfp4]
 
   defp validate_defn_mode!(mode) do
     raise ArgumentError,
@@ -400,6 +401,31 @@ defmodule Emily.Quantization do
       end
 
     Nx.tensor(values, type: {:bf, 16})
+  end
+
+  # MLX `nvfp4` (NVIDIA microscaled FP4): bits=4 lanes (same FP4-E2M1
+  # encoding as mxfp4), but per-group scales are FP8-E4M3 bytes (same
+  # encoding as mxfp8 lanes), and group_size is 16 instead of 32. The
+  # implementation is identical to mxfp4 except the scale decode uses
+  # `fp8_e4m3_lut/0` from the mxfp8 path instead of `e8m0_lut/0`.
+  defnp dequantize_nvfp4_impl(w_q, scales, opts \\ []) do
+    opts = keyword!(opts, [:group_size])
+    group_size = opts[:group_size]
+
+    # Unpack 4-bit lane codes: identical to the mxfp4 path.
+    lane_codes =
+      w_q
+      |> unpack_integral_lanes(4)
+      |> Nx.flatten(axes: [-2, -1])
+
+    lanes_f = Nx.take(fp4_lut(), lane_codes)
+    grouped = group_last_axis(lanes_f, group_size)
+
+    # FP8-E4M3 scale decode (the only difference from mxfp4).
+    scales_f = Nx.take(fp8_e4m3_lut(), scales)
+
+    dequantized = grouped * Nx.new_axis(scales_f, -1)
+    Nx.flatten(dequantized, axes: [-2, -1])
   end
 
   defnp unpack_integral_lanes(w_q, bits) do

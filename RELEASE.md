@@ -1,5 +1,18 @@
 ### Added
 
+- `Emily.Quantization.dequantize_defn/1` now supports the `nvfp4`
+  microscaled mode in addition to `affine`, `mxfp4`, and `mxfp8` —
+  the full MLX `QuantizationMode` enum now runs through the
+  defn-native dequant path. `nvfp4` reuses the FP4-E2M1 lane LUT
+  from `mxfp4` and the FP8-E4M3 LUT from `mxfp8` (consumed against
+  the per-group scale bytes rather than lane codes — the NVIDIA
+  microscaled convention uses finer-grained group_size=16 with
+  FP8-E4M3 scales instead of mxfp4/mxfp8's group_size=32 with
+  FP8-E8M0 scales). Output dtype is bf16 to match
+  `QuantizedWeight.to_dense/1`, round-trip is bit-identical (max
+  abs diff = 0.0). `Emily.Quantization.Transform` accepts
+  `mode: "nvfp4"`.
+
 - `Emily.Quantization.dequantize_defn/1` now supports the `mxfp8`
   microscaled mode in addition to `affine` and `mxfp4`. Each 8-bit
   lane code decodes through a 256-entry FP8-E4M3 lookup table

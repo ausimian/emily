@@ -128,7 +128,7 @@ defmodule Emily.Quantization.DequantizeDefnTest do
       end
     end
 
-    for {mode, group_size, bits} <- [{"mxfp4", 32, 4}, {"mxfp8", 32, 8}] do
+    for {mode, group_size, bits} <- [{"mxfp4", 32, 4}, {"mxfp8", 32, 8}, {"nvfp4", 16, 4}] do
       test "#{mode} runs under Nx.Defn.jit" do
         mode = unquote(mode)
         group_size = unquote(group_size)
@@ -154,15 +154,23 @@ defmodule Emily.Quantization.DequantizeDefnTest do
   end
 
   describe "dequantize_defn/1 — validation" do
-    test "raises on nvfp4 mode (still defn-unsupported)" do
-      # mxfp4 and mxfp8 are now defn-supported; nvfp4 remains on the
-      # Native path until a follow-up wires its FP4-E2M1 lane LUT
-      # against the FP8-E4M3 per-group scale path it uses (instead of
-      # FP8-E8M0 that mxfp4/mxfp8 share).
-      w = Nx.iota({2, 128}, backend: Emily.Backend, type: :f32) |> Nx.divide(256.0)
-      qw = QuantizedWeight.from_dense(w, mode: "nvfp4", group_size: 16, bits: 4)
+    test "raises on unknown mode via hand-built struct" do
+      # All MLX-supported modes (affine, mxfp4, mxfp8, nvfp4) are now
+      # defn-wired, so `QuantizedWeight.from_dense/2` cannot produce an
+      # unsupported-mode struct. Hand-construct one so the catch-all
+      # `validate_defn_mode!/1` clause stays load-bearing against a
+      # future MLX mode addition or a caller passing a typo.
+      qw = %QuantizedWeight{
+        value: Nx.tensor([[0]], type: :u32, backend: Emily.Backend),
+        scales: Nx.tensor([[0]], type: {:u, 8}, backend: Emily.Backend),
+        biases: Nx.tensor(0.0, type: :f32, backend: Emily.Backend),
+        group_size: 1,
+        bits: 4,
+        transpose: true,
+        mode: "fakemode"
+      }
 
-      assert_raise ArgumentError, ~r/mode=.*nvfp4.*to_dense/, fn ->
+      assert_raise ArgumentError, ~r/mode=.*fakemode.*to_dense/, fn ->
         Quantization.dequantize_defn(qw)
       end
     end
@@ -188,13 +196,16 @@ defmodule Emily.Quantization.DequantizeDefnTest do
     end
   end
 
-  describe "dequantize_defn/1 — microscaled (mxfp4, mxfp8)" do
-    # Both modes share the same scale decode (FP8-E8M0 → bf16) and
-    # group/multiply path; only the lane LUT differs (FP4-E2M1 16-entry
-    # for mxfp4, FP8-E4M3 256-entry for mxfp8). Every FP4 LUT entry
-    # and every E8M0 power-of-two is exact in bf16, so the defn path
-    # is bit-identical to MLX's NIF dequant on realistic scale values.
-    for {mode, group_size, bits} <- [{"mxfp4", 32, 4}, {"mxfp8", 32, 8}] do
+  describe "dequantize_defn/1 — microscaled (mxfp4, mxfp8, nvfp4)" do
+    # The three modes share lane-decode infrastructure: mxfp4 and
+    # nvfp4 use the 16-entry FP4-E2M1 lane LUT, mxfp8 uses the
+    # 256-entry FP8-E4M3 lane LUT. Scale decode splits the other way:
+    # mxfp4 and mxfp8 share the 256-entry FP8-E8M0 scale LUT (one
+    # exponent byte per group), while nvfp4 reuses the FP8-E4M3 LUT
+    # for its per-group scale bytes. Every LUT entry is exact in
+    # bf16, so the defn path is bit-identical to MLX's NIF dequant
+    # on realistic scale values.
+    for {mode, group_size, bits} <- [{"mxfp4", 32, 4}, {"mxfp8", 32, 8}, {"nvfp4", 16, 4}] do
       test "#{mode}: matches QuantizedWeight.to_dense/1 on rank-2 input" do
         mode = unquote(mode)
         group_size = unquote(group_size)
@@ -422,6 +433,84 @@ defmodule Emily.Quantization.DequantizeDefnTest do
         bits: 8,
         transpose: true,
         mode: "mxfp8"
+      }
+
+      actual = qw |> Quantization.dequantize_defn() |> Nx.to_flat_list()
+      assert actual == expected
+    end
+  end
+
+  describe "dequantize_defn/1 — nvfp4 hand-packed oracle" do
+    # nvfp4 reuses the FP4-E2M1 lane LUT (same as mxfp4) but consumes
+    # FP8-E4M3 per-group scale bytes (same encoding as mxfp8 lanes).
+    # Verifies that the production code correctly composes the two LUTs
+    # — a coordinated bug in either decoder would still be caught here.
+
+    @fp4_lut_nv [
+      +0.0,
+      +0.5,
+      +1.0,
+      +1.5,
+      +2.0,
+      +3.0,
+      +4.0,
+      +6.0,
+      -0.0,
+      -0.5,
+      -1.0,
+      -1.5,
+      -2.0,
+      -3.0,
+      -4.0,
+      -6.0
+    ]
+
+    test "nvfp4: dequantize_defn matches hand-computed values per FP4 LUT" do
+      # 2 packed u32 = 16 lanes = one group (group_size = 16). Scale
+      # byte 0x38 = FP8-E4M3 unity (1.0), so dequant returns the raw
+      # FP4 LUT entries pointwise.
+      packed = [0x76543210, 0xFEDCBA98]
+      scale_byte = 0x38
+
+      expected = @fp4_lut_nv
+
+      qw = %QuantizedWeight{
+        value: Nx.tensor([packed], type: :u32, backend: Emily.Backend),
+        scales: Nx.tensor([[scale_byte]], type: {:u, 8}, backend: Emily.Backend),
+        biases: Nx.tensor(0.0, type: :f32, backend: Emily.Backend),
+        group_size: 16,
+        bits: 4,
+        transpose: true,
+        mode: "nvfp4"
+      }
+
+      actual = qw |> Quantization.dequantize_defn() |> Nx.to_flat_list()
+      assert actual == expected
+    end
+
+    test "nvfp4: FP8-E4M3 scales broadcast independently per group" do
+      # Two groups (4 packed u32 = 32 lanes = 2 × group_size 16), with
+      # FP8-E4M3 scale bytes 0x38 (= 1.0) and 0x40 (= 2.0). Lane codes
+      # identical in both groups so any output divergence isolates to
+      # the FP8-E4M3 scale decode + multiplication.
+      packed_one_group = [0x76543210, 0xFEDCBA98]
+      packed = packed_one_group ++ packed_one_group
+      scales_bytes = [0x38, 0x40]
+      scales_decoded = [1.0, 2.0]
+
+      expected =
+        Enum.flat_map(scales_decoded, fn s ->
+          Enum.map(@fp4_lut_nv, &(&1 * s))
+        end)
+
+      qw = %QuantizedWeight{
+        value: Nx.tensor([packed], type: :u32, backend: Emily.Backend),
+        scales: Nx.tensor([scales_bytes], type: {:u, 8}, backend: Emily.Backend),
+        biases: Nx.tensor(0.0, type: :f32, backend: Emily.Backend),
+        group_size: 16,
+        bits: 4,
+        transpose: true,
+        mode: "nvfp4"
       }
 
       actual = qw |> Quantization.dequantize_defn() |> Nx.to_flat_list()
