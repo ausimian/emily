@@ -1190,7 +1190,7 @@ defmodule Emily.Backend do
   # mixed-backend operand list crashes inside BinaryBackend's op.
   defp via_binary(op, %T{} = out, tensors, fun) when is_atom(op) and is_list(tensors) do
     metadata = fallback_metadata(op, tensors)
-    Emily.Telemetry.maybe_warn_fallback(op, metadata.input_shapes)
+    Emily.Telemetry.handle_fallback(op, metadata.input_shapes, metadata.input_dtypes)
 
     :telemetry.span([:emily, :fallback], metadata, fn ->
       result =
@@ -1207,7 +1207,7 @@ defmodule Emily.Backend do
   defp via_binary_tuple(op, outs, tensors, fun)
        when is_atom(op) and is_tuple(outs) and is_list(tensors) do
     metadata = fallback_metadata(op, tensors)
-    Emily.Telemetry.maybe_warn_fallback(op, metadata.input_shapes)
+    Emily.Telemetry.handle_fallback(op, metadata.input_shapes, metadata.input_dtypes)
 
     :telemetry.span([:emily, :fallback], metadata, fn ->
       result_tuple =

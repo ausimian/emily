@@ -84,6 +84,84 @@ defmodule Emily.TelemetryTest do
     end
   end
 
+  defp reduce_on_emily do
+    t = Nx.tensor([1, 2, 3], backend: Emily.Backend)
+    acc = Nx.tensor(0, backend: Emily.Backend)
+    Nx.reduce(t, acc, fn a, b -> Nx.add(a, b) end)
+  end
+
+  describe ":fallback config" do
+    setup do
+      Telemetry.reset_dedup()
+
+      on_exit(fn ->
+        Application.delete_env(:emily, :fallback)
+        Application.delete_env(:emily, :warn_on_fallback)
+      end)
+
+      :ok
+    end
+
+    test ":silent emits no log and lets the fallback run" do
+      Application.put_env(:emily, :fallback, :silent)
+
+      log = capture_log(fn -> reduce_on_emily() end)
+
+      refute log =~ "fell back"
+    end
+
+    test ":warn emits the one-shot warning" do
+      Application.put_env(:emily, :fallback, :warn)
+
+      log =
+        capture_log(fn ->
+          for _ <- 1..50, do: reduce_on_emily()
+        end)
+
+      occurrences =
+        log |> String.split("\n") |> Enum.count(&(&1 =~ "fell back to Nx.BinaryBackend"))
+
+      assert occurrences == 1
+      assert log =~ "reduce"
+    end
+
+    test ":raise raises with op, shapes, and dtypes" do
+      Application.put_env(:emily, :fallback, :raise)
+
+      err = assert_raise RuntimeError, fn -> reduce_on_emily() end
+
+      assert err.message =~ "reduce"
+      assert err.message =~ "fell back to Nx.BinaryBackend"
+      assert err.message =~ "shapes="
+      assert err.message =~ "dtypes="
+    end
+
+    test ":fallback takes precedence over :warn_on_fallback" do
+      Application.put_env(:emily, :warn_on_fallback, true)
+      Application.put_env(:emily, :fallback, :silent)
+
+      log = capture_log(fn -> reduce_on_emily() end)
+
+      refute log =~ "fell back"
+    end
+
+    test "legacy :warn_on_fallback=true maps to :warn when :fallback unset" do
+      Application.put_env(:emily, :warn_on_fallback, true)
+
+      log = capture_log(fn -> reduce_on_emily() end)
+
+      assert log =~ "fell back to Nx.BinaryBackend"
+    end
+
+    test "invalid :fallback value raises ArgumentError on entry" do
+      Application.put_env(:emily, :fallback, :nope)
+
+      assert_raise ArgumentError, ~r/invalid :emily, :fallback config/, fn ->
+        reduce_on_emily()
+      end
+    end
+  end
+
   describe "[:emily, :to_binary, *]" do
     test "fires on Emily.Backend.to_binary/2 (the Nx.to_binary path)" do
       attach([:emily, :to_binary, :stop], "to-bin-stop-#{inspect(self())}")

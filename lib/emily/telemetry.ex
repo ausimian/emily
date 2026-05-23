@@ -23,17 +23,28 @@ defmodule Emily.Telemetry do
   an op routes through `Nx.BinaryBackend` because the MLX path is not
   wired. Metadata: `:op`, `:input_shapes`, `:input_dtypes`.
 
-  A one-shot `Logger.warning` per `{op, input_shapes}` pair is
-  **opt-in**: the span event fires on every fallback, but the log
-  line is off by default so library consumers don't get unsolicited
-  warnings. Turn it on — typically in `config/dev.exs` — when
-  chasing performance regressions:
+  Per-fallback behaviour is configurable via `:fallback`:
 
-      config :emily, :warn_on_fallback, true
+      config :emily, fallback: :silent | :warn | :raise
 
-  With it on, a Bumblebee user sees
-  `"indexed_put on shape [...] fell back to Nx.BinaryBackend"` once
-  per shape, not every forward pass.
+    * `:silent` (default) — span events still fire, no log, no raise.
+      Library consumers and CI logs stay quiet.
+    * `:warn` — one-shot `Logger.warning` per `{op, input_shapes}`
+      pair. A Bumblebee user sees
+      `"indexed_put on shape [...] fell back to Nx.BinaryBackend"`
+      once per shape, not every forward pass. Typically set in
+      `config/dev.exs` while chasing performance regressions.
+    * `:raise` — raises a `RuntimeError` carrying the op, input
+      shapes, and input dtypes. Use in CI to fail builds when a hot
+      path unexpectedly routes through `Nx.BinaryBackend`.
+
+  In `:raise` mode the `:start`/`:stop` span events do **not** fire
+  because the raise happens on entry; `:silent` and `:warn` preserve
+  the full span.
+
+  The legacy `:warn_on_fallback` boolean is still honoured when
+  `:fallback` is unset (`true` → `:warn`, `false` → `:silent`).
+  Prefer `:fallback` in new code; if both are set, `:fallback` wins.
 
   ### Memory stats (poll-driven)
 
@@ -89,23 +100,59 @@ defmodule Emily.Telemetry do
   end
 
   @doc false
-  # Called from `Emily.Backend.via_binary/4`. Idempotent via an ETS
-  # set — first hit per `{op, shapes}` pair logs a warning; subsequent
-  # hits no-op.
-  @spec maybe_warn_fallback(atom(), [tuple()]) :: :ok
-  def maybe_warn_fallback(op, input_shapes) do
-    if Application.get_env(:emily, :warn_on_fallback, false) do
-      key = {op, input_shapes}
+  # Called from `Emily.Backend.via_binary/4` and the tuple variant
+  # before the telemetry span. Dispatches on the configured
+  # `:fallback` mode:
+  #
+  #   * `:silent` — no-op
+  #   * `:warn`   — one-shot Logger.warning per `{op, shapes}` pair,
+  #                 deduped via ETS
+  #   * `:raise`  — raises RuntimeError with op, shapes, dtypes
+  @spec handle_fallback(atom(), [tuple()], [Nx.Type.t()]) :: :ok
+  def handle_fallback(op, input_shapes, input_dtypes) do
+    case fallback_mode() do
+      :silent -> :ok
+      :warn -> warn_fallback(op, input_shapes)
+      :raise -> raise_fallback(op, input_shapes, input_dtypes)
+    end
+  end
 
-      if :ets.insert_new(@dedup_table, {key}) do
-        Logger.warning(
-          "Emily: #{op} on shapes #{inspect(input_shapes)} fell back to " <>
-            "Nx.BinaryBackend; this path is ~100× slower than native MLX."
-        )
-      end
+  @doc false
+  @spec fallback_mode() :: :silent | :warn | :raise
+  def fallback_mode do
+    case Application.get_env(:emily, :fallback) do
+      mode when mode in [:silent, :warn, :raise] ->
+        mode
+
+      nil ->
+        if Application.get_env(:emily, :warn_on_fallback, false),
+          do: :warn,
+          else: :silent
+
+      other ->
+        raise ArgumentError,
+              "invalid :emily, :fallback config #{inspect(other)}; " <>
+                "expected one of :silent | :warn | :raise"
+    end
+  end
+
+  defp warn_fallback(op, input_shapes) do
+    key = {op, input_shapes}
+
+    if :ets.insert_new(@dedup_table, {key}) do
+      Logger.warning(
+        "Emily: #{op} on shapes #{inspect(input_shapes)} fell back to " <>
+          "Nx.BinaryBackend; this path is ~100× slower than native MLX."
+      )
     end
 
     :ok
+  end
+
+  defp raise_fallback(op, input_shapes, input_dtypes) do
+    raise "Emily: #{op} fell back to Nx.BinaryBackend " <>
+            "(shapes=#{inspect(input_shapes)}, dtypes=#{inspect(input_dtypes)}). " <>
+            "Set `config :emily, fallback: :warn` to log instead, or `:silent` to ignore."
   end
 
   @doc false

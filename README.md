@@ -347,17 +347,25 @@ handler to graph hotspots or detect silent performance cliffs —
 see `Emily.Telemetry` for the full event catalogue.
 
 When a backend callback has no native MLX path, Emily transparently
-falls back to `Nx.BinaryBackend`. The fallback is ~100× slower; to
-get a one-shot `Logger.warning` per `{op, input_shapes}` pair the
-first time each one fires (recommended during development):
+falls back to `Nx.BinaryBackend`. The fallback is ~100× slower;
+configure per-fallback behaviour with `:fallback`:
 
 ```elixir
-# config/dev.exs
-config :emily, :warn_on_fallback, true
+# config/dev.exs — one-shot Logger.warning per {op, shapes} pair
+config :emily, fallback: :warn
+
+# config/test.exs (CI) — fail loud if a hot path goes via BinaryBackend
+config :emily, fallback: :raise
 ```
 
-The warning is off by default so library consumers and CI logs stay
-quiet. The telemetry event fires regardless.
+The default is `:silent`, so library consumers and CI logs stay quiet
+unless they opt in. The `[:emily, :fallback, *]` telemetry events
+fire regardless in `:silent`/`:warn` mode; `:raise` raises on entry
+and skips the span.
+
+The legacy `config :emily, :warn_on_fallback, true` boolean is still
+honoured when `:fallback` is unset (`true` → `:warn`). Prefer
+`:fallback` in new code.
 
 ### Memory
 
