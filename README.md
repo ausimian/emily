@@ -435,6 +435,18 @@ layer, `Emily.Backend` in non-defn mode at the Compiler layer, and
 HuggingFace Transformers reference slices end-to-end. A bug can only
 be introduced in the layer where its test fails.
 
+## Documentation
+
+  * [HexDocs](https://hexdocs.pm/emily) — per-module API docs and
+    runnable notebooks.
+  * [`ARCHITECTURE.md`](ARCHITECTURE.md) — current shape of the
+    library: layer boundaries, design decisions, concurrency and
+    memory model, observability surface.
+  * [`ROADMAP.md`](ROADMAP.md) — active and future work, including
+    items deferred to post-1.0.
+  * [`PLAN.md`](https://github.com/ausimian/emily/blob/main/PLAN.md) — historical milestone log. The "why" behind
+    a current behaviour usually lives here, named by milestone.
+
 ## Acknowledgements
 
 Emily stands on the shoulders of two projects without which it would not exist:

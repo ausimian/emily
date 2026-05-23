@@ -1,83 +1,17 @@
-# emily — implementation plan
+# emily — milestone history
 
-Living document. Update per milestone; keep the rationale alongside the
-checklist so future-us understands the trade-offs.
+Historical record of milestones, including ones that shipped, ones
+that were dropped after de-risking, and ones explicitly deferred to
+post-1.0. The per-milestone rationale lives here so future readers
+can find the trade-offs behind a current behaviour by name.
 
-## Goals
-
-- **Correctness over performance at every layer.** A fast library that
-  produces wrong outputs is worthless. Every layer has its own oracle
-  and its own test suite.
-- **Structural impossibility of the [EMLX #88](https://github.com/elixir-nx/emlx/issues/88)
-  deadlock class.** No bidirectional NIF calls. No GenServer on the hot
-  path. No closures shipped into `Task.async` during graph
-  construction.
-- **Bumblebee-first.** DistilBERT → Qwen3 → Qwen3-VL as the canonical
-  integration targets.
-- **Shippable at every milestone.** Backend-only mode is useful on its
-  own; the Defn compiler is additive.
-
-## Non-goals (v1)
-
-- Ahead-of-time compilation (IREE-style). Complementary, separate effort.
-- Windows or non-Apple-Silicon Linux GPU. CPU-only Linux is a nice-to-have for CI.
-- Training framework features beyond `Nx.Defn.grad`: distributed training,
-  a native optimizer library. (Autodiff + small-scale training loops: in
-  scope from M9; mixed-precision master weights: in scope from M16.)
-- Drop-in replacement for EMLX. We borrow where it's clearly right, but
-  we're not constrained by its API.
-- `Emily.Stream` beyond the narrow `with_stream/2` + `new/1` +
-  `synchronize/1` surface M14 introduces for the documented
-  "big model, multi-process serving" pattern.
-
-## Architecture
-
-```
-Emily.Compiler    (Nx.Defn.Compiler) — optional, walks Nx.Defn.Expr
-Emily.Backend     (Nx.Backend)       — op-by-op translation to Native
-Emily.Native      (thin NIF shim)    — one function per MLX op, no policy
-MLX C++           (vendored binary)
-```
-
-One-directional dispatch only: Elixir → C++ → MLX. C++ never calls back
-into BEAM.
-
-## Core design decisions
-
-1. **Backend-first; compiler layered on top.** The Backend is enough to
-   run Bumblebee. Wrapping `mlx::core::compile` was planned as an
-   opt-in optimisation on top, but was dropped after de-risking — see
-   M6 for the measurement and reasoning.
-2. **Trace in Elixir, not in C++.** `Nx.Defn.Expr` is already a fully
-   traced tree; we walk it from Elixir and emit one `Emily.Native` call
-   per node. No C++→BEAM callbacks.
-3. **`fine` for NIF ergonomics.** C++17 NIFs via
-   [elixir-nx/fine](https://github.com/elixir-nx/fine) — auto-encoding,
-   clean resource handling, dirty-scheduler flag per NIF.
-4. **Vendor MLX via cocoa-xu's prebuilts.** Same source EMLX uses. Pin
-   a specific version; upgrade deliberately.
-5. **One resource type: `Tensor`** wrapping `mlx::array`. MLX's refcount
-   does the heavy lifting; fine's `ResourcePtr` adds one BEAM-managed
-   ref.
-6. **Scheduler policy:**
-   - Graph-construction NIFs (lazy ops): regular scheduler, <10μs each.
-   - Materialisation (`eval`, `to_binary`, `item`): dirty CPU.
-7. **Minimal supervisor tree.** Empty in M0; future: memory/stats agent.
-   Dispatch never goes through a GenServer.
-8. **Cache compiled defn in ETS**, keyed by `{mfa, input_signature}`.
-   Not `:persistent_term` (expensive writes, GCs readers). Not a
-   GenServer (bottleneck).
-9. **Unified-memory zero-copy.** On Apple Silicon: `Nx.from_binary` can
-   wrap the binary pointer; `to_binary` views the CPU-addressable MTL
-   buffer. Benchmark-verified before claimed. *Status: currently
-   unimplemented — the v1 round-trip path memcpys unconditionally
-   (`emily_nif.cpp:57-58, :74-84`). M12 delivers the zero-copy version
-   and the verifying benchmark.*
-10. **No f64.** Hard error at the Backend with a clear message pointing
-    to f32. Metal limitation; not worth working around.
-11. **Error discipline.** Every NIF catches C++ exceptions at the
-    boundary and returns `{:error, term}`. Never unwind across
-    `enif_` calls.
+For the **current shape** of the library, read
+[`ARCHITECTURE.md`](ARCHITECTURE.md). For **active and future work**,
+read [`ROADMAP.md`](ROADMAP.md). A milestone narrative below records
+what was planned at the time; in a few places — notably the M14 stream
+work — a "post-Mxx note" subsection records what shipped differently.
+The current API is whatever lives in `lib/emily/` today, and
+`ARCHITECTURE.md` is its description.
 
 ## Milestones
 
@@ -1373,48 +1307,6 @@ considered and deferred, not forgotten.
 
 **Exit.** `mix precommit` green; `einsum_test.exs` passes on every
 operand arity in the suite; docs note the helper is eager-only.
-
-## Testing philosophy
-
-| Layer | Oracle | Harness |
-|---|---|---|
-| Native | Hand-computed expected values | ExUnit unit tests |
-| Backend | `Nx.BinaryBackend` on the same inputs | StreamData property tests + Nx conformance |
-| Compiler | `Emily.Backend` in non-defn mode | Equivalence tests (same function, two modes) |
-| Grad | `Nx.BinaryBackend` grad + finite differences (+ EXLA goldens from M13) | StreamData property tests + numerical oracle (+ checked-in EXLA-produced goldens) |
-| Training | `Nx.BinaryBackend` loss trajectory | Curve-matching; MNIST convergence (`:training_full`, opt-in) |
-| E2E | EXLA-produced golden outputs | Conformance tests with cached weights |
-
-A bug can only be introduced in the layer where its test fails — no
-cross-layer mystery bugs.
-
-Additional harnesses:
-- **Memory soak** (`test/soak/memory_test.exs`, `@tag :soak`): 10k
-  iterations; MLX memory stats asserted to return to baseline.
-- **Training memory soak** (`test/soak/training_test.exs`,
-  `@tag :soak`, from M9): 1k training steps; baseline restored after
-  `clear_cache/0`.
-- **Concurrency** (`test/soak/concurrency_test.exs`, `@tag :soak`):
-  parallel inference; determinism + no crashes.
-- **Benchmarks** (`bench/`): Benchee scripts; results logged in
-  `RELEASE.md` per version.
-- **Conformance vs EXLA** (CI matrix, Mac for Emily + Linux+CUDA for
-  EXLA oracle): same model, same input; runs on every PR touching
-  Backend.
-- **Convergence** (`:training_full`, from M9; opt-in CI job): Axon
-  training loop on MNIST; catches numerical drift the curve-matching
-  oracle can't see.
-
-## Risks and mitigations
-
-| Risk | Mitigation |
-|---|---|
-| MLX op semantics drift from Nx expectations (NaN handling, int overflow, sort stability) | Property tests explicitly generate edge cases; document intentional divergences |
-| Zero-copy assumption breaks on future hardware | Benchmark the copy; fall back cleanly; don't depend on zero-copy for correctness |
-| `mlx-build` prebuilts stall or go unmaintained | Have a source-build fallback (env: `EMILY_BUILD_MLX=true`); CI job tests it monthly |
-| Metal driver bugs in specific macOS versions | Pin known-good macOS in CI; test matrix across 14/15/26 |
-| f16/bf16 accumulation differences from EXLA | Tolerance-aware comparisons; document expected divergence |
-| Upstream Nx API changes (Defn.Compiler internals not stable) | Version-pin Nx; coordinate with elixir-nx maintainers |
 
 ## Project decisions (ratified)
 
