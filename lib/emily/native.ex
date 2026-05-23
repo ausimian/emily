@@ -15,8 +15,9 @@ defmodule Emily.Native do
   # worker posts `{ref, {:ok, result}}` or `{ref, {:error, reason}}`
   # back to the caller via `enif_send`. The public wrappers below
   # (`def foo(...)`) hide the ref + receive behind a synchronous
-  # `Async.call/1` so callers see the same blocking semantics as the
-  # prior sync path.
+  # `Async.call/2` so callers see the same blocking semantics as the
+  # prior sync path. The optional second argument carries op/input
+  # context that is appended to any raised error message.
 
   alias Emily.Native.Async
 
@@ -35,6 +36,28 @@ defmodule Emily.Native do
 
   defp nif, do: :erlang.nif_error(:nif_not_loaded)
 
+  defp await(ref), do: Async.call(ref)
+  defp await(ref, context), do: Async.call(ref, context)
+
+  # NOTE: `mix format` rewrites a trailing keyword list as bare
+  # `key: value` pairs, so a call like `native_context(:op, w, [a: a])`
+  # is reformatted to `native_context(:op, w, a: a)`. Adding any
+  # further keyword to such a 3-arg call would silently merge into
+  # `inputs` rather than `options`. To add options to a 3-arg call,
+  # promote `inputs` to a wrapped expression (e.g. `[a: a] ++ []`) or
+  # split tensor inputs from option keywords explicitly.
+  defp native_context(op, worker, inputs, options \\ []) do
+    %{op: op, stream: worker, inputs: inputs, options: options}
+  end
+
+  defp named_list(_prefix, nil), do: []
+
+  defp named_list(prefix, values) when is_list(values) do
+    values
+    |> Enum.with_index()
+    |> Enum.map(fn {value, index} -> {:"#{prefix}#{index}", value} end)
+  end
+
   # --- Core --------------------------------------------------------
 
   @spec from_binary(binary(), [non_neg_integer()], dtype()) :: tensor()
@@ -45,7 +68,7 @@ defmodule Emily.Native do
   def to_binary_nif(_w, _tensor), do: nif()
 
   @spec to_binary(worker(), tensor()) :: binary()
-  def to_binary(w, tensor), do: Async.call(to_binary_nif(w, tensor))
+  def to_binary(w, tensor), do: await(to_binary_nif(w, tensor))
 
   @spec shape(tensor()) :: [non_neg_integer()]
   def shape(_tensor), do: nif()
@@ -58,7 +81,7 @@ defmodule Emily.Native do
   def eval_nif(_w, _tensor), do: nif()
 
   @spec eval(worker(), tensor()) :: :ok
-  def eval(w, tensor), do: Async.call(eval_nif(w, tensor))
+  def eval(w, tensor), do: await(eval_nif(w, tensor))
 
   # --- Worker ------------------------------------------------------
 
@@ -72,21 +95,21 @@ defmodule Emily.Native do
   def zeros_nif(_w, _shape, _dtype), do: nif()
 
   @spec zeros(worker(), [non_neg_integer()], dtype()) :: tensor()
-  def zeros(w, shape, dtype), do: Async.call(zeros_nif(w, shape, dtype))
+  def zeros(w, shape, dtype), do: await(zeros_nif(w, shape, dtype))
 
   @doc false
   @spec ones_nif(worker(), [non_neg_integer()], dtype()) :: reference()
   def ones_nif(_w, _shape, _dtype), do: nif()
 
   @spec ones(worker(), [non_neg_integer()], dtype()) :: tensor()
-  def ones(w, shape, dtype), do: Async.call(ones_nif(w, shape, dtype))
+  def ones(w, shape, dtype), do: await(ones_nif(w, shape, dtype))
 
   @doc false
   @spec full_nif(worker(), [non_neg_integer()], tensor(), dtype()) :: reference()
   def full_nif(_w, _shape, _value, _dtype), do: nif()
 
   @spec full(worker(), [non_neg_integer()], tensor(), dtype()) :: tensor()
-  def full(w, shape, value, dtype), do: Async.call(full_nif(w, shape, value, dtype))
+  def full(w, shape, value, dtype), do: await(full_nif(w, shape, value, dtype))
 
   @doc false
   @spec arange_nif(worker(), float(), float(), float(), dtype()) :: reference()
@@ -94,14 +117,14 @@ defmodule Emily.Native do
 
   @spec arange(worker(), float(), float(), float(), dtype()) :: tensor()
   def arange(w, start, stop, step, dtype),
-    do: Async.call(arange_nif(w, start, stop, step, dtype))
+    do: await(arange_nif(w, start, stop, step, dtype))
 
   @doc false
   @spec eye_nif(worker(), integer(), integer(), integer(), dtype()) :: reference()
   def eye_nif(_w, _n, _m, _k, _dtype), do: nif()
 
   @spec eye(worker(), integer(), integer(), integer(), dtype()) :: tensor()
-  def eye(w, n, m, k, dtype), do: Async.call(eye_nif(w, n, m, k, dtype))
+  def eye(w, n, m, k, dtype), do: await(eye_nif(w, n, m, k, dtype))
 
   # --- Cast --------------------------------------------------------
 
@@ -110,14 +133,16 @@ defmodule Emily.Native do
   def astype_nif(_w, _a, _dtype), do: nif()
 
   @spec astype(worker(), tensor(), dtype()) :: tensor()
-  def astype(w, a, dtype), do: Async.call(astype_nif(w, a, dtype))
+  def astype(w, a, dtype),
+    do: await(astype_nif(w, a, dtype), native_context(:astype, w, [a: a], dtype: dtype))
 
   @doc false
   @spec bitcast_nif(worker(), tensor(), dtype()) :: reference()
   def bitcast_nif(_w, _a, _dtype), do: nif()
 
   @spec bitcast(worker(), tensor(), dtype()) :: tensor()
-  def bitcast(w, a, dtype), do: Async.call(bitcast_nif(w, a, dtype))
+  def bitcast(w, a, dtype),
+    do: await(bitcast_nif(w, a, dtype), native_context(:bitcast, w, [a: a], dtype: dtype))
 
   # --- Unary -------------------------------------------------------
 
@@ -172,7 +197,8 @@ defmodule Emily.Native do
 
     @doc false
     @spec unquote(op)(worker(), tensor()) :: tensor()
-    def unquote(op)(w, a), do: Async.call(unquote(nif_name)(w, a))
+    def unquote(op)(w, a),
+      do: await(unquote(nif_name)(w, a), native_context(unquote(op), w, a: a))
   end
 
   @doc false
@@ -180,7 +206,8 @@ defmodule Emily.Native do
   def round_nif(_w, _a, _decimals), do: nif()
 
   @spec round(worker(), tensor(), integer()) :: tensor()
-  def round(w, a, decimals), do: Async.call(round_nif(w, a, decimals))
+  def round(w, a, decimals),
+    do: await(round_nif(w, a, decimals), native_context(:round, w, [a: a], decimals: decimals))
 
   # --- Binary ------------------------------------------------------
 
@@ -220,7 +247,8 @@ defmodule Emily.Native do
 
     @doc false
     @spec unquote(op)(worker(), tensor(), tensor()) :: tensor()
-    def unquote(op)(w, a, b), do: Async.call(unquote(nif_name)(w, a, b))
+    def unquote(op)(w, a, b),
+      do: await(unquote(nif_name)(w, a, b), native_context(unquote(op), w, a: a, b: b))
   end
 
   # --- Reductions --------------------------------------------------
@@ -237,7 +265,11 @@ defmodule Emily.Native do
     @doc false
     @spec unquote(op)(worker(), tensor(), [integer()], boolean()) :: tensor()
     def unquote(op)(w, a, axes, keepdims),
-      do: Async.call(unquote(nif_name)(w, a, axes, keepdims))
+      do:
+        await(
+          unquote(nif_name)(w, a, axes, keepdims),
+          native_context(unquote(op), w, [a: a], axes: axes, keepdims: keepdims)
+        )
   end
 
   @doc false
@@ -246,7 +278,11 @@ defmodule Emily.Native do
 
   @spec var(worker(), tensor(), [integer()], boolean(), integer()) :: tensor()
   def var(w, a, axes, keepdims, ddof),
-    do: Async.call(var_nif(w, a, axes, keepdims, ddof))
+    do:
+      await(
+        var_nif(w, a, axes, keepdims, ddof),
+        native_context(:var, w, [a: a], axes: axes, keepdims: keepdims, ddof: ddof)
+      )
 
   @doc false
   @spec std_nif(worker(), tensor(), [integer()], boolean(), integer()) :: reference()
@@ -254,7 +290,11 @@ defmodule Emily.Native do
 
   @spec std(worker(), tensor(), [integer()], boolean(), integer()) :: tensor()
   def std(w, a, axes, keepdims, ddof),
-    do: Async.call(std_nif(w, a, axes, keepdims, ddof))
+    do:
+      await(
+        std_nif(w, a, axes, keepdims, ddof),
+        native_context(:std, w, [a: a], axes: axes, keepdims: keepdims, ddof: ddof)
+      )
 
   @doc false
   @spec argmax_nif(worker(), tensor(), integer(), boolean()) :: reference()
@@ -262,7 +302,11 @@ defmodule Emily.Native do
 
   @spec argmax(worker(), tensor(), integer(), boolean()) :: tensor()
   def argmax(w, a, axis, keepdims),
-    do: Async.call(argmax_nif(w, a, axis, keepdims))
+    do:
+      await(
+        argmax_nif(w, a, axis, keepdims),
+        native_context(:argmax, w, [a: a], axis: axis, keepdims: keepdims)
+      )
 
   @doc false
   @spec argmin_nif(worker(), tensor(), integer(), boolean()) :: reference()
@@ -270,7 +314,11 @@ defmodule Emily.Native do
 
   @spec argmin(worker(), tensor(), integer(), boolean()) :: tensor()
   def argmin(w, a, axis, keepdims),
-    do: Async.call(argmin_nif(w, a, axis, keepdims))
+    do:
+      await(
+        argmin_nif(w, a, axis, keepdims),
+        native_context(:argmin, w, [a: a], axis: axis, keepdims: keepdims)
+      )
 
   cumulative_ops = [:cumsum, :cumprod, :cummax, :cummin]
 
@@ -285,7 +333,15 @@ defmodule Emily.Native do
     @doc false
     @spec unquote(op)(worker(), tensor(), integer(), boolean(), boolean()) :: tensor()
     def unquote(op)(w, a, axis, reverse, inclusive),
-      do: Async.call(unquote(nif_name)(w, a, axis, reverse, inclusive))
+      do:
+        await(
+          unquote(nif_name)(w, a, axis, reverse, inclusive),
+          native_context(unquote(op), w, [a: a],
+            axis: axis,
+            reverse: reverse,
+            inclusive: inclusive
+          )
+        )
   end
 
   # --- Shape -------------------------------------------------------
@@ -295,49 +351,49 @@ defmodule Emily.Native do
   def reshape_nif(_w, _a, _shape), do: nif()
 
   @spec reshape(worker(), tensor(), [non_neg_integer()]) :: tensor()
-  def reshape(w, a, shape), do: Async.call(reshape_nif(w, a, shape))
+  def reshape(w, a, shape), do: await(reshape_nif(w, a, shape))
 
   @doc false
   @spec transpose_nif(worker(), tensor(), [integer()]) :: reference()
   def transpose_nif(_w, _a, _axes), do: nif()
 
   @spec transpose(worker(), tensor(), [integer()]) :: tensor()
-  def transpose(w, a, axes), do: Async.call(transpose_nif(w, a, axes))
+  def transpose(w, a, axes), do: await(transpose_nif(w, a, axes))
 
   @doc false
   @spec squeeze_nif(worker(), tensor(), [integer()]) :: reference()
   def squeeze_nif(_w, _a, _axes), do: nif()
 
   @spec squeeze(worker(), tensor(), [integer()]) :: tensor()
-  def squeeze(w, a, axes), do: Async.call(squeeze_nif(w, a, axes))
+  def squeeze(w, a, axes), do: await(squeeze_nif(w, a, axes))
 
   @doc false
   @spec expand_dims_nif(worker(), tensor(), [integer()]) :: reference()
   def expand_dims_nif(_w, _a, _axes), do: nif()
 
   @spec expand_dims(worker(), tensor(), [integer()]) :: tensor()
-  def expand_dims(w, a, axes), do: Async.call(expand_dims_nif(w, a, axes))
+  def expand_dims(w, a, axes), do: await(expand_dims_nif(w, a, axes))
 
   @doc false
   @spec broadcast_to_nif(worker(), tensor(), [non_neg_integer()]) :: reference()
   def broadcast_to_nif(_w, _a, _shape), do: nif()
 
   @spec broadcast_to(worker(), tensor(), [non_neg_integer()]) :: tensor()
-  def broadcast_to(w, a, shape), do: Async.call(broadcast_to_nif(w, a, shape))
+  def broadcast_to(w, a, shape), do: await(broadcast_to_nif(w, a, shape))
 
   @doc false
   @spec concatenate_nif(worker(), [tensor()], integer()) :: reference()
   def concatenate_nif(_w, _arrays, _axis), do: nif()
 
   @spec concatenate(worker(), [tensor()], integer()) :: tensor()
-  def concatenate(w, arrays, axis), do: Async.call(concatenate_nif(w, arrays, axis))
+  def concatenate(w, arrays, axis), do: await(concatenate_nif(w, arrays, axis))
 
   @doc false
   @spec stack_nif(worker(), [tensor()], integer()) :: reference()
   def stack_nif(_w, _arrays, _axis), do: nif()
 
   @spec stack(worker(), [tensor()], integer()) :: tensor()
-  def stack(w, arrays, axis), do: Async.call(stack_nif(w, arrays, axis))
+  def stack(w, arrays, axis), do: await(stack_nif(w, arrays, axis))
 
   @doc false
   @spec flatten_nif(worker(), tensor(), integer(), integer()) :: reference()
@@ -345,28 +401,28 @@ defmodule Emily.Native do
 
   @spec flatten(worker(), tensor(), integer(), integer()) :: tensor()
   def flatten(w, a, start_axis, end_axis),
-    do: Async.call(flatten_nif(w, a, start_axis, end_axis))
+    do: await(flatten_nif(w, a, start_axis, end_axis))
 
   @doc false
   @spec tile_nif(worker(), tensor(), [integer()]) :: reference()
   def tile_nif(_w, _a, _reps), do: nif()
 
   @spec tile(worker(), tensor(), [integer()]) :: tensor()
-  def tile(w, a, reps), do: Async.call(tile_nif(w, a, reps))
+  def tile(w, a, reps), do: await(tile_nif(w, a, reps))
 
   @doc false
   @spec swapaxes_nif(worker(), tensor(), integer(), integer()) :: reference()
   def swapaxes_nif(_w, _a, _axis1, _axis2), do: nif()
 
   @spec swapaxes(worker(), tensor(), integer(), integer()) :: tensor()
-  def swapaxes(w, a, axis1, axis2), do: Async.call(swapaxes_nif(w, a, axis1, axis2))
+  def swapaxes(w, a, axis1, axis2), do: await(swapaxes_nif(w, a, axis1, axis2))
 
   @doc false
   @spec flip_nif(worker(), tensor(), integer()) :: reference()
   def flip_nif(_w, _a, _axis), do: nif()
 
   @spec flip(worker(), tensor(), integer()) :: tensor()
-  def flip(w, a, axis), do: Async.call(flip_nif(w, a, axis))
+  def flip(w, a, axis), do: await(flip_nif(w, a, axis))
 
   @doc false
   @spec pad_nif(worker(), tensor(), [integer()], [integer()], [integer()], tensor()) ::
@@ -375,14 +431,14 @@ defmodule Emily.Native do
 
   @spec pad(worker(), tensor(), [integer()], [integer()], [integer()], tensor()) :: tensor()
   def pad(w, a, axes, low_pad, high_pad, pad_value),
-    do: Async.call(pad_nif(w, a, axes, low_pad, high_pad, pad_value))
+    do: await(pad_nif(w, a, axes, low_pad, high_pad, pad_value))
 
   @doc false
   @spec repeat_nif(worker(), tensor(), integer(), integer()) :: reference()
   def repeat_nif(_w, _a, _repeats, _axis), do: nif()
 
   @spec repeat(worker(), tensor(), integer(), integer()) :: tensor()
-  def repeat(w, a, repeats, axis), do: Async.call(repeat_nif(w, a, repeats, axis))
+  def repeat(w, a, repeats, axis), do: await(repeat_nif(w, a, repeats, axis))
 
   # --- Indexing ----------------------------------------------------
 
@@ -392,7 +448,7 @@ defmodule Emily.Native do
 
   @spec slice(worker(), tensor(), [integer()], [integer()], [integer()]) :: tensor()
   def slice(w, a, start, stop, strides),
-    do: Async.call(slice_nif(w, a, start, stop, strides))
+    do: await(slice_nif(w, a, start, stop, strides))
 
   @doc false
   @spec slice_update_nif(worker(), tensor(), tensor(), [integer()]) :: reference()
@@ -400,21 +456,26 @@ defmodule Emily.Native do
 
   @spec slice_update(worker(), tensor(), tensor(), [integer()]) :: tensor()
   def slice_update(w, src, update, start),
-    do: Async.call(slice_update_nif(w, src, update, start))
+    do: await(slice_update_nif(w, src, update, start))
 
   @doc false
   @spec take_nif(worker(), tensor(), tensor(), integer()) :: reference()
   def take_nif(_w, _a, _indices, _axis), do: nif()
 
   @spec take(worker(), tensor(), tensor(), integer()) :: tensor()
-  def take(w, a, indices, axis), do: Async.call(take_nif(w, a, indices, axis))
+  def take(w, a, indices, axis),
+    do:
+      await(
+        take_nif(w, a, indices, axis),
+        native_context(:take, w, [a: a, indices: indices], axis: axis)
+      )
 
   @doc false
   @spec where_nif(worker(), tensor(), tensor(), tensor()) :: reference()
   def where_nif(_w, _cond, _x, _y), do: nif()
 
   @spec where(worker(), tensor(), tensor(), tensor()) :: tensor()
-  def where(w, cond, x, y), do: Async.call(where_nif(w, cond, x, y))
+  def where(w, cond, x, y), do: await(where_nif(w, cond, x, y))
 
   # --- Linalg ------------------------------------------------------
 
@@ -423,7 +484,8 @@ defmodule Emily.Native do
   def matmul_nif(_w, _a, _b), do: nif()
 
   @spec matmul(worker(), tensor(), tensor()) :: tensor()
-  def matmul(w, a, b), do: Async.call(matmul_nif(w, a, b))
+  def matmul(w, a, b),
+    do: await(matmul_nif(w, a, b), native_context(:matmul, w, a: a, b: b))
 
   @doc false
   @spec tensordot_nif(worker(), tensor(), tensor(), [integer()], [integer()]) :: reference()
@@ -431,21 +493,25 @@ defmodule Emily.Native do
 
   @spec tensordot(worker(), tensor(), tensor(), [integer()], [integer()]) :: tensor()
   def tensordot(w, a, b, axes_a, axes_b),
-    do: Async.call(tensordot_nif(w, a, b, axes_a, axes_b))
+    do:
+      await(
+        tensordot_nif(w, a, b, axes_a, axes_b),
+        native_context(:tensordot, w, [a: a, b: b], axes_a: axes_a, axes_b: axes_b)
+      )
 
   @doc false
   @spec outer_nif(worker(), tensor(), tensor()) :: reference()
   def outer_nif(_w, _a, _b), do: nif()
 
   @spec outer(worker(), tensor(), tensor()) :: tensor()
-  def outer(w, a, b), do: Async.call(outer_nif(w, a, b))
+  def outer(w, a, b), do: await(outer_nif(w, a, b))
 
   @doc false
   @spec inner_nif(worker(), tensor(), tensor()) :: reference()
   def inner_nif(_w, _a, _b), do: nif()
 
   @spec inner(worker(), tensor(), tensor()) :: tensor()
-  def inner(w, a, b), do: Async.call(inner_nif(w, a, b))
+  def inner(w, a, b), do: await(inner_nif(w, a, b))
 
   @doc false
   @spec einsum_nif(worker(), String.t(), [tensor()]) :: reference()
@@ -453,7 +519,7 @@ defmodule Emily.Native do
 
   @spec einsum(worker(), String.t(), [tensor()]) :: tensor()
   def einsum(w, subscripts, operands),
-    do: Async.call(einsum_nif(w, subscripts, operands))
+    do: await(einsum_nif(w, subscripts, operands))
 
   # --- Linalg (decompositions / solvers) ---------------------------
 
@@ -462,42 +528,47 @@ defmodule Emily.Native do
   def linalg_lu_nif(_w, _a), do: nif()
 
   @spec linalg_lu(worker(), tensor()) :: {tensor(), tensor(), tensor()}
-  def linalg_lu(w, a), do: Async.call(linalg_lu_nif(w, a))
+  def linalg_lu(w, a), do: await(linalg_lu_nif(w, a))
 
   @doc false
   @spec linalg_svd_nif(worker(), tensor()) :: reference()
   def linalg_svd_nif(_w, _a), do: nif()
 
   @spec linalg_svd(worker(), tensor()) :: {tensor(), tensor(), tensor()}
-  def linalg_svd(w, a), do: Async.call(linalg_svd_nif(w, a))
+  def linalg_svd(w, a), do: await(linalg_svd_nif(w, a))
 
   @doc false
   @spec linalg_qr_nif(worker(), tensor()) :: reference()
   def linalg_qr_nif(_w, _a), do: nif()
 
   @spec linalg_qr(worker(), tensor()) :: {tensor(), tensor()}
-  def linalg_qr(w, a), do: Async.call(linalg_qr_nif(w, a))
+  def linalg_qr(w, a), do: await(linalg_qr_nif(w, a))
 
   @doc false
   @spec linalg_cholesky_nif(worker(), tensor(), boolean()) :: reference()
   def linalg_cholesky_nif(_w, _a, _upper), do: nif()
 
   @spec linalg_cholesky(worker(), tensor(), boolean()) :: tensor()
-  def linalg_cholesky(w, a, upper), do: Async.call(linalg_cholesky_nif(w, a, upper))
+  def linalg_cholesky(w, a, upper),
+    do:
+      await(
+        linalg_cholesky_nif(w, a, upper),
+        native_context(:linalg_cholesky, w, [a: a], upper: upper)
+      )
 
   @doc false
   @spec linalg_eigh_nif(worker(), tensor(), String.t()) :: reference()
   def linalg_eigh_nif(_w, _a, _uplo), do: nif()
 
   @spec linalg_eigh(worker(), tensor(), String.t()) :: {tensor(), tensor()}
-  def linalg_eigh(w, a, uplo), do: Async.call(linalg_eigh_nif(w, a, uplo))
+  def linalg_eigh(w, a, uplo), do: await(linalg_eigh_nif(w, a, uplo))
 
   @doc false
   @spec linalg_solve_nif(worker(), tensor(), tensor()) :: reference()
   def linalg_solve_nif(_w, _a, _b), do: nif()
 
   @spec linalg_solve(worker(), tensor(), tensor()) :: tensor()
-  def linalg_solve(w, a, b), do: Async.call(linalg_solve_nif(w, a, b))
+  def linalg_solve(w, a, b), do: await(linalg_solve_nif(w, a, b))
 
   @doc false
   @spec linalg_solve_triangular_nif(worker(), tensor(), tensor(), boolean()) :: reference()
@@ -505,7 +576,7 @@ defmodule Emily.Native do
 
   @spec linalg_solve_triangular(worker(), tensor(), tensor(), boolean()) :: tensor()
   def linalg_solve_triangular(w, a, b, upper),
-    do: Async.call(linalg_solve_triangular_nif(w, a, b, upper))
+    do: await(linalg_solve_triangular_nif(w, a, b, upper))
 
   # --- Quantization ------------------------------------------------
 
@@ -523,7 +594,15 @@ defmodule Emily.Native do
   @spec quantize(worker(), tensor(), integer(), integer(), String.t()) ::
           {tensor(), tensor(), tensor()}
   def quantize(w, w_tensor, group_size, bits, mode),
-    do: Async.call(quantize_nif(w, w_tensor, group_size, bits, mode))
+    do:
+      await(
+        quantize_nif(w, w_tensor, group_size, bits, mode),
+        native_context(:quantize, w, [w: w_tensor],
+          group_size: group_size,
+          bits: bits,
+          mode: mode
+        )
+      )
 
   @doc false
   @spec dequantize_nif(
@@ -550,7 +629,15 @@ defmodule Emily.Native do
         ) ::
           tensor()
   def dequantize(w, w_q, scales, biases, group_size, bits, mode),
-    do: Async.call(dequantize_nif(w, w_q, scales, biases, group_size, bits, mode))
+    do:
+      await(
+        dequantize_nif(w, w_q, scales, biases, group_size, bits, mode),
+        native_context(:dequantize, w, [w_q: w_q, scales: scales, biases: biases],
+          group_size: group_size,
+          bits: bits,
+          mode: mode
+        )
+      )
 
   @doc false
   @spec quantized_matmul_nif(
@@ -592,8 +679,14 @@ defmodule Emily.Native do
   # credo:disable-for-next-line Credo.Check.Refactor.FunctionArity
   def quantized_matmul(w, x, w_q, scales, biases, transpose, group_size, bits, mode),
     do:
-      Async.call(
-        quantized_matmul_nif(w, x, w_q, scales, biases, transpose, group_size, bits, mode)
+      await(
+        quantized_matmul_nif(w, x, w_q, scales, biases, transpose, group_size, bits, mode),
+        native_context(:quantized_matmul, w, [x: x, w_q: w_q, scales: scales, biases: biases],
+          transpose: transpose,
+          group_size: group_size,
+          bits: bits,
+          mode: mode
+        )
       )
 
   # --- Fast / fused transformer kernels ---------------------------
@@ -604,7 +697,11 @@ defmodule Emily.Native do
 
   @spec fast_rms_norm(worker(), tensor(), tensor() | nil, float()) :: tensor()
   def fast_rms_norm(w, x, weight, eps),
-    do: Async.call(fast_rms_norm_nif(w, x, weight, eps))
+    do:
+      await(
+        fast_rms_norm_nif(w, x, weight, eps),
+        native_context(:fast_rms_norm, w, [x: x, weight: weight], eps: eps)
+      )
 
   @doc false
   @spec fast_layer_norm_nif(worker(), tensor(), tensor() | nil, tensor() | nil, float()) ::
@@ -614,7 +711,11 @@ defmodule Emily.Native do
   @spec fast_layer_norm(worker(), tensor(), tensor() | nil, tensor() | nil, float()) ::
           tensor()
   def fast_layer_norm(w, x, weight, bias, eps),
-    do: Async.call(fast_layer_norm_nif(w, x, weight, bias, eps))
+    do:
+      await(
+        fast_layer_norm_nif(w, x, weight, bias, eps),
+        native_context(:fast_layer_norm, w, [x: x, weight: weight, bias: bias], eps: eps)
+      )
 
   @doc false
   @spec fast_rope_nif(
@@ -640,7 +741,16 @@ defmodule Emily.Native do
           tensor() | nil
         ) :: tensor()
   def fast_rope(w, x, dims, traditional, base, scale, offset, freqs),
-    do: Async.call(fast_rope_nif(w, x, dims, traditional, base, scale, offset, freqs))
+    do:
+      await(
+        fast_rope_nif(w, x, dims, traditional, base, scale, offset, freqs),
+        native_context(:fast_rope, w, [x: x, offset: offset, freqs: freqs],
+          dims: dims,
+          traditional: traditional,
+          base: base,
+          scale: scale
+        )
+      )
 
   @doc false
   @spec fast_scaled_dot_product_attention_nif(
@@ -677,7 +787,7 @@ defmodule Emily.Native do
         ) :: tensor()
   def fast_scaled_dot_product_attention(w, q, k, v, scale, mask_mode, mask_arrs, sinks_arrs),
     do:
-      Async.call(
+      await(
         fast_scaled_dot_product_attention_nif(
           w,
           q,
@@ -687,6 +797,14 @@ defmodule Emily.Native do
           mask_mode,
           mask_arrs,
           sinks_arrs
+        ),
+        native_context(
+          :fast_scaled_dot_product_attention,
+          w,
+          [q: q, k: k, v: v] ++
+            named_list(:mask, mask_arrs) ++ named_list(:sink, sinks_arrs),
+          scale: scale,
+          mask_mode: mask_mode
         )
       )
 
@@ -697,35 +815,35 @@ defmodule Emily.Native do
   def sort_nif(_w, _a, _axis), do: nif()
 
   @spec sort(worker(), tensor(), integer()) :: tensor()
-  def sort(w, a, axis), do: Async.call(sort_nif(w, a, axis))
+  def sort(w, a, axis), do: await(sort_nif(w, a, axis))
 
   @doc false
   @spec argsort_nif(worker(), tensor(), integer()) :: reference()
   def argsort_nif(_w, _a, _axis), do: nif()
 
   @spec argsort(worker(), tensor(), integer()) :: tensor()
-  def argsort(w, a, axis), do: Async.call(argsort_nif(w, a, axis))
+  def argsort(w, a, axis), do: await(argsort_nif(w, a, axis))
 
   @doc false
   @spec partition_nif(worker(), tensor(), integer(), integer()) :: reference()
   def partition_nif(_w, _a, _kth, _axis), do: nif()
 
   @spec partition(worker(), tensor(), integer(), integer()) :: tensor()
-  def partition(w, a, kth, axis), do: Async.call(partition_nif(w, a, kth, axis))
+  def partition(w, a, kth, axis), do: await(partition_nif(w, a, kth, axis))
 
   @doc false
   @spec argpartition_nif(worker(), tensor(), integer(), integer()) :: reference()
   def argpartition_nif(_w, _a, _kth, _axis), do: nif()
 
   @spec argpartition(worker(), tensor(), integer(), integer()) :: tensor()
-  def argpartition(w, a, kth, axis), do: Async.call(argpartition_nif(w, a, kth, axis))
+  def argpartition(w, a, kth, axis), do: await(argpartition_nif(w, a, kth, axis))
 
   @doc false
   @spec topk_nif(worker(), tensor(), integer(), integer()) :: reference()
   def topk_nif(_w, _a, _k, _axis), do: nif()
 
   @spec topk(worker(), tensor(), integer(), integer()) :: tensor()
-  def topk(w, a, k, axis), do: Async.call(topk_nif(w, a, k, axis))
+  def topk(w, a, k, axis), do: await(topk_nif(w, a, k, axis))
 
   # --- Misc --------------------------------------------------------
 
@@ -734,21 +852,21 @@ defmodule Emily.Native do
   def clip_nif(_w, _a, _a_min, _a_max), do: nif()
 
   @spec clip(worker(), tensor(), tensor(), tensor()) :: tensor()
-  def clip(w, a, a_min, a_max), do: Async.call(clip_nif(w, a, a_min, a_max))
+  def clip(w, a, a_min, a_max), do: await(clip_nif(w, a, a_min, a_max))
 
   @doc false
   @spec roll_nif(worker(), tensor(), integer(), integer()) :: reference()
   def roll_nif(_w, _a, _shift, _axis), do: nif()
 
   @spec roll(worker(), tensor(), integer(), integer()) :: tensor()
-  def roll(w, a, shift, axis), do: Async.call(roll_nif(w, a, shift, axis))
+  def roll(w, a, shift, axis), do: await(roll_nif(w, a, shift, axis))
 
   @doc false
   @spec softmax_nif(worker(), tensor(), [integer()], boolean()) :: reference()
   def softmax_nif(_w, _a, _axes, _precise), do: nif()
 
   @spec softmax(worker(), tensor(), [integer()], boolean()) :: tensor()
-  def softmax(w, a, axes, precise), do: Async.call(softmax_nif(w, a, axes, precise))
+  def softmax(w, a, axes, precise), do: await(softmax_nif(w, a, axes, precise))
 
   @doc false
   @spec logcumsumexp_nif(worker(), tensor(), integer(), boolean(), boolean()) ::
@@ -757,7 +875,7 @@ defmodule Emily.Native do
 
   @spec logcumsumexp(worker(), tensor(), integer(), boolean(), boolean()) :: tensor()
   def logcumsumexp(w, a, axis, reverse, inclusive),
-    do: Async.call(logcumsumexp_nif(w, a, axis, reverse, inclusive))
+    do: await(logcumsumexp_nif(w, a, axis, reverse, inclusive))
 
   @doc false
   @spec array_equal_nif(worker(), tensor(), tensor(), boolean()) :: reference()
@@ -765,7 +883,7 @@ defmodule Emily.Native do
 
   @spec array_equal(worker(), tensor(), tensor(), boolean()) :: tensor()
   def array_equal(w, a, b, equal_nan),
-    do: Async.call(array_equal_nif(w, a, b, equal_nan))
+    do: await(array_equal_nif(w, a, b, equal_nan))
 
   # --- Axis-aligned gather/scatter ---------------------------------
 
@@ -775,7 +893,7 @@ defmodule Emily.Native do
 
   @spec take_along_axis(worker(), tensor(), tensor(), integer()) :: tensor()
   def take_along_axis(w, a, indices, axis),
-    do: Async.call(take_along_axis_nif(w, a, indices, axis))
+    do: await(take_along_axis_nif(w, a, indices, axis))
 
   @doc false
   @spec put_along_axis_nif(worker(), tensor(), tensor(), tensor(), integer()) ::
@@ -784,7 +902,7 @@ defmodule Emily.Native do
 
   @spec put_along_axis(worker(), tensor(), tensor(), tensor(), integer()) :: tensor()
   def put_along_axis(w, a, indices, values, axis),
-    do: Async.call(put_along_axis_nif(w, a, indices, values, axis))
+    do: await(put_along_axis_nif(w, a, indices, values, axis))
 
   @doc false
   @spec scatter_add_axis_nif(worker(), tensor(), tensor(), tensor(), integer()) ::
@@ -793,7 +911,7 @@ defmodule Emily.Native do
 
   @spec scatter_add_axis(worker(), tensor(), tensor(), tensor(), integer()) :: tensor()
   def scatter_add_axis(w, a, indices, values, axis),
-    do: Async.call(scatter_add_axis_nif(w, a, indices, values, axis))
+    do: await(scatter_add_axis_nif(w, a, indices, values, axis))
 
   @doc false
   @spec gather_nif(worker(), tensor(), [tensor()], [integer()], [non_neg_integer()]) ::
@@ -803,7 +921,14 @@ defmodule Emily.Native do
   @spec gather(worker(), tensor(), [tensor()], [integer()], [non_neg_integer()]) ::
           tensor()
   def gather(w, a, indices, axes, slice_sizes),
-    do: Async.call(gather_nif(w, a, indices, axes, slice_sizes))
+    do:
+      await(
+        gather_nif(w, a, indices, axes, slice_sizes),
+        native_context(:gather, w, [a: a] ++ named_list(:index, indices),
+          axes: axes,
+          slice_sizes: slice_sizes
+        )
+      )
 
   @doc false
   @spec scatter_nif(worker(), tensor(), [tensor()], tensor(), [integer()]) :: reference()
@@ -811,7 +936,13 @@ defmodule Emily.Native do
 
   @spec scatter(worker(), tensor(), [tensor()], tensor(), [integer()]) :: tensor()
   def scatter(w, a, indices, updates, axes),
-    do: Async.call(scatter_nif(w, a, indices, updates, axes))
+    do:
+      await(
+        scatter_nif(w, a, indices, updates, axes),
+        native_context(:scatter, w, [a: a, updates: updates] ++ named_list(:index, indices),
+          axes: axes
+        )
+      )
 
   @doc false
   @spec scatter_add_nif(worker(), tensor(), [tensor()], tensor(), [integer()]) ::
@@ -820,7 +951,13 @@ defmodule Emily.Native do
 
   @spec scatter_add(worker(), tensor(), [tensor()], tensor(), [integer()]) :: tensor()
   def scatter_add(w, a, indices, updates, axes),
-    do: Async.call(scatter_add_nif(w, a, indices, updates, axes))
+    do:
+      await(
+        scatter_add_nif(w, a, indices, updates, axes),
+        native_context(:scatter_add, w, [a: a, updates: updates] ++ named_list(:index, indices),
+          axes: axes
+        )
+      )
 
   # --- Window / pooling reductions ---------------------------------
 
@@ -860,7 +997,17 @@ defmodule Emily.Native do
             tensor()
           ) :: tensor()
     def unquote(op)(w, t, window, strides, pad_lo, pad_hi, dilations, init),
-      do: Async.call(unquote(nif_name)(w, t, window, strides, pad_lo, pad_hi, dilations, init))
+      do:
+        await(
+          unquote(nif_name)(w, t, window, strides, pad_lo, pad_hi, dilations, init),
+          native_context(unquote(op), w, [t: t, init: init],
+            window: window,
+            strides: strides,
+            pad_lo: pad_lo,
+            pad_hi: pad_hi,
+            dilations: dilations
+          )
+        )
   end
 
   # --- Window scatters (MaxPool/MinPool backward) ------------------
@@ -900,7 +1047,16 @@ defmodule Emily.Native do
             [non_neg_integer()]
           ) :: tensor()
     def unquote(op)(w, t, source, init, window, strides, pad_lo, pad_hi),
-      do: Async.call(unquote(nif_name)(w, t, source, init, window, strides, pad_lo, pad_hi))
+      do:
+        await(
+          unquote(nif_name)(w, t, source, init, window, strides, pad_lo, pad_hi),
+          native_context(unquote(op), w, [t: t, source: source, init: init],
+            window: window,
+            strides: strides,
+            pad_lo: pad_lo,
+            pad_hi: pad_hi
+          )
+        )
   end
 
   # --- Convolution -------------------------------------------------
@@ -930,7 +1086,17 @@ defmodule Emily.Native do
           boolean()
         ) :: tensor()
   def conv_general(w, input, weight, stride, padding, dilation, groups, flip),
-    do: Async.call(conv_general_nif(w, input, weight, stride, padding, dilation, groups, flip))
+    do:
+      await(
+        conv_general_nif(w, input, weight, stride, padding, dilation, groups, flip),
+        native_context(:conv_general, w, [input: input, weight: weight],
+          stride: stride,
+          padding: padding,
+          dilation: dilation,
+          groups: groups,
+          flip: flip
+        )
+      )
 
   # --- Random ------------------------------------------------------
 
@@ -943,7 +1109,7 @@ defmodule Emily.Native do
   def random_split_nif(_w, _key, _num), do: nif()
 
   @spec random_split(worker(), tensor(), integer()) :: tensor()
-  def random_split(w, key, num), do: Async.call(random_split_nif(w, key, num))
+  def random_split(w, key, num), do: await(random_split_nif(w, key, num))
 
   @doc false
   @spec random_uniform_nif(
@@ -965,7 +1131,7 @@ defmodule Emily.Native do
           tensor() | nil
         ) :: tensor()
   def random_uniform(w, low, high, shape, dtype, key),
-    do: Async.call(random_uniform_nif(w, low, high, shape, dtype, key))
+    do: await(random_uniform_nif(w, low, high, shape, dtype, key))
 
   @doc false
   @spec random_normal_nif(
@@ -981,7 +1147,7 @@ defmodule Emily.Native do
   @spec random_normal(worker(), [non_neg_integer()], dtype(), float(), float(), tensor() | nil) ::
           tensor()
   def random_normal(w, shape, dtype, loc, scale, key),
-    do: Async.call(random_normal_nif(w, shape, dtype, loc, scale, key))
+    do: await(random_normal_nif(w, shape, dtype, loc, scale, key))
 
   @doc false
   @spec random_randint_nif(
@@ -1003,7 +1169,7 @@ defmodule Emily.Native do
           tensor() | nil
         ) :: tensor()
   def random_randint(w, low, high, shape, dtype, key),
-    do: Async.call(random_randint_nif(w, low, high, shape, dtype, key))
+    do: await(random_randint_nif(w, low, high, shape, dtype, key))
 
   @doc false
   @spec random_bernoulli_nif(worker(), tensor(), [non_neg_integer()], tensor() | nil) ::
@@ -1012,7 +1178,7 @@ defmodule Emily.Native do
 
   @spec random_bernoulli(worker(), tensor(), [non_neg_integer()], tensor() | nil) :: tensor()
   def random_bernoulli(w, p, shape, key),
-    do: Async.call(random_bernoulli_nif(w, p, shape, key))
+    do: await(random_bernoulli_nif(w, p, shape, key))
 
   @doc false
   @spec random_gumbel_nif(worker(), [non_neg_integer()], dtype(), tensor() | nil) ::
@@ -1021,7 +1187,7 @@ defmodule Emily.Native do
 
   @spec random_gumbel(worker(), [non_neg_integer()], dtype(), tensor() | nil) :: tensor()
   def random_gumbel(w, shape, dtype, key),
-    do: Async.call(random_gumbel_nif(w, shape, dtype, key))
+    do: await(random_gumbel_nif(w, shape, dtype, key))
 
   @doc false
   @spec random_categorical_nif(worker(), tensor(), integer(), integer(), tensor() | nil) ::
@@ -1031,7 +1197,7 @@ defmodule Emily.Native do
   @spec random_categorical(worker(), tensor(), integer(), integer(), tensor() | nil) ::
           tensor()
   def random_categorical(w, logits, axis, num_samples, key),
-    do: Async.call(random_categorical_nif(w, logits, axis, num_samples, key))
+    do: await(random_categorical_nif(w, logits, axis, num_samples, key))
 
   # --- FFT ---------------------------------------------------------
 
@@ -1047,7 +1213,12 @@ defmodule Emily.Native do
 
     @doc false
     @spec unquote(op)(worker(), tensor(), [non_neg_integer()], [integer()]) :: tensor()
-    def unquote(op)(w, a, n, axes), do: Async.call(unquote(nif_name)(w, a, n, axes))
+    def unquote(op)(w, a, n, axes),
+      do:
+        await(
+          unquote(nif_name)(w, a, n, axes),
+          native_context(unquote(op), w, [a: a], n: n, axes: axes)
+        )
   end
 
   # --- Memory / allocator ------------------------------------------

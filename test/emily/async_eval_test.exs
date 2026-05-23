@@ -3,7 +3,7 @@ defmodule Emily.AsyncEvalTest do
 
   # Regression tests for the async `Emily.Native.eval/2` path.
   # `eval/2` internally dispatches to `eval_nif/2` (which returns a
-  # ref) and awaits the worker's reply via `Emily.Native.Async.call/1`.
+  # ref) and awaits the worker's reply via `Emily.Native.Async.call/2`.
   #
   # Higher-level tests in backend_test.exs exercise eval transitively.
   # These tests pin specific properties of the async path:

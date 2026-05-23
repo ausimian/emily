@@ -1,5 +1,14 @@
 ### Added
 
+- `Emily.Native` now annotates NIF errors with operation, input
+  shape/dtype, options, and worker context. `ArgumentError` and
+  `RuntimeError` raised from async ops get an `Emily.Native context:
+  op=… inputs=[…] options=[…] stream=…` suffix, so common failures
+  (shape mismatches in `matmul`, divisibility errors in `quantize`,
+  mask shape bugs in `fast_scaled_dot_product_attention`, etc.) are
+  diagnosable from the message alone. The error-formatting path is
+  total — bad context maps degrade to `?` markers rather than masking
+  the underlying NIF error.
 - `Emily.Memory` — public allocator API for long-running serving and
   training workloads that need to observe and manage MLX memory
   without reaching into `Emily.Native`. Exposes `stats/0` (active,

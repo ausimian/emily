@@ -649,7 +649,17 @@ defmodule Emily.NativeTest do
 
     test "quantize validates last-axis divisibility" do
       bad = f32(List.duplicate(0.0, 30), [1, 30])
-      assert_raise ArgumentError, fn -> Native.quantize(worker(), bad, 64, 4, "affine") end
+
+      err =
+        assert_raise ArgumentError, fn ->
+          Native.quantize(worker(), bad, 64, 4, "affine")
+        end
+
+      assert err.message =~ "Emily.Native context:"
+      assert err.message =~ "quantize"
+      assert err.message =~ "w:"
+      assert err.message =~ "group_size"
+      assert err.message =~ "bits"
     end
 
     test "dequantize recovers the original within int4 tolerance" do
