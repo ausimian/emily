@@ -140,7 +140,7 @@ Span events at the evaluation boundary:
     `Emily.Memory.stats/0`.
 
 Span instrumentation deliberately stops at the evaluation boundary
-rather than wrapping the 300+ graph-construction call sites in
+rather than wrapping every graph-construction call site in
 `Emily.Backend`: those NIFs are <10μs and do no work; the evaluation
 boundary is where MLX actually runs kernels.
 
@@ -204,15 +204,21 @@ mystery bugs.
 | Training | `Nx.BinaryBackend` loss trajectory                       | Curve-matching; MNIST convergence (`:training_full`)       |
 | E2E      | HuggingFace Transformers reference slices                | Bumblebee conformance suites with cached weights           |
 
-Soak harnesses (all `@tag :soak`, opt-in):
+Soak harnesses (all under `test/soak/`, `@tag :soak`, opt-in):
 
   * `memory_test` — 10k iterations; MLX memory returns to baseline.
   * `training_test` — 1k training steps; baseline restored after
-    `clear_cache/0`.
-  * `concurrency_test` — parallel inference; determinism + no
-    crashes.
+    `Emily.Memory.clear_cache/0`.
+  * `backend_concurrency_test` / `eval_concurrency_test` /
+    `stream_concurrency_test` — parallel inference under the
+    default worker, the evaluation path, and per-process streams;
+    determinism + no crashes.
+  * `backend_soak_test` — broad backend exerciser; allocator
+    drift over a large mixed-op workload.
   * `quantized_memory_test` — quantized-matmul loop, distinct
     allocator pattern from fp16 inference.
+  * `zero_copy_roundtrip_test` — `to_binary` aliases the MLX buffer
+    rather than copying; tested via allocator-stats deltas.
 
 ## Risks and mitigations
 
