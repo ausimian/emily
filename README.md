@@ -43,6 +43,10 @@ repo's GitHub releases into `$EMILY_CACHE` (default
 consumer side — nothing is compiled locally. See
 [Building](#building) for details.
 
+Run `mix emily.doctor` after compiling to verify the host platform,
+configured MLX variant, native artifacts, NIF loadability, and a tiny
+Emily backend smoke test.
+
 ## Features
 
 - **Nx backend.** Every `Nx.*` op dispatches to MLX; ops without a

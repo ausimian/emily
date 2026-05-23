@@ -1,5 +1,15 @@
 ### Added
 
+- `mix emily.doctor` — diagnostic Mix task that verifies the local
+  Emily runtime installation. Checks the host platform (OS, arch,
+  macOS version against the active variant's minimum), the active
+  MLX variant, `priv/libemily.so` and `priv/mlx.metallib`, NIF
+  loadability, and a tiny `Emily.Backend` smoke test that asserts
+  the result didn't silently fall back to `Nx.BinaryBackend`. Checks
+  short-circuit: when a prerequisite fails, dependent checks report
+  `[skip]` rather than producing cascading noise. Supports
+  `--variant aot|jit` for "would this host satisfy :jit?" probes and
+  `--help` for usage.
 - `Emily.Native` now annotates NIF errors with operation, input
   shape/dtype, options, and worker context. `ArgumentError` and
   `RuntimeError` raised from async ops get an `Emily.Native context:
