@@ -80,17 +80,21 @@ defmodule Emily.Distributed do
     * `:strict` — when `true`, raise if the backend can't initialise
       instead of falling back to a singleton group. Default `false`.
     * `:worker` — worker (MLX stream) the collectives run on. Defaults
-      to the backend's shared worker so collective results live on the
-      same stream as the tensors they operate on; MLX streams are
-      thread-local, so a result produced on one stream can't be read
-      back on another. The group handle itself is process-global, so it
-      is independent of the worker.
+      to a dedicated CPU worker (`Emily.MlxStream.Distributed`), kept
+      separate from the shared GPU worker on purpose: collectives are
+      CPU-only MLX primitives whose inter-rank communication blocks
+      during `eval` until every peer arrives, and running that on the
+      GPU worker would stall all other queued GPU ops (head-of-line
+      blocking). Each collective is eval'd on this worker before being
+      returned, so the downstream device copy to the GPU worker is cheap
+      and non-blocking. The group handle is process-global, so it is
+      independent of the worker.
   """
   @spec init(keyword()) :: Group.t()
   def init(opts \\ []) do
     backend = Keyword.get(opts, :backend, "any")
     strict = Keyword.get(opts, :strict, false)
-    worker = Keyword.get_lazy(opts, :worker, &Emily.MlxStream.default_worker/0)
+    worker = Keyword.get_lazy(opts, :worker, &Emily.MlxStream.distributed_worker/0)
 
     ref = Native.distributed_init(worker, strict, backend)
 
@@ -139,7 +143,7 @@ defmodule Emily.Distributed do
   @doc "Send `tensor` to rank `dst`. Returns `tensor` (for graph ordering)."
   @spec send(Group.t(), T.t(), non_neg_integer()) :: T.t()
   def send(%Group{ref: gref, worker: w}, %T{} = tensor, dst) when is_integer(dst) do
-    to_nx(Native.dist_send(w, ref(tensor), dst, gref))
+    to_nx(Native.dist_send(w, to_cpu(ref(tensor)), dst, gref))
   end
 
   @doc "Receive a tensor of `shape`/`type` from rank `src`."
@@ -152,8 +156,15 @@ defmodule Emily.Distributed do
   # --- internals ---------------------------------------------------
 
   defp collective(op, %Group{ref: gref, worker: w}, %T{} = tensor) do
-    apply(Native, op, [w, ref(tensor), gref]) |> to_nx()
+    apply(Native, op, [w, to_cpu(ref(tensor)), gref]) |> to_nx()
   end
+
+  # Stage a collective input onto the CPU via the shared GPU worker.
+  # MLX command encoders are thread-local: a graph with pending GPU ops
+  # must be evaluated on the GPU worker, but the collective itself runs
+  # on the dedicated CPU worker. This local copy (no peer wait) leaves a
+  # GPU-op-free array that the CPU worker can eval safely.
+  defp to_cpu(r), do: Native.dist_to_cpu(Emily.MlxStream.default_worker(), r)
 
   defp ref(%T{data: %Backend{ref: r}}), do: r
   defp ref(%T{} = other), do: ref(Nx.backend_transfer(other, Backend))

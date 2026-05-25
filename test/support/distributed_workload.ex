@@ -79,6 +79,45 @@ defmodule Emily.Test.DistributedWorkload do
     end
   end
 
+  @doc """
+  Head-of-line-blocking probe (see issue #112). Rank 0 fires an `all_sum`
+  that can never complete — every other rank joins the ring (so rank 0's
+  `init` returns) but then idles without issuing its matching collective,
+  so the all-reduce blocks forever in `eval`. With that collective in
+  flight, rank 0 runs an ordinary op on the shared GPU worker: it must
+  still complete, proving the collective's blocking eval sits on the
+  dedicated CPU worker and not the GPU worker.
+
+  Returns (rank 0) `%{rank: 0, gpu_result:, collective_pending:}`. Other
+  ranks block until the launcher tears them down, so the caller must NOT
+  await them — drive the peers directly rather than via `Launcher.run/3`.
+  """
+  def gpu_free_while_collective_pending do
+    group = init()
+
+    case group.rank do
+      0 ->
+        # Fire the collective in an unlinked process. all_sum stages its
+        # input onto the GPU worker (a quick local copy) and then blocks
+        # in eval on the dedicated CPU worker awaiting peers that never
+        # arrive — so this process stays alive for the test's duration.
+        collector = spawn(fn -> flat(Distributed.all_sum(group, filled(0, @vec))) end)
+
+        # The shared GPU worker must remain free for ordinary work. If the
+        # collective were blocking it, this op would never return and the
+        # caller's :peer.call would time out.
+        gpu = Nx.tensor([1.0, 2.0, 3.0], backend: Emily.Backend)
+        result = gpu |> Nx.multiply(2.0) |> Nx.to_flat_list()
+
+        %{rank: 0, gpu_result: result, collective_pending: Process.alive?(collector)}
+
+      _ ->
+        # Join the ring so rank 0's init completes, then hold it open
+        # (keeping the group ref alive) without participating.
+        Process.sleep(:infinity)
+    end
+  end
+
   defp init do
     {:ok, _} = Application.ensure_all_started(:emily)
     Distributed.init(backend: "ring")

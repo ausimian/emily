@@ -26,7 +26,14 @@ namespace mx = mlx::core;
 
 class WorkerThread {
 public:
-  WorkerThread() {
+  // The stream is created on the worker's own thread (encoders are
+  // thread-local). `device` selects which device that stream targets:
+  // GPU for ordinary compute, CPU for distributed collectives — MLX's
+  // collectives are CPU-only, and giving them a dedicated CPU worker
+  // keeps their blocking eval off the shared GPU worker.
+  explicit WorkerThread(
+      mx::Device::DeviceType device = mx::Device::DeviceType::gpu)
+      : device_(device) {
     thread_ = std::thread(&WorkerThread::run, this);
     std::unique_lock<std::mutex> lock(mtx_);
     cv_.wait(lock, [this] { return ready_; });
@@ -99,7 +106,7 @@ public:
 
 private:
   void run() {
-    stream_ = mx::new_stream(mx::Device(mx::Device::DeviceType::gpu));
+    stream_ = mx::new_stream(mx::Device(device_));
     {
       std::lock_guard<std::mutex> lock(mtx_);
       ready_ = true;
@@ -126,6 +133,7 @@ private:
   std::condition_variable cv_;
   bool stop_ = false;
   bool ready_ = false;
+  mx::Device::DeviceType device_;
   mx::Stream stream_{0, mx::Device(mx::Device::DeviceType::gpu)};
 };
 

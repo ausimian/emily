@@ -47,6 +47,34 @@ defmodule Emily.DistributedRingTest do
     end
   end
 
+  test "a pending collective does not block the shared GPU worker" do
+    {:ok, %{peers: peers, hostfile: hostfile}} = Launcher.start(2, base_port: 18_300)
+    [{0, p0, _}, {1, p1, _}] = peers
+
+    # Rank 1 joins the ring and idles forever (it never issues all_sum),
+    # so rank 0's collective stays pending. We never await this call;
+    # it's torn down with the peer.
+    idle =
+      Task.async(fn ->
+        :peer.call(p1, DistributedWorkload, :gpu_free_while_collective_pending, [], :infinity)
+      end)
+
+    try do
+      # With the collective hanging, rank 0's ordinary GPU op must still
+      # complete. A bug that puts the collective's eval on the shared GPU
+      # worker would stall this call until the :peer.call timeout.
+      r0 = :peer.call(p0, DistributedWorkload, :gpu_free_while_collective_pending, [], 60_000)
+
+      assert r0.rank == 0
+      assert r0.collective_pending, "collective should still be in flight"
+      assert r0.gpu_result == [2.0, 4.0, 6.0]
+    after
+      Task.shutdown(idle, :brutal_kill)
+      Launcher.stop(peers)
+      File.rm(hostfile)
+    end
+  end
+
   test "send/recv passes a tensor from rank 0 to rank 1" do
     results = Launcher.run(2, &DistributedWorkload.send_recv/0, base_port: 18_200)
     by_rank = Map.new(results, &{&1.rank, &1})

@@ -10,10 +10,22 @@ defmodule Emily.MlxStream do
 
   @doc false
   def default_worker do
-    case Process.get(:emily_worker) do
+    cached_worker(:emily_worker, __MODULE__.Default)
+  end
+
+  @doc false
+  # CPU worker reserved for distributed collectives. Kept separate from
+  # the default GPU worker so a blocking collective eval (ring handshake,
+  # all-reduce waiting on peers) never stalls ordinary GPU inference.
+  def distributed_worker do
+    cached_worker(:emily_distributed_worker, __MODULE__.Distributed)
+  end
+
+  defp cached_worker(key, server) do
+    case Process.get(key) do
       nil ->
-        w = worker(__MODULE__.Default)
-        Process.put(:emily_worker, w)
+        w = worker(server)
+        Process.put(key, w)
         w
 
       w ->
@@ -22,8 +34,13 @@ defmodule Emily.MlxStream do
   end
 
   @impl true
-  def init(_opts) do
-    worker = Emily.Native.create_worker()
+  def init(opts) do
+    worker =
+      case Keyword.get(opts, :device, :gpu) do
+        :cpu -> Emily.Native.create_cpu_worker()
+        :gpu -> Emily.Native.create_worker()
+      end
+
     {:ok, %{worker: worker}}
   end
 

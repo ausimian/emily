@@ -25,6 +25,25 @@ defmodule Emily.DistributedTest do
     end
   end
 
+  describe "dedicated CPU worker (issue #112)" do
+    test "collectives run on a CPU worker distinct from the default GPU worker" do
+      {:ok, _} = Application.ensure_all_started(:emily)
+
+      assert Process.whereis(Emily.MlxStream.Distributed),
+             "expected a supervised Emily.MlxStream.Distributed worker"
+
+      refute Emily.MlxStream.distributed_worker() == Emily.MlxStream.default_worker()
+    end
+
+    test "init/1 defaults the group worker to the distributed CPU worker" do
+      {:ok, _} = Application.ensure_all_started(:emily)
+
+      # No MLX launch env here, so this is a singleton group (size 1).
+      group = Emily.Distributed.init(backend: "ring")
+      assert group.worker == Emily.MlxStream.distributed_worker()
+    end
+  end
+
   # Multi-rank collectives need the compiled NIF and N OS processes;
   # see Emily.Distributed.Launcher.run/3 for an end-to-end ring all_sum.
 end

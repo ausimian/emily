@@ -88,6 +88,11 @@ defmodule Emily.Native do
   @spec create_worker() :: worker()
   def create_worker, do: nif()
 
+  # CPU-stream worker, used for distributed collectives so their
+  # blocking eval stays off the shared GPU worker. See Emily.Distributed.
+  @spec create_cpu_worker() :: worker()
+  def create_cpu_worker, do: nif()
+
   # --- Distributed -------------------------------------------------
   # Thin maps onto mlx::core::distributed (c_src/ops/collective.cpp).
   # `group` is a reference to a DistGroup resource. Collectives take a
@@ -115,6 +120,17 @@ defmodule Emily.Native do
 
   @spec group_size(group()) :: pos_integer()
   def group_size(_group), do: nif()
+
+  # Stage a (possibly GPU-resident) tensor onto the CPU on `w` (the GPU
+  # worker), so the dedicated CPU worker can eval the collective without
+  # touching the GPU worker's thread-local stream. See c_src/ops/collective.cpp.
+  @doc false
+  @spec dist_to_cpu_nif(worker(), tensor()) :: reference()
+  def dist_to_cpu_nif(_w, _x), do: nif()
+
+  @spec dist_to_cpu(worker(), tensor()) :: tensor()
+  def dist_to_cpu(w, x),
+    do: await(dist_to_cpu_nif(w, x), native_context(:dist_to_cpu, w, x: x))
 
   distributed_collectives = [
     :dist_all_sum,
