@@ -88,6 +88,70 @@ defmodule Emily.Native do
   @spec create_worker() :: worker()
   def create_worker, do: nif()
 
+  # --- Distributed -------------------------------------------------
+  # Thin maps onto mlx::core::distributed (c_src/ops/collective.cpp).
+  # `group` is a reference to a DistGroup resource. Collectives take a
+  # worker like any compute op; the comm happens during eval on its
+  # stream. See `Emily.Distributed` for the user-facing API.
+
+  @type group :: reference()
+
+  @spec distributed_available() :: boolean()
+  def distributed_available, do: nif()
+
+  @spec distributed_available_backend(String.t()) :: boolean()
+  def distributed_available_backend(_backend), do: nif()
+
+  @doc false
+  @spec distributed_init_nif(worker(), boolean(), String.t()) :: reference()
+  def distributed_init_nif(_w, _strict, _backend), do: nif()
+
+  @spec distributed_init(worker(), boolean(), String.t()) :: group()
+  def distributed_init(w, strict, backend),
+    do: await(distributed_init_nif(w, strict, backend))
+
+  @spec group_rank(group()) :: non_neg_integer()
+  def group_rank(_group), do: nif()
+
+  @spec group_size(group()) :: pos_integer()
+  def group_size(_group), do: nif()
+
+  distributed_collectives = [
+    :dist_all_sum,
+    :dist_all_max,
+    :dist_all_min,
+    :dist_all_gather,
+    :dist_sum_scatter
+  ]
+
+  for op <- distributed_collectives do
+    nif_name = :"#{op}_nif"
+
+    @doc false
+    @spec unquote(nif_name)(worker(), tensor(), group()) :: reference()
+    def unquote(nif_name)(_w, _x, _group), do: nif()
+
+    @doc false
+    @spec unquote(op)(worker(), tensor(), group()) :: tensor()
+    def unquote(op)(w, x, group),
+      do: await(unquote(nif_name)(w, x, group), native_context(unquote(op), w, x: x))
+  end
+
+  @doc false
+  @spec dist_send_nif(worker(), tensor(), integer(), group()) :: reference()
+  def dist_send_nif(_w, _x, _dst, _group), do: nif()
+
+  @spec dist_send(worker(), tensor(), integer(), group()) :: tensor()
+  def dist_send(w, x, dst, group), do: await(dist_send_nif(w, x, dst, group))
+
+  @doc false
+  @spec dist_recv_nif(worker(), [non_neg_integer()], dtype(), integer(), group()) :: reference()
+  def dist_recv_nif(_w, _shape, _dtype, _src, _group), do: nif()
+
+  @spec dist_recv(worker(), [non_neg_integer()], dtype(), integer(), group()) :: tensor()
+  def dist_recv(w, shape, dtype, src, group),
+    do: await(dist_recv_nif(w, shape, dtype, src, group))
+
   # --- Creation ----------------------------------------------------
 
   @doc false

@@ -23,6 +23,21 @@ CXXFLAGS += -isystem $(FINE_INCLUDE_DIR) -isystem $(MLX_INCLUDE_DIR)
 LDFLAGS  := -shared
 LDFLAGS  += $(MLX_LIB_DIR)/libmlx.a
 
+# JACCL (RDMA-over-Thunderbolt) is a *separate* static archive that
+# libmlx.a's distributed backend depends on but does not bundle (CMake
+# `target_link_libraries(mlx PRIVATE jaccl)` doesn't merge it into the
+# static lib). The distributed dispatcher references jaccl::init /
+# jaccl::is_available unconditionally, so once any distributed symbol is
+# pulled in we must satisfy them here. Link it after libmlx.a (it
+# resolves libmlx's references, not vice versa). It is only present when
+# MLX was built with a macOS SDK >= 26.2; otherwise libmlx.a carries the
+# no-op jaccl stubs and no extra archive is needed. ibverbs is dlopen'd
+# at runtime, so there is no link-time RDMA dependency.
+JACCL_LIB := $(MLX_LIB_DIR)/libjaccl.a
+ifneq ($(wildcard $(JACCL_LIB)),)
+    LDFLAGS += $(JACCL_LIB)
+endif
+
 UNAME_S := $(shell uname -s)
 ifeq ($(UNAME_S),Darwin)
     LDFLAGS += -undefined dynamic_lookup -flat_namespace
