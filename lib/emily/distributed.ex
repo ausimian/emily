@@ -127,7 +127,12 @@ defmodule Emily.Distributed do
   @spec all_gather(Group.t(), T.t()) :: T.t()
   def all_gather(group, tensor), do: collective(:dist_all_gather, group, tensor)
 
-  @doc "Reduce-scatter by sum: sum across ranks, each rank keeping its slice."
+  @doc """
+  Reduce-scatter by sum: sum across ranks, each rank keeping its slice.
+
+  Not implemented by the `ring` backend (raises `[ReduceScatter] Not
+  implemented yet`); exposed for backends that support it.
+  """
   @spec sum_scatter(Group.t(), T.t()) :: T.t()
   def sum_scatter(group, tensor), do: collective(:dist_sum_scatter, group, tensor)
 
