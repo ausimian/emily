@@ -41,6 +41,12 @@
 # the MLX `mx::fast::*` kernels via `Emily.Fast`. Run explicitly:
 #
 #     mix test --only fast_kernels_full
+# `:distributed_ring` launches local BEAM peer nodes as MLX ring ranks
+# (real cross-process collectives over loopback TCP). Excluded by default
+# because it spawns OS processes, binds TCP ports, and takes a GPU
+# context per rank; run explicitly:
+#
+#     mix test --only distributed_ring
 ExUnit.start(
   max_cases: System.schedulers_online(),
   exclude: [
@@ -49,6 +55,7 @@ ExUnit.start(
     :whisper_full,
     :distilbert_full,
     :training_full,
-    :fast_kernels_full
+    :fast_kernels_full,
+    :distributed_ring
   ]
 )

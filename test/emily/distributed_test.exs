@@ -6,8 +6,8 @@ defmodule Emily.DistributedTest do
   describe "Launcher.hostfile_entries/2" do
     test "one loopback address per rank, in rank order" do
       assert Launcher.hostfile_entries(2) == [
-               ["127.0.0.1:5000"],
-               ["127.0.0.1:5001"]
+               ["127.0.0.1:18000"],
+               ["127.0.0.1:18001"]
              ]
     end
 
@@ -21,7 +21,7 @@ defmodule Emily.DistributedTest do
 
     test "produces JSON MLX's ring backend accepts" do
       json = :json.encode(Launcher.hostfile_entries(2)) |> IO.iodata_to_binary()
-      assert json == ~s([["127.0.0.1:5000"],["127.0.0.1:5001"]])
+      assert json == ~s([["127.0.0.1:18000"],["127.0.0.1:18001"]])
     end
   end
 

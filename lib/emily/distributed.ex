@@ -79,14 +79,18 @@ defmodule Emily.Distributed do
     * `:backend` — `"any"` (default), `"ring"`, `"jaccl"`, ...
     * `:strict` — when `true`, raise if the backend can't initialise
       instead of falling back to a singleton group. Default `false`.
-    * `:worker` — reuse an existing worker reference; defaults to a
-      fresh dedicated worker for the distributed stream.
+    * `:worker` — worker (MLX stream) the collectives run on. Defaults
+      to the backend's shared worker so collective results live on the
+      same stream as the tensors they operate on; MLX streams are
+      thread-local, so a result produced on one stream can't be read
+      back on another. The group handle itself is process-global, so it
+      is independent of the worker.
   """
   @spec init(keyword()) :: Group.t()
   def init(opts \\ []) do
     backend = Keyword.get(opts, :backend, "any")
     strict = Keyword.get(opts, :strict, false)
-    worker = Keyword.get_lazy(opts, :worker, &Native.create_worker/0)
+    worker = Keyword.get_lazy(opts, :worker, &Emily.MlxStream.default_worker/0)
 
     ref = Native.distributed_init(worker, strict, backend)
 

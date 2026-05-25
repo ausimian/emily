@@ -88,9 +88,17 @@ FINE_NIF(group_size, 0);
 
 // ---------- Collectives ----------
 
-// Each takes (worker, x, group) and returns a Tensor, exactly like the
-// binary ops. The communication is deferred to eval on the worker
-// stream; here we only build the graph node.
+// MLX's distributed collectives are CPU-only primitives (no eval_gpu),
+// so they must be dispatched on the CPU device rather than the worker's
+// GPU stream. The result is a CPU-resident lazy array; MLX inserts the
+// device copy when a downstream op (e.g. to_binary's contiguous) pulls
+// it onto the GPU worker. The Group handle is process-global, so it is
+// independent of the stream the op runs on.
+const auto kCpu = mx::Device(mx::Device::DeviceType::cpu);
+
+// Each takes (worker, x, group) and returns a Tensor, like the binary
+// ops. The lambda still runs on the worker for ordering; only the op's
+// stream differs.
 #define EMILY_COLLECTIVE(op_name, mlx_fn)                                      \
   fine::Term op_name##_nif(                                                    \
       ErlNifEnv *env,                                                          \
@@ -98,8 +106,8 @@ FINE_NIF(group_size, 0);
       fine::ResourcePtr<Tensor> x,                                             \
       fine::ResourcePtr<DistGroup> g) {                                        \
     return async_encoded(env, w,                                               \
-        [x = std::move(x), g = std::move(g)](mx::Stream &s) {                  \
-          return wrap(mlx_fn(x->array, g->group, s));                          \
+        [x = std::move(x), g = std::move(g)](mx::Stream &) {                   \
+          return wrap(mlx_fn(x->array, g->group, kCpu));                       \
         });                                                                    \
   }                                                                            \
   FINE_NIF(op_name##_nif, 0);
@@ -119,8 +127,8 @@ fine::Term dist_send_nif(ErlNifEnv *env,
                          int64_t dst,
                          fine::ResourcePtr<DistGroup> g) {
   return async_encoded(
-      env, w, [x = std::move(x), dst, g = std::move(g)](mx::Stream &s) {
-        return wrap(dist::send(x->array, static_cast<int>(dst), g->group, s));
+      env, w, [x = std::move(x), dst, g = std::move(g)](mx::Stream &) {
+        return wrap(dist::send(x->array, static_cast<int>(dst), g->group, kCpu));
       });
 }
 FINE_NIF(dist_send_nif, 0);
@@ -135,9 +143,9 @@ fine::Term dist_recv_nif(ErlNifEnv *env,
   return async_encoded(
       env, w,
       [shape = std::move(shape), dtype_tuple, src,
-       g = std::move(g)](mx::Stream &s) {
+       g = std::move(g)](mx::Stream &) {
         return wrap(dist::recv(to_mlx_shape(shape), to_mlx_dtype(dtype_tuple),
-                               static_cast<int>(src), g->group, s));
+                               static_cast<int>(src), g->group, kCpu));
       });
 }
 FINE_NIF(dist_recv_nif, 0);

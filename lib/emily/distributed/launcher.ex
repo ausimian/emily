@@ -44,12 +44,16 @@ defmodule Emily.Distributed.Launcher do
 
   @type peer :: {rank :: non_neg_integer(), pid :: pid(), node :: node()}
 
+  # High, unreserved base port. Deliberately not 5000/7000 — macOS
+  # Control Center (AirPlay Receiver) listens there.
+  @default_base_port 18_000
+
   @doc """
   Build the ring hostfile entries: one `"127.0.0.1:port"` per rank, in
   rank order. Pure — useful to inspect/test without launching anything.
   """
   @spec hostfile_entries(pos_integer(), pos_integer()) :: [[String.t()]]
-  def hostfile_entries(n, base_port \\ 5000) when n >= 1 do
+  def hostfile_entries(n, base_port \\ @default_base_port) when n >= 1 do
     for rank <- 0..(n - 1), do: ["127.0.0.1:#{base_port + rank}"]
   end
 
@@ -59,17 +63,24 @@ defmodule Emily.Distributed.Launcher do
 
   ## Options
 
-    * `:base_port` — first TCP port for the ring (default `5000`).
+    * `:base_port` — first TCP port for the ring (default `#{@default_base_port}`).
+      Avoid 5000/7000 on macOS: Control Center's AirPlay Receiver squats
+      on them, so a rank connecting there reaches AirPlay, not its peer,
+      and the ring handshake stalls.
     * `:verbose` — set `MLX_RING_VERBOSE` on the peers (default `false`).
   """
   @spec start(pos_integer(), keyword()) ::
           {:ok, %{peers: [peer()], hostfile: Path.t()}}
   def start(n, opts \\ []) when n >= 2 do
-    base_port = Keyword.get(opts, :base_port, 5000)
-    verbose = if Keyword.get(opts, :verbose, false), do: ~c"1", else: ~c"0"
+    base_port = Keyword.get(opts, :base_port, @default_base_port)
+    verbose? = Keyword.get(opts, :verbose, false)
 
     hostfile = write_hostfile(n, base_port)
     code_args = Enum.flat_map(:code.get_path(), &[~c"-pa", &1])
+
+    # MLX's ring backend treats MLX_RING_VERBOSE as a presence flag (any
+    # value, including "0", enables it), so only set it when wanted.
+    verbose_env = if verbose?, do: [{~c"MLX_RING_VERBOSE", ~c"1"}], else: []
 
     peers =
       for rank <- 0..(n - 1) do
@@ -78,11 +89,11 @@ defmodule Emily.Distributed.Launcher do
             name: :"emily_rank#{rank}",
             connection: :standard_io,
             args: code_args,
-            env: [
-              {~c"MLX_RANK", ~c"#{rank}"},
-              {~c"MLX_HOSTFILE", String.to_charlist(hostfile)},
-              {~c"MLX_RING_VERBOSE", verbose}
-            ]
+            env:
+              [
+                {~c"MLX_RANK", ~c"#{rank}"},
+                {~c"MLX_HOSTFILE", String.to_charlist(hostfile)}
+              ] ++ verbose_env
           })
 
         {rank, pid, node}
