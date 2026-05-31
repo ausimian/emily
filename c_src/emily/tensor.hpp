@@ -14,7 +14,9 @@
 #include <fine.hpp>
 #include <mlx/mlx.h>
 
+#include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -40,9 +42,32 @@ inline mx::Shape to_mlx_shape(const std::vector<int64_t> &dims) {
     if (d < 0) {
       throw std::invalid_argument("negative dimension: " + std::to_string(d));
     }
+    // MLX's ShapeElem is int32_t. Without this bound a dimension above
+    // INT32_MAX would silently truncate (e.g. 2^31 -> INT32_MIN), giving
+    // an array whose recorded shape doesn't match its buffer.
+    if (d > std::numeric_limits<mx::ShapeElem>::max()) {
+      throw std::invalid_argument("dimension exceeds int32 max: " +
+                                  std::to_string(d));
+    }
     out.push_back(static_cast<mx::ShapeElem>(d));
   }
   return out;
+}
+
+// Element count of a shape, computed in size_t with overflow checking.
+// Dimensions must already be validated nonnegative (see to_mlx_shape).
+// Throws if the running product overflows size_t — without this guard
+// the product can wrap (e.g. [2^21, 2^21, 2^22] wraps to 0) and let an
+// undersized binary pass a byte-size check, building an array whose
+// shape outruns its allocation.
+inline std::size_t checked_nelem(const mx::Shape &shape) {
+  std::size_t nelem = 1;
+  for (auto d : shape) {
+    if (__builtin_mul_overflow(nelem, static_cast<std::size_t>(d), &nelem)) {
+      throw std::invalid_argument("element count overflow");
+    }
+  }
+  return nelem;
 }
 
 inline std::vector<int> to_int_vec(const std::vector<int64_t> &v) {

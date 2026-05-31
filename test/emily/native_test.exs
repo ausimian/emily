@@ -41,6 +41,34 @@ defmodule Emily.NativeTest do
       t = Native.eye(worker(), 3, 3, 0, {:f, 32})
       assert to_f32_list(t) == [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]
     end
+
+    test "from_binary rejects a dimension above INT32_MAX" do
+      # 2^31 truncates to INT32_MIN through MLX's int32 ShapeElem; reject it.
+      err =
+        assert_raise ArgumentError, fn ->
+          Native.from_binary(<<>>, [2_147_483_648], {:f, 32})
+        end
+
+      assert err.message =~ "int32"
+    end
+
+    test "from_binary rejects a shape whose element count overflows" do
+      # [2^21, 2^21, 2^22] has an int64/size_t product of exactly 2^64,
+      # which wraps to 0. Pre-fix that made `expected` 0 and accepted an
+      # empty binary, building an array with 2^64 elements over 0 bytes.
+      err =
+        assert_raise ArgumentError, fn ->
+          Native.from_binary(<<>>, [2_097_152, 2_097_152, 4_194_304], {:f, 32})
+        end
+
+      assert err.message =~ "overflow"
+    end
+
+    test "from_binary still accepts a well-formed binary" do
+      t = Native.from_binary(<<1.0::float-32-native, 2.0::float-32-native>>, [2], {:f, 32})
+      assert Native.shape(t) == [2]
+      assert to_f32_list(t) == [1.0, 2.0]
+    end
   end
 
   # ---------- Cast ----------

@@ -18,6 +18,7 @@
 #include <vector>
 
 namespace mx = mlx::core;
+using emily::checked_nelem;
 using emily::Tensor;
 using emily::WorkerThread;
 using emily::from_mlx_dtype;
@@ -45,12 +46,17 @@ fine::ResourcePtr<Tensor> from_binary(
   auto dtype = to_mlx_dtype(dtype_tuple);
   auto shape_ints = to_mlx_shape(shape);
 
-  int64_t nelem = 1;
-  for (auto d : shape_ints) {
-    nelem *= d;
+  // Overflow-checked element and byte counts. `to_mlx_shape` already
+  // bounds each dim to [0, INT32_MAX], but the product across dims and
+  // the multiply by the element size can still overflow size_t. Without
+  // these checks a wrapped `expected` could match an undersized (even
+  // empty) binary and build an array whose shape outruns its buffer,
+  // an OOB read on the next eval/to_binary.
+  size_t nelem = checked_nelem(shape_ints);
+  size_t expected;
+  if (__builtin_mul_overflow(nelem, dtype.size(), &expected)) {
+    throw std::invalid_argument("from_binary: byte size overflow");
   }
-
-  size_t expected = static_cast<size_t>(nelem) * dtype.size();
   if (data.size != expected) {
     throw std::invalid_argument(
         "binary size mismatch: expected " + std::to_string(expected) +
