@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 <!-- %% CHANGELOG_ENTRIES %% -->
 
+## 0.6.1 - 2026-05-31
+
+### Changed
+
+- Documentation updated for the 0.6.x release: the README installation
+  instructions and the example notebooks now reference
+  `{:emily, "~> 0.6"}`.
+
 ## 0.6.0 - 2026-05-31
 
 This release is a security-hardening pass over the native (NIF) boundary
