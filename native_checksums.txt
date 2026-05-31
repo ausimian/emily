@@ -1,0 +1,7 @@
+# SHA-256 checksums for emily's precompiled NIF tarballs, pinned in
+# the hex package so consumers verify downloads against a trust root
+# independent of the (mutable) GitHub release. Regenerate with
+# `mix emily.checksums` after release-nif.yml builds the artifacts
+# for emily 0.5.1.
+5ed23ebec669c6b66bd08fe0c76e53bb88dcad66f0ff911d47503056c377d6ad  emily-nif-0.5.1-aot-macos-arm64.tar.gz
+caa880188b5eda23648bc08ec9c59695e1afdce104b2e095fc68561997076b8d  emily-nif-0.5.1-jit-macos-arm64.tar.gz

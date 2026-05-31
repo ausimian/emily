@@ -21,11 +21,15 @@ built from source (in this repo / CI) or consumed as a hex package:
 - **Hex consumer (no `c_src/` in the tarball).** `mix compile` runs
   `:emily_nif`. The `compile.emily_nif` alias downloads the matching
   `emily-nif-<v>-<variant>-<target>.tar.gz` from the emily GitHub
-  release for the tag, verifies its SHA256 against the `.sha256`
-  sidecar fetched alongside it (no checksums baked into mix.exs —
-  the sidecar is the source of truth for the published asset), and
-  extracts into `priv/`. No compilation; no MLX source tree on the
-  consumer side.
+  release for the tag, verifies its SHA256 against the checksum pinned
+  in `native_checksums.txt` (shipped *inside* the hex package, so it's
+  covered by Hex's package hash in the consumer's `mix.lock` — a trust
+  root independent of the mutable release), validates the archive
+  entries against an allowlist (`libemily.so`/`libemily.dylib` +
+  `mlx.metallib`; rejects symlinks, hardlinks, `..` traversal, absolute
+  paths, and any unexpected entry), and extracts those files into
+  `priv/` via `:erl_tar`. No compilation; no MLX source tree on the
+  consumer side. See `Emily.NifArtifact`.
 
 The switch is driven by a `File.dir?("c_src")` check in mix.exs's
 `compilers/0` — the hex `package[:files]` list ships only `lib/` and
@@ -39,9 +43,12 @@ default `aot`) through `config/config.exs` and stash the atom as
 
 ## Cutting a release
 
-Consumers verify each NIF tarball against a `.sha256` sidecar
-fetched from the same GitHub release, so there is nothing in
-`mix.exs` that has to be updated per release beyond `@version`.
+Consumers verify each NIF tarball against the checksum pinned in
+`native_checksums.txt`, which ships in the hex package. That file
+must be regenerated for the new version's artifacts with `mix
+emily.checksums` and committed before `mix hex.publish` (step 4) —
+otherwise the consumer's `compile.emily_nif` step fails with "no
+pinned checksum for …".
 
 ### 1. Land changes on `main`
 
@@ -70,7 +77,9 @@ Each cell clones `:mlx_src`, builds MLX + the NIF from source
 (`scripts/build-mlx.sh` + `elixir_make`), tars
 `priv/libemily.* + priv/mlx.metallib` as
 `emily-nif-<v>-<variant>-<target>.tar.gz`, writes a `.sha256`
-sidecar, and uploads both to a **draft** GitHub release at
+sidecar (informational — consumers verify against the pinned
+`native_checksums.txt`, not the sidecar), and uploads both to a
+**draft** GitHub release at
 `https://github.com/ausimian/emily/releases/tag/<v>` — the URL the
 consumer's `compile.emily_nif` step fetches from.
 
@@ -87,17 +96,35 @@ iex -S mix
 # Nx.tensor([1.0, 2.0]) |> Nx.add(3) |> Nx.to_flat_list()
 ```
 
-`mix compile` fetches the `.sha256` sidecar first, then the tarball,
-verifies, extracts. A variant-mismatched consumer (`config :emily,
-variant: :jit`) should download the JIT tarball instead — worth
-spot-checking both lanes on the first release of a bump.
+`mix compile` reads the pinned checksum from `native_checksums.txt`,
+downloads the tarball, verifies, validates entries, extracts. A
+variant-mismatched consumer (`config :emily, variant: :jit`) should
+download the JIT tarball instead — worth spot-checking both lanes on
+the first release of a bump. (Until step 4 pins the new version's
+checksums, this verify step won't have a pin to check against; do the
+end-to-end verify against the published package after step 4, or
+temporarily point a throwaway project at the draft artifacts.)
 
-### 4. Promote the draft and publish
+### 4. Promote the draft, pin checksums, and publish
+
+Promote the release so its assets are public, pin their checksums into
+the package, then publish:
 
 ```sh
-gh release edit <v> --repo ausimian/emily --draft=false
+gh release edit <v> --repo ausimian/emily --draft=false   # assets go public
+mix emily.checksums                                        # writes native_checksums.txt
+git add native_checksums.txt
+git commit -m "Pin NIF checksums for <v>"
+git push
 mix hex.publish
 ```
+
+`mix emily.checksums` downloads each tarball from the (now-public)
+release and records its SHA256, so the hex package the consumer pulls
+verifies downloads against a trust root that lives in the immutable
+Hex package, not the mutable GitHub release. The pin lands as a small
+commit after the `Version <v>` commit; `mix hex.publish` packages the
+working tree, so the published package includes it.
 
 ### Rebuilding without retagging
 

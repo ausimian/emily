@@ -1,5 +1,17 @@
 ### Security
 
+- Precompiled NIF downloads are now verified against checksums pinned
+  inside the hex package (`native_checksums.txt`) rather than a `.sha256`
+  sidecar fetched from the same GitHub release as the tarball. Because
+  the package contents are covered by Hex's package hash in the
+  consumer's `mix.lock`, the trust root no longer lives in the mutable
+  release. The tarball is also extracted with `:erl_tar` against a strict
+  entry allowlist (`libemily.{so,dylib}` + `mlx.metallib`), rejecting
+  symlinks, hardlinks, `..` traversal, absolute paths, and unexpected
+  entries — closing a path-traversal/arbitrary-write vector in the old
+  `tar -xzf` extraction. New `mix emily.checksums` task regenerates the
+  pinned file per release.
+
 - Integer arguments crossing the NIF boundary are now range-checked
   before being narrowed from Elixir's `int64` to C++ `int`. Previously an
   out-of-range axis, count, or shape entry wrapped silently (e.g. an axis

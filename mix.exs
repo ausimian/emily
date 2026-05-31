@@ -208,7 +208,8 @@ defmodule Emily.MixProject do
     [
       licenses: ["MIT"],
       links: %{"GitHub" => @source_url},
-      files: ~w(lib mix.exs README.md ARCHITECTURE.md ROADMAP.md CHANGELOG.md LICENSE)
+      files:
+        ~w(lib mix.exs native_checksums.txt README.md ARCHITECTURE.md ROADMAP.md CHANGELOG.md LICENSE)
     ]
   end
 
@@ -368,41 +369,105 @@ defmodule Emily.MixProject do
     end
 
     asset = "emily-nif-#{@version}-#{variant}-#{target}.tar.gz"
-    base_url = "#{@source_url}/releases/download/#{@version}"
 
     cache = cache_dir()
     File.mkdir_p!(cache)
     tarball = Path.join(cache, asset)
-    sha_path = tarball <> ".sha256"
 
     priv = Path.join(Mix.Project.app_path(), "priv")
     File.mkdir_p!(priv)
 
-    # Fetch the sidecar on every compile — it's a tiny file and
-    # drives verification of the (much larger) tarball. Lets us
-    # re-verify a cached tarball against whatever's currently
-    # published, instead of trusting the local disk copy blind.
-    http_download!("#{base_url}/#{asset}.sha256", sha_path)
-    expected = sha_path |> File.read!() |> String.split() |> hd()
+    with_nif_artifact(fn ->
+      # Verify against the checksum pinned in the hex package, not a
+      # sidecar fetched from the same (mutable) release as the tarball.
+      expected = pinned_checksum!(asset)
 
-    unless File.exists?(tarball) and sha256_ok?(tarball, expected) do
-      Mix.shell().info("Downloading precompiled NIF #{asset}")
-      http_download!("#{base_url}/#{asset}", tarball)
-      verify_sha256!(tarball, expected)
-    end
+      unless File.exists?(tarball) and sha256_ok?(tarball, expected) do
+        Mix.shell().info("Downloading precompiled NIF #{asset}")
+        http_download!("#{@source_url}/releases/download/#{@version}/#{asset}", tarball)
+        verify_sha256!(tarball, expected)
+      end
 
-    case System.cmd("tar", ["-xzf", tarball, "-C", priv], stderr_to_stdout: true) do
-      {_, 0} ->
-        :ok
-
-      {output, code} ->
-        Mix.raise("""
-        tar extract failed (exit #{code}):
-        #{output}
-        """)
-    end
+      extract_nif!(tarball, priv)
+    end)
 
     {:ok, []}
+  end
+
+  # Expected SHA-256 for `asset`, read from the in-package
+  # `native_checksums.txt` (see `Emily.NifArtifact`) so trust is rooted in
+  # the Hex-immutable package rather than the mutable GitHub release.
+  defp pinned_checksum!(asset) do
+    path = Path.expand("native_checksums.txt", __DIR__)
+
+    unless File.exists?(path) do
+      Mix.raise("""
+      Missing native_checksums.txt — cannot verify the precompiled NIF.
+      A maintainer must pin checksums with `mix emily.checksums`.
+      """)
+    end
+
+    checksums = path |> File.read!() |> Emily.NifArtifact.parse_checksums()
+
+    case Emily.NifArtifact.expected(checksums, asset) do
+      {:ok, hex} ->
+        hex
+
+      :error ->
+        Mix.raise("""
+        No pinned checksum for #{asset} in native_checksums.txt.
+        The file may predate emily #{@version}; regenerate it with
+        `mix emily.checksums`.
+        """)
+    end
+  end
+
+  # Validate the tarball's entries against an allowlist, then extract only
+  # the allowlisted regular files via :erl_tar (no shelling to a
+  # $PATH-resolved `tar`). Guards against path-traversal, symlink, and
+  # unexpected-entry attacks in a tarball pulled from a mutable release.
+  defp extract_nif!(tarball, priv) do
+    charlist = String.to_charlist(tarball)
+
+    entries =
+      case :erl_tar.table(charlist, [:compressed, :verbose]) do
+        {:ok, table} ->
+          Enum.map(table, fn entry -> {to_string(elem(entry, 0)), elem(entry, 1)} end)
+
+        {:error, reason} ->
+          Mix.raise("Could not read NIF tarball #{tarball}: #{inspect(reason)}")
+      end
+
+    case Emily.NifArtifact.verify_entries(entries) do
+      :ok -> :ok
+      {:error, msg} -> Mix.raise("Refusing to extract NIF tarball: #{msg}")
+    end
+
+    files = Enum.map(Emily.NifArtifact.allowlist(), &String.to_charlist/1)
+    opts = [:compressed, {:cwd, String.to_charlist(priv)}, {:files, files}]
+
+    case :erl_tar.extract(charlist, opts) do
+      :ok -> :ok
+      {:error, reason} -> Mix.raise("NIF extract failed: #{inspect(reason)}")
+    end
+  end
+
+  # Load the pure helper module (`lib/` is not yet compiled at the
+  # `:emily_nif` compiler stage), then purge it (if we loaded it) so the
+  # regular elixir compiler can load its own copy without a
+  # "redefining module" warning.
+  defp with_nif_artifact(fun) do
+    preloaded? = Code.ensure_loaded?(Emily.NifArtifact)
+    unless preloaded?, do: Code.require_file("lib/emily/nif_artifact.ex", __DIR__)
+
+    try do
+      fun.()
+    after
+      unless preloaded? do
+        :code.purge(Emily.NifArtifact)
+        :code.delete(Emily.NifArtifact)
+      end
+    end
   end
 
   defp detect_nif_target! do
