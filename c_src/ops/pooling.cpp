@@ -21,8 +21,11 @@
 #include <fine.hpp>
 #include <mlx/mlx.h>
 
+#include <cstddef>
 #include <cstdint>
 #include <numeric>
+#include <stdexcept>
+#include <string>
 #include <vector>
 
 namespace mx = mlx::core;
@@ -56,6 +59,14 @@ mx::array do_pad(
     const mx::array &pad_value,
     mx::Stream &s) {
   int rank = static_cast<int>(a.ndim());
+  // A direct Native call can pass pad vectors shorter than the tensor
+  // rank; the per-axis loops below would then read out of bounds.
+  if (pad_lo.size() != static_cast<std::size_t>(rank) ||
+      pad_hi.size() != static_cast<std::size_t>(rank)) {
+    throw std::invalid_argument(
+        "pad: pad_lo/pad_hi length must equal tensor rank " +
+        std::to_string(rank));
+  }
   bool any_pad = false;
   for (int i = 0; i < rank; ++i) {
     if (pad_lo[i] > 0 || pad_hi[i] > 0) {
@@ -100,6 +111,25 @@ mx::array sliding_windows_view(
     std::vector<int64_t> &out_dims,
     mx::Stream &s) {
   int rank = static_cast<int>(padded.ndim());
+  // A direct Native call can pass window/stride/dilation vectors that
+  // don't match the tensor rank (out-of-bounds indexing below) or a zero
+  // stride (the `/ strides[i]` out-shape divide is an integer SIGFPE that
+  // bypasses the async catch ladder and crashes the BEAM).
+  const auto rank_sz = static_cast<std::size_t>(rank);
+  if (window_shape.size() != rank_sz || strides.size() != rank_sz ||
+      dilations.size() != rank_sz) {
+    throw std::invalid_argument(
+        "window: window_shape/strides/dilations length must equal tensor "
+        "rank " +
+        std::to_string(rank));
+  }
+  for (int i = 0; i < rank; ++i) {
+    if (window_shape[i] < 1 || strides[i] < 1 || dilations[i] < 1) {
+      throw std::invalid_argument(
+          "window: window dimensions, strides, and dilations must all be "
+          "positive");
+    }
+  }
   const auto &padded_shape = padded.shape();
   auto cs = contiguous_strides(padded_shape);
 

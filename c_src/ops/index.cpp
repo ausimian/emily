@@ -8,6 +8,8 @@
 #include <mlx/mlx.h>
 
 #include <cstdint>
+#include <stdexcept>
+#include <string>
 #include <vector>
 
 namespace mx = mlx::core;
@@ -48,6 +50,18 @@ fine::Term slice_update_nif(
        start = std::move(start)](mx::Stream &s) {
         const auto &update_shape = update->array.shape();
         mx::Shape start_shape = to_mlx_shape(start);
+        // `stop[i] = start[i] + update_shape[i]` indexes update_shape per
+        // start entry. A direct Native call can pass a `start` longer than
+        // the update/source rank, reading update_shape out of bounds.
+        if (start_shape.size() != src->array.ndim() ||
+            update->array.ndim() != src->array.ndim()) {
+          throw std::invalid_argument(
+              "slice_update: start length (" +
+              std::to_string(start_shape.size()) + ") and update rank (" +
+              std::to_string(update->array.ndim()) +
+              ") must both equal source rank (" +
+              std::to_string(src->array.ndim()) + ")");
+        }
         mx::Shape stop_shape;
         stop_shape.reserve(start_shape.size());
         for (size_t i = 0; i < start_shape.size(); ++i) {

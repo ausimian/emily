@@ -1,5 +1,14 @@
 ### Security
 
+- Native indexing and window NIFs now validate their vector arguments
+  against the tensor rank before indexing, and reject non-positive
+  strides, dilations, and window dimensions. Previously a direct
+  `Emily.Native` call with a malformed `slice_update` start, a short
+  pad/window vector, or a zero window stride could read a C++ vector out
+  of bounds or trigger an integer divide-by-zero (SIGFPE) — both of which
+  crash the whole BEAM VM rather than raising in the caller. They now
+  raise `ArgumentError`.
+
 - `Emily.Native.from_binary/3` now validates tensor shapes at the NIF
   boundary. Dimensions above `INT32_MAX` are rejected (previously they
   silently truncated through MLX's `int32` `ShapeElem`), and the element

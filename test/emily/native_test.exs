@@ -1000,6 +1000,70 @@ defmodule Emily.NativeTest do
     end
   end
 
+  # ---------- Boundary validation ----------
+
+  describe "boundary validation rejects malformed direct calls" do
+    test "slice_update rejects a start longer than the source rank" do
+      src = f32([1.0, 2.0, 3.0, 4.0], [2, 2])
+      update = f32([9.0], [1, 1])
+
+      err =
+        assert_raise ArgumentError, fn ->
+          Native.slice_update(worker(), src, update, [0, 0, 0])
+        end
+
+      assert err.message =~ "slice_update"
+    end
+
+    test "slice_update rejects an update whose rank differs from the source" do
+      src = f32([1.0, 2.0, 3.0, 4.0], [2, 2])
+      update = f32([9.0, 9.0], [2])
+
+      err =
+        assert_raise ArgumentError, fn ->
+          Native.slice_update(worker(), src, update, [0, 0])
+        end
+
+      assert err.message =~ "rank"
+    end
+
+    test "window_sum rejects a zero stride instead of crashing with SIGFPE" do
+      t = f32([1.0, 2.0, 3.0, 4.0], [4])
+      init = f32_scalar(0.0)
+
+      err =
+        assert_raise ArgumentError, fn ->
+          Native.window_sum(worker(), t, [2], [0], [0], [0], [1], init)
+        end
+
+      assert err.message =~ "positive"
+    end
+
+    test "window_sum rejects stride/window vectors that don't match the rank" do
+      t = f32([1.0, 2.0, 3.0, 4.0], [4])
+      init = f32_scalar(0.0)
+
+      err =
+        assert_raise ArgumentError, fn ->
+          Native.window_sum(worker(), t, [2], [1, 1], [0], [0], [1], init)
+        end
+
+      assert err.message =~ "rank"
+    end
+
+    test "window_sum rejects a pad vector shorter than the rank" do
+      t = f32([1.0, 2.0, 3.0, 4.0, 5.0, 6.0], [2, 3])
+      init = f32_scalar(0.0)
+
+      err =
+        assert_raise ArgumentError, fn ->
+          Native.window_sum(worker(), t, [1, 1], [1, 1], [0], [0, 0], [1, 1], init)
+        end
+
+      assert err.message =~ "rank"
+    end
+  end
+
   # ---------- Random ----------
 
   describe "random" do
