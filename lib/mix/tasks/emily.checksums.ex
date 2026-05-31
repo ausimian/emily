@@ -8,14 +8,13 @@ defmodule Mix.Tasks.Emily.Checksums do
   pinned in `native_checksums.txt`, which ships inside the hex package
   (and is therefore covered by Hex's package hash in the consumer's
   `mix.lock`). That roots trust independently of the GitHub release the
-  tarball is fetched from — see `Emily.NifArtifact`.
+  tarball is fetched from.
 
-  Run this as part of cutting a release, *after* `release-nif.yml` has
-  built and uploaded the tarballs for the tag and *before* `mix
-  hex.publish`, then commit the regenerated file:
-
-      mix emily.checksums
-      git add native_checksums.txt && git commit -m "Pin NIF checksums for <v>"
+  Run as part of cutting a release, *after* `release-nif.yml` has built
+  and uploaded the tarballs and the draft release is public. Normally you
+  don't invoke this directly — `mix emily.publish` runs it before `mix
+  hex.publish`. The generated file is git-ignored: it is packaged at
+  publish time, not committed.
 
   It downloads each supported tarball from the release and computes the
   checksum locally (it does not trust the `.sha256` sidecars).
