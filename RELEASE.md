@@ -1,3 +1,15 @@
+This release is a security-hardening pass over the native (NIF) boundary
+and the build/release pipeline: direct `Emily.Native` calls now validate
+their arguments instead of trusting Elixir-side normalization,
+precompiled-NIF downloads verify against a checksum pinned in the hex
+package (a trust root independent of the GitHub release), and the
+per-stream worker is bounded and tears down without blocking a BEAM
+scheduler. It is backward compatible, but two behaviour changes matter
+for high-concurrency callers: the per-worker async queue is now bounded
+(`worker_queue_limit`, default 8192) and rejects when full, and a stopped
+or dropped worker replies `{:error, :stopped}` to queued callers instead
+of running their work.
+
 ### Added
 
 - `Emily.Stream.close/1` stops a stream's worker thread deterministically
