@@ -85,8 +85,27 @@ defmodule Emily.Native do
 
   # --- Worker ------------------------------------------------------
 
+  # Default per-worker queue depth. Each op is awaited synchronously, so
+  # a process contributes at most one queued item — this cap is reached
+  # only by many processes dispatching to one worker concurrently. Tune
+  # with `config :emily, worker_queue_limit: N`.
+  @default_worker_queue_limit 8_192
+
   @spec create_worker() :: worker()
-  def create_worker, do: nif()
+  def create_worker do
+    create_worker(Application.get_env(:emily, :worker_queue_limit, @default_worker_queue_limit))
+  end
+
+  @doc false
+  @spec create_worker(pos_integer()) :: worker()
+  def create_worker(_queue_limit), do: nif()
+
+  @doc false
+  @spec stop_worker(worker()) :: :ok
+  def stop_worker(_w), do: nif()
+
+  @spec worker_queue_depth(worker()) :: non_neg_integer()
+  def worker_queue_depth(_w), do: nif()
 
   # --- Creation ----------------------------------------------------
 

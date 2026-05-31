@@ -115,4 +115,26 @@ defmodule Emily.Stream do
       end
     end
   end
+
+  @doc """
+  Stop the stream's worker thread.
+
+  Cancels any operations still queued on the stream — their awaiting
+  processes get a `RuntimeError` (`:stopped`) rather than hanging — lets
+  the in-flight op finish, and then tears the worker down off the BEAM
+  schedulers. Idempotent; using the stream after `close/1` raises.
+
+  Closing is optional: a stream's worker is also stopped when the
+  `%Emily.Stream{}` is garbage collected. `close/1` lets you release the
+  worker deterministically instead of waiting for GC.
+
+  ## Examples
+
+      iex> stream = Emily.Stream.new(:gpu)
+      iex> Emily.Stream.close(stream)
+      :ok
+
+  """
+  @spec close(t()) :: :ok
+  def close(%__MODULE__{worker: w}), do: Emily.Native.stop_worker(w)
 end

@@ -46,6 +46,8 @@ defmodule Emily.Native.Async do
   """
   @spec call(reference(), context() | nil) :: term()
   def call(ref, context \\ nil) do
+    timeout = Application.get_env(:emily, :await_timeout, :infinity)
+
     receive do
       {^ref, {:ok, result}} ->
         result
@@ -56,8 +58,19 @@ defmodule Emily.Native.Async do
       {^ref, {:error, {:runtime, message}}} ->
         raise RuntimeError, add_context(message, context)
 
+      {^ref, {:error, :stopped}} ->
+        raise RuntimeError,
+              add_context("operation cancelled: the worker stream was stopped", context)
+
       {^ref, {:error, :unknown}} ->
         raise RuntimeError, add_context("unknown exception thrown within NIF", context)
+    after
+      # Opt-in (default `:infinity`, i.e. never fires) — guards against a
+      # reply that never comes. Configure with `config :emily,
+      # await_timeout: ms`.
+      timeout ->
+        raise RuntimeError,
+              add_context("timed out after #{timeout}ms waiting for the worker", context)
     end
   end
 

@@ -110,19 +110,29 @@ fine::Term async_reply(ErlNifEnv *env,
   try {
     w->run_async([msg_env, ref_in_msg, caller,
                   build_payload = std::forward<BuildPayload>(build_payload)]
-                 (mx::Stream &s) mutable {
+                 (mx::Stream &s, bool cancelled) mutable {
       ERL_NIF_TERM reply;
-      try {
-        ERL_NIF_TERM payload = build_payload(s, msg_env);
-        ERL_NIF_TERM ok_tuple = enif_make_tuple2(
-            msg_env, enif_make_atom(msg_env, "ok"), payload);
-        reply = enif_make_tuple2(msg_env, ref_in_msg, ok_tuple);
-      } catch (...) {
+      if (cancelled) {
+        // The worker was stopped before this task ran. Report
+        // {:error, :stopped} so the awaiting process unblocks instead
+        // of hanging on a reply that will never come.
         reply = enif_make_tuple2(
             msg_env, ref_in_msg,
-            enif_make_tuple2(
-                msg_env, enif_make_atom(msg_env, "error"),
-                __async::error_reason_from_current_exception(msg_env)));
+            enif_make_tuple2(msg_env, enif_make_atom(msg_env, "error"),
+                             enif_make_atom(msg_env, "stopped")));
+      } else {
+        try {
+          ERL_NIF_TERM payload = build_payload(s, msg_env);
+          ERL_NIF_TERM ok_tuple = enif_make_tuple2(
+              msg_env, enif_make_atom(msg_env, "ok"), payload);
+          reply = enif_make_tuple2(msg_env, ref_in_msg, ok_tuple);
+        } catch (...) {
+          reply = enif_make_tuple2(
+              msg_env, ref_in_msg,
+              enif_make_tuple2(
+                  msg_env, enif_make_atom(msg_env, "error"),
+                  __async::error_reason_from_current_exception(msg_env)));
+        }
       }
 
       // enif_send invalidates msg_env on success but does not take

@@ -1,4 +1,28 @@
+### Added
+
+- `Emily.Stream.close/1` stops a stream's worker thread deterministically
+  instead of waiting for garbage collection: queued operations are
+  cancelled (their callers get a `RuntimeError`), the in-flight op
+  finishes, and the OS thread is joined off the BEAM schedulers.
+- `config :emily, worker_queue_limit: N` (default `8192`) bounds the
+  per-worker async queue, and `config :emily, await_timeout: ms` (default
+  `:infinity`) sets an optional timeout for awaiting native results.
+
 ### Security
+
+- Worker-thread teardown no longer blocks a BEAM scheduler. The resource
+  destructor previously drained the worker's entire queue and joined the
+  OS thread inline, so collecting a busy stream during GC could stall a
+  scheduler. Workers are now joined off-scheduler by a dedicated reaper
+  (itself joined at NIF unload), and on stop the worker cancels its
+  queued tasks — replying `{:error, :stopped}` — instead of running them.
+
+- The async NIF worker queue is now bounded (`worker_queue_limit`, reject
+  when full) so a flood of operations can't grow it without limit and pin
+  host/GPU memory, and a stopped or dropped worker now replies
+  `{:error, :stopped}` to every queued caller instead of leaving it
+  blocked forever. `Emily.Native.worker_queue_depth/1` exposes the depth
+  for observability.
 
 - The dev/CI source-build path now refuses to trust an MLX install
   directory it doesn't own and keeps the build cache `0700`, so a shared
