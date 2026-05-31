@@ -17,6 +17,9 @@ defmodule Emily.Stream do
     * `with_stream/2` — install a stream for the current process for
       the duration of a function call, then restore the previous
       stream (or the default) on exit. Nesting is safe.
+    * `close/1` — stop a stream's worker deterministically instead of
+      waiting for garbage collection: queued ops are cancelled (their
+      callers raise) and the OS thread is joined off the BEAM schedulers.
 
   ## How it works
 
@@ -27,6 +30,25 @@ defmodule Emily.Stream do
   allocated by one stream can be read by another (MLX arrays are
   refcounted and thread-safe for reads), but lazy tensors must be
   evaluated on the stream that created them.
+
+  ## Configuration
+
+  Two application-env keys tune worker behaviour (set them in your
+  `config/config.exs`):
+
+    * `:worker_queue_limit` (default `8192`) — the maximum number of
+      operations that may be queued on a single worker before further
+      dispatch is rejected with a `RuntimeError`. Each op is awaited
+      synchronously, so a process holds at most one queued item; this cap
+      is reached only by many processes dispatching to one worker
+      concurrently, and provides back-pressure against a runaway producer.
+    * `:await_timeout` (default `:infinity`) — milliseconds to wait for a
+      native result before raising. `:infinity` never times out; set a
+      finite value to bound how long a caller can block on one operation.
+
+  ```elixir
+  config :emily, worker_queue_limit: 8192, await_timeout: :infinity
+  ```
 
   ## Concurrent serving patterns
 
