@@ -44,7 +44,7 @@ defmodule Emily.MixProject do
   end
 
   def cli do
-    [preferred_envs: [docs: :docs, "hex.publish": :docs, precommit: :test]]
+    [preferred_envs: [docs: :docs, "hex.publish": :docs, "emily.publish": :docs, precommit: :test]]
   end
 
   def application do
@@ -146,14 +146,16 @@ defmodule Emily.MixProject do
       # *deliberately* preserved across `mix clean` (rebuilding from
       # source is ~5–7 min). Wipe it explicitly with `mix clean.mlx`.
       "clean.mlx": &clean_mlx/1,
-      # Regenerate the pinned NIF checksums from the freshly-built release
-      # artifacts on every publish, so `native_checksums.txt` can never go
-      # stale and there is nothing for the maintainer to remember. The
-      # repeated `hex.publish` runs the real task — Mix resolves a
-      # same-named step to the underlying task rather than recursing.
-      # `emily.checksums` downloads the published artifacts, so this also
-      # refuses to publish until the release assets are public.
-      "hex.publish": ["emily.checksums", "hex.publish"]
+      # `mix emily.publish` regenerates the pinned NIF checksums from the
+      # freshly-built release artifacts and then publishes, so
+      # `native_checksums.txt` (git-ignored) is always current with nothing
+      # to commit by hand. `emily.checksums` downloads the published
+      # artifacts, so it also refuses to run until the release assets are
+      # public. A plain `mix hex.publish` skips the regen but fails closed —
+      # `hex.build` errors on the missing checksums file. (This is a
+      # distinct task name on purpose: a self-referential `hex.publish`
+      # alias can't resolve back to the Hex archive task.)
+      "emily.publish": ["emily.checksums", "hex.publish"]
     ]
   end
 
