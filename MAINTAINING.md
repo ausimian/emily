@@ -50,10 +50,11 @@ default `aot`) through `config/config.exs` and stash the atom as
 ## Cutting a release
 
 Consumers verify each NIF tarball against the checksum pinned in
-`native_checksums.txt`, which ships in the hex package. The
-`mix emily.publish` alias regenerates that file from the freshly-built
-release artifacts before publishing (step 4), so there is nothing to
-update or commit by hand — the file is git-ignored and can't go stale.
+`native_checksums.txt`, which ships in the hex package. Publishing is two
+commands (step 4): `mix emily.publish` regenerates that file from the
+freshly-built release artifacts, then `mix hex.publish` publishes — so
+there is nothing to update or commit by hand (the file is git-ignored and
+can't go stale).
 
 ### 1. Land changes on `main`
 
@@ -116,20 +117,28 @@ Promote the release so its assets are public, then publish:
 
 ```sh
 gh release edit <v> --repo ausimian/emily --draft=false   # assets go public
-mix emily.publish                                          # regenerate checksums, then publish
+mix emily.publish                                          # regenerate native_checksums.txt
+mix hex.publish                                            # publish package + docs
 ```
 
-`mix emily.publish` runs `mix emily.checksums` first: it downloads each
-tarball from the (now-public) release, records its SHA256 into
-`native_checksums.txt`, and `mix hex.publish` then packages that file.
-(Use `mix emily.publish`, not a plain `mix hex.publish` — the latter
-skips the regen, though it fails closed since `hex.build` errors on the
-missing checksums file.)
-So the consumer verifies downloads against a trust root that lives in
-the immutable Hex package, not the mutable GitHub release — with no file
-to maintain and nothing to commit. The file is git-ignored and
-regenerated on every publish, so it can't go stale. If the draft isn't
-public yet, `mix emily.checksums` 404s and aborts the publish.
+`mix emily.publish` runs `mix emily.checksums`: it downloads each tarball
+from the (now-public) release and records its SHA256 into
+`native_checksums.txt`. Then `mix hex.publish` packages that file and
+publishes the package + docs.
+
+These are two separate commands on purpose — they can't be folded into one
+alias. Mix only loads the Hex archive for the task *named on the command
+line*, so a `hex.publish` step chained inside an alias (whose CLI name is
+`emily.publish`) fails with `** (Mix) The task "hex.publish" could not be
+found`. Running `mix hex.publish` directly is what loads Hex. `hex.publish`
+keeps its `:docs` `preferred_env`, so it publishes docs as well as the
+package.
+
+So the consumer verifies downloads against a trust root that lives in the
+immutable Hex package, not the mutable GitHub release — with no file to
+maintain and nothing to commit. The file is git-ignored and regenerated on
+every publish, so it can't go stale. If the draft isn't public yet,
+`mix emily.checksums` 404s and aborts before you publish.
 
 ### Rebuilding without retagging
 
