@@ -3,7 +3,7 @@
 ```elixir
 Mix.install(
   [
-    {:emily, "~> 0.4"},
+    {:emily, "~> 0.6"},
     {:axon, "~> 0.8"},
     {:scidata, "~> 0.1"},
     {:nx, "~> 0.12"},
