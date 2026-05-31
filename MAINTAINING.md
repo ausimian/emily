@@ -51,8 +51,8 @@ default `aot`) through `config/config.exs` and stash the atom as
 
 Consumers verify each NIF tarball against the checksum pinned in
 `native_checksums.txt`, which ships in the hex package. The
-`hex.publish` alias regenerates that file from the freshly-built
-release artifacts on every publish (step 4), so there is nothing to
+`mix emily.publish` alias regenerates that file from the freshly-built
+release artifacts before publishing (step 4), so there is nothing to
 update or commit by hand — the file is git-ignored and can't go stale.
 
 ### 1. Land changes on `main`
@@ -116,12 +116,15 @@ Promote the release so its assets are public, then publish:
 
 ```sh
 gh release edit <v> --repo ausimian/emily --draft=false   # assets go public
-mix hex.publish                                            # alias pins checksums, then publishes
+mix emily.publish                                          # regenerate checksums, then publish
 ```
 
-The `hex.publish` alias runs `mix emily.checksums` first: it downloads
-each tarball from the (now-public) release, records its SHA256 into
+`mix emily.publish` runs `mix emily.checksums` first: it downloads each
+tarball from the (now-public) release, records its SHA256 into
 `native_checksums.txt`, and `mix hex.publish` then packages that file.
+(Use `mix emily.publish`, not a plain `mix hex.publish` — the latter
+skips the regen, though it fails closed since `hex.build` errors on the
+missing checksums file.)
 So the consumer verifies downloads against a trust root that lives in
 the immutable Hex package, not the mutable GitHub release — with no file
 to maintain and nothing to commit. The file is git-ignored and
