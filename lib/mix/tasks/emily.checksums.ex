@@ -12,9 +12,9 @@ defmodule Mix.Tasks.Emily.Checksums do
 
   Run as part of cutting a release, *after* `release-nif.yml` has built
   and uploaded the tarballs and the draft release is public. Normally you
-  don't invoke this directly — `mix emily.publish` runs it before `mix
-  hex.publish`. The generated file is git-ignored: it is packaged at
-  publish time, not committed.
+  invoke it via `mix emily.publish`, then publish separately with `mix
+  hex.publish` (two steps on purpose — see MAINTAINING.md). The generated
+  file is git-ignored: it is packaged at publish time, not committed.
 
   It downloads each supported tarball from the release and computes the
   checksum locally (it does not trust the `.sha256` sidecars).
