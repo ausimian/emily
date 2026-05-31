@@ -19,6 +19,11 @@ erl_crash.dump
 # Ignore package tarball (built via "mix hex.build").
 emily-*.tar
 
+# Pinned NIF checksums are (re)generated at publish time by
+# `mix emily.checksums` (wired into the hex.publish alias) and packaged,
+# but never committed — so they can't go stale. See MAINTAINING.md.
+native_checksums.txt
+
 # Temporary files, for example, from tests.
 /tmp/
 

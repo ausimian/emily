@@ -44,11 +44,10 @@ default `aot`) through `config/config.exs` and stash the atom as
 ## Cutting a release
 
 Consumers verify each NIF tarball against the checksum pinned in
-`native_checksums.txt`, which ships in the hex package. That file
-must be regenerated for the new version's artifacts with `mix
-emily.checksums` and committed before `mix hex.publish` (step 4) —
-otherwise the consumer's `compile.emily_nif` step fails with "no
-pinned checksum for …".
+`native_checksums.txt`, which ships in the hex package. The
+`hex.publish` alias regenerates that file from the freshly-built
+release artifacts on every publish (step 4), so there is nothing to
+update or commit by hand — the file is git-ignored and can't go stale.
 
 ### 1. Land changes on `main`
 
@@ -100,31 +99,28 @@ iex -S mix
 downloads the tarball, verifies, validates entries, extracts. A
 variant-mismatched consumer (`config :emily, variant: :jit`) should
 download the JIT tarball instead — worth spot-checking both lanes on
-the first release of a bump. (Until step 4 pins the new version's
-checksums, this verify step won't have a pin to check against; do the
-end-to-end verify against the published package after step 4, or
-temporarily point a throwaway project at the draft artifacts.)
+the first release of a bump. (The pin only ever exists in the
+*published* package — `native_checksums.txt` is git-ignored and
+generated during `mix hex.publish` — so run this end-to-end verify
+against the published package, i.e. after step 4.)
 
-### 4. Promote the draft, pin checksums, and publish
+### 4. Promote the draft and publish
 
-Promote the release so its assets are public, pin their checksums into
-the package, then publish:
+Promote the release so its assets are public, then publish:
 
 ```sh
 gh release edit <v> --repo ausimian/emily --draft=false   # assets go public
-mix emily.checksums                                        # writes native_checksums.txt
-git add native_checksums.txt
-git commit -m "Pin NIF checksums for <v>"
-git push
-mix hex.publish
+mix hex.publish                                            # alias pins checksums, then publishes
 ```
 
-`mix emily.checksums` downloads each tarball from the (now-public)
-release and records its SHA256, so the hex package the consumer pulls
-verifies downloads against a trust root that lives in the immutable
-Hex package, not the mutable GitHub release. The pin lands as a small
-commit after the `Version <v>` commit; `mix hex.publish` packages the
-working tree, so the published package includes it.
+The `hex.publish` alias runs `mix emily.checksums` first: it downloads
+each tarball from the (now-public) release, records its SHA256 into
+`native_checksums.txt`, and `mix hex.publish` then packages that file.
+So the consumer verifies downloads against a trust root that lives in
+the immutable Hex package, not the mutable GitHub release — with no file
+to maintain and nothing to commit. The file is git-ignored and
+regenerated on every publish, so it can't go stale. If the draft isn't
+public yet, `mix emily.checksums` 404s and aborts the publish.
 
 ### Rebuilding without retagging
 

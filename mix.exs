@@ -145,7 +145,15 @@ defmodule Emily.MixProject do
       # The MLX install dir lives in the user-level cache and is
       # *deliberately* preserved across `mix clean` (rebuilding from
       # source is ~5–7 min). Wipe it explicitly with `mix clean.mlx`.
-      "clean.mlx": &clean_mlx/1
+      "clean.mlx": &clean_mlx/1,
+      # Regenerate the pinned NIF checksums from the freshly-built release
+      # artifacts on every publish, so `native_checksums.txt` can never go
+      # stale and there is nothing for the maintainer to remember. The
+      # repeated `hex.publish` runs the real task — Mix resolves a
+      # same-named step to the underlying task rather than recursing.
+      # `emily.checksums` downloads the published artifacts, so this also
+      # refuses to publish until the release assets are public.
+      "hex.publish": ["emily.checksums", "hex.publish"]
     ]
   end
 
