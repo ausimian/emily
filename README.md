@@ -105,15 +105,18 @@ mix compile
 On a cold build Emily downloads the matching precompiled tarball
 (`emily-nif-<version>-<variant>-<target>.tar.gz`) from this repo's
 GitHub release for the pinned version, verifies its SHA256 against
-the `.sha256` sidecar fetched alongside it (no checksums baked into
-`mix.exs` — the sidecar is the source of truth for the published
-asset), and extracts `libemily.{so,dylib}` + `mlx.metallib` into
-`priv/`. Subsequent builds reuse the cached tarball under
-`$EMILY_CACHE` (default `$(getconf DARWIN_USER_CACHE_DIR)emily/` on
-macOS, `${XDG_CACHE_HOME:-~/.cache}/emily/` on Linux). The sidecar is
-re-fetched on every compile and the cached tarball is re-verified
-against it, so a republish with a new checksum invalidates a stale
-cache automatically.
+the checksum pinned in `native_checksums.txt` — a file shipped
+*inside* the hex package, so the trust root is covered by the
+consumer's `mix.lock` package hash rather than the mutable GitHub
+release — and extracts `libemily.{so,dylib}` + `mlx.metallib` into
+`priv/`. Extraction goes through `:erl_tar` against a strict entry
+allowlist (rejecting symlinks, hardlinks, `..` traversal, absolute
+paths, and unexpected entries) rather than shelling out to `tar`.
+Subsequent builds reuse the cached tarball under `$EMILY_CACHE`
+(default `$(getconf DARWIN_USER_CACHE_DIR)emily/` on macOS,
+`${XDG_CACHE_HOME:-~/.cache}/emily/` on Linux), re-verifying it
+against the pinned checksum so a republish with a new checksum
+invalidates a stale cache automatically.
 
 Override the cache location with `EMILY_CACHE=/some/path mix compile`.
 
@@ -238,6 +241,15 @@ a plain `receive`. No BEAM scheduler (regular or dirty) blocks on MLX
 work — callers see the same synchronous semantics as before, but the
 scheduler is free to run other processes while the GPU is busy.
 
+Each worker's queue is **bounded** by `config :emily,
+worker_queue_limit: N` (default `8192`); once full, further enqueues
+are rejected rather than growing the queue without limit (and pinning
+host/GPU memory). A worker that is stopped or dropped replies
+`{:error, :stopped}` to everything still queued instead of leaving
+those callers blocked. `config :emily, await_timeout: ms` (default
+`:infinity`) optionally caps how long a caller waits for a native
+result.
+
 Because the MLX stream is pinned to its worker thread, MLX's
 per-thread `CommandEncoder` state stays consistent regardless of how
 the BEAM migrates Elixir processes between schedulers.
@@ -298,15 +310,20 @@ MyApp.StreamWorker.run(pick_worker(), "The quick brown fox…")
 Create streams once at worker init, not per-request —
 `Emily.Stream.new/1` spawns an OS thread.
 
-**Stream lifecycle.** `Emily.Stream` has no explicit release API;
-cleanup piggybacks on BEAM GC of the NIF resource held in the
-struct. In the pattern above, the stream lives as long as its owning
-worker process: when the worker terminates (crash, supervisor
-shutdown, or `GenServer.stop/1`), the process heap is reclaimed, the
-resource's refcount drops to zero, and the NIF destructor joins the
-dedicated OS thread. A supervised restart therefore drops the old
-stream and allocates a fresh one in the child's `init/1`. To drop a
-stream deliberately, terminate the process that owns it.
+**Stream lifecycle.** `Emily.Stream.close/1` stops a stream's worker
+deterministically: it cancels any still-queued ops (their awaiting
+callers get a `RuntimeError`), lets the in-flight op finish, and then
+joins the OS thread. Closing is optional — if you never call it,
+cleanup piggybacks on BEAM GC of the NIF resource held in the struct.
+In the pattern above, the stream lives as long as its owning worker
+process: when the worker terminates (crash, supervisor shutdown, or
+`GenServer.stop/1`), the process heap is reclaimed, the resource's
+refcount drops to zero, and the worker is torn down. Either way the
+OS thread is joined **off the BEAM schedulers** by a dedicated reaper,
+so collecting (or closing) a busy stream never stalls a scheduler. A
+supervised restart drops the old stream and allocates a fresh one in
+the child's `init/1`. To drop a stream deliberately, call
+`Emily.Stream.close/1` or terminate the process that owns it.
 
 ### Pooled servings — K weight copies, one default queue
 
