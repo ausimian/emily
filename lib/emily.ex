@@ -187,4 +187,29 @@ defmodule Emily do
       {Native.eval(Emily.MlxStream.default_worker(), tensor), %{}}
     end)
   end
+
+  @doc """
+  Schedule evaluation of `tensors` *without* blocking on the GPU.
+
+  Hands the lazy graphs to the device's command queue and returns as soon
+  as the work is enqueued — not when it finishes (contrast `eval/1`, which
+  waits). This lets a caller keep dispatching the next step's ops while the
+  GPU computes the current one; block only when you actually read a value
+  on the host (`to_binary/1` / `eval/1`). Pass every output of a step
+  (e.g. logits plus all KV-cache buffers) in one call.
+
+  ## Examples
+
+      iex> a = Nx.tensor([1.0, 2.0, 3.0], backend: Emily.Backend)
+      iex> b = a |> Nx.multiply(2.0) |> Nx.add(1.0)
+      iex> Emily.async_eval([b.data.ref])
+      :ok
+
+  """
+  @spec async_eval([t()]) :: :ok
+  def async_eval(tensors) when is_list(tensors) do
+    :telemetry.span([:emily, :async_eval], %{}, fn ->
+      {Native.async_eval(Emily.MlxStream.default_worker(), tensors), %{}}
+    end)
+  end
 end

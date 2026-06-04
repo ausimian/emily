@@ -83,6 +83,16 @@ defmodule Emily.Native do
   @spec eval(worker(), tensor()) :: :ok
   def eval(w, tensor), do: await(eval_nif(w, tensor))
 
+  @doc false
+  @spec async_eval_nif(worker(), [tensor()]) :: reference()
+  def async_eval_nif(_w, _tensors), do: nif()
+
+  # Schedule (non-blocking) evaluation of several lazy graphs at once: the
+  # GPU work is queued and this returns as soon as it's enqueued, not when
+  # it finishes. See `async_eval_nif` in c_src/emily_nif.cpp.
+  @spec async_eval(worker(), [tensor()]) :: :ok
+  def async_eval(w, tensors), do: await(async_eval_nif(w, tensors))
+
   # --- Worker ------------------------------------------------------
 
   # Default per-worker queue depth. Each op is awaited synchronously, so
