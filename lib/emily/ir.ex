@@ -494,7 +494,11 @@ defmodule Emily.IR do
     {start_refs, state} = Enum.map_reduce(start_indices, state, &lower_start_index/2)
     {start_arr, state} = emit(state, :concatenate, start_refs, [[0]])
 
-    axes = Enum.to_list(0..(tuple_size(t.shape) - 1))
+    # All put_slice routes through the dynamic slice_update kernel (start
+    # indices may be runtime inputs). For all-static starts the Evaluator
+    # uses the static kernel instead, but the two are bit-identical for the
+    # in-bounds writes Nx.put_slice produces.
+    axes = Enum.to_list(0..(tuple_size(t.shape) - 1)//1)
     emit_coerced(state, :dyn_slice_update, [rsrc, rupd, start_arr], [axes], type)
   end
 
@@ -660,9 +664,11 @@ defmodule Emily.IR do
   end
 
   # One s32 `[1]` start index per put_slice axis. Integer starts become a
-  # const `[1]` scalar; scalar-tensor (dynamic) starts are cast to s32 and
-  # reshaped to `[1]`. The caller concatenates them into the `[ndim]` start
-  # array MLX's dynamic slice_update consumes.
+  # const `[1]` scalar (the Expr path delivers static starts as :constant
+  # `%T{}` nodes, so this clause is mainly for hand-built IR); scalar-tensor
+  # (dynamic) starts are cast to s32 and reshaped to `[1]`. The caller
+  # concatenates them into the `[ndim]` start array MLX's dynamic
+  # slice_update consumes.
   defp lower_start_index(i, state) when is_integer(i) do
     materialize_const(Nx.tensor([i], type: :s32, backend: Nx.BinaryBackend), {1}, {:s, 32}, state)
   end
