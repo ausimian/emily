@@ -127,4 +127,48 @@ defmodule Emily.Fast.RoPETest do
       assert_close(fused, expected, tol: @f32_tol)
     end
   end
+
+  describe "fast_rope_int/8 (integer offset, incremental decode)" do
+    # Incremental decode ropes one token at a time at an integer absolute
+    # position. It must be correct for seq == 1 — fed the 4D
+    # {1, heads, seq, head_dim} layout (in 3D, MLX 0.31 mis-rotates seq == 1).
+    # This pins the decode-vs-prefill consistency a generation loop relies on:
+    # a single token roped at offset k must equal position k of the full
+    # sequence roped at offset 0.
+    test "single-token rope at offset k equals position k of a full-sequence rope" do
+      dims = 32
+      heads = 2
+      seq = 8
+      k = 5
+      w = Emily.MlxStream.default_worker()
+
+      freqs =
+        Nx.iota({div(dims, 2)}, type: :f32)
+        |> Nx.multiply(2.0)
+        |> Nx.divide(dims)
+        |> then(&Nx.pow(10_000.0, &1))
+
+      x = Nx.iota({1, heads, seq, dims}, type: :f32) |> Nx.divide(100)
+
+      wrap = fn r, shape ->
+        %Nx.Tensor{
+          data: %Emily.Backend{ref: r},
+          shape: shape,
+          type: Emily.Native.dtype(r),
+          names: List.duplicate(nil, tuple_size(shape))
+        }
+      end
+
+      rope_int = fn t, offset, shape ->
+        Emily.Native.fast_rope_int(w, t.data.ref, dims, false, nil, 1.0, offset, freqs.data.ref)
+        |> wrap.(shape)
+      end
+
+      full = rope_int.(x, 0, {1, heads, seq, dims})
+      tok = Nx.slice(x, [0, 0, k, 0], [1, heads, 1, dims])
+      single = rope_int.(tok, k, {1, heads, 1, dims})
+
+      assert_close(single, Nx.slice(full, [0, 0, k, 0], [1, heads, 1, dims]), tol: @f32_tol)
+    end
+  end
 end

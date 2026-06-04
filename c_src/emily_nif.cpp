@@ -144,4 +144,26 @@ fine::Term eval_nif(ErlNifEnv *env,
 }
 FINE_NIF(eval_nif, 0);
 
+// async_eval_nif/2 — schedule evaluation of the lazy graphs rooted at
+// these tensors *without* blocking on the GPU. Unlike eval_nif (which
+// calls mx::eval and waits for the GPU before replying), this calls
+// mx::async_eval: the worker hands the graphs to the Metal command queue
+// and the NIF replies {ref, {:ok, :ok}} as soon as the work is *queued*,
+// not finished. Callers drive an autoregressive loop by scheduling the
+// next step's outputs here and only blocking (via to_binary/eval) on the
+// value they actually need on the host — so dispatch of step N+1 overlaps
+// the GPU compute of step N. Takes a list so one call schedules a step's
+// logits + every KV-cache buffer together.
+fine::Term async_eval_nif(ErlNifEnv *env,
+                          fine::ResourcePtr<WorkerThread> w,
+                          std::vector<fine::ResourcePtr<Tensor>> tensors) {
+  return emily::async_reply(
+      env, w,
+      [tensors = std::move(tensors)](mx::Stream &, ErlNifEnv *msg_env) {
+        mx::async_eval(emily::unwrap_all(tensors));
+        return fine::encode(msg_env, emily::atoms::ok);
+      });
+}
+FINE_NIF(async_eval_nif, 0);
+
 FINE_INIT("Elixir.Emily.Native");

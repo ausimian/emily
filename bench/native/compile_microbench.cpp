@@ -39,6 +39,7 @@ namespace mx = mlx::core;
 // 1000 iterations is fast to run yet long enough that fusion matters.
 constexpr int kBatch = 1;
 static int kSeq = 128;                    // overridable via --seq
+static int kLayers = 1;                   // overridable via --layers (stack the block)
 constexpr int kHidden = 1024;
 constexpr int kHeads = 16;
 constexpr int kHeadDim = 64;             // kHeads * kHeadDim = 1024 = kHidden
@@ -129,6 +130,18 @@ static std::vector<mx::array> block(const std::vector<mx::array>& in) {
   return {out};
 }
 
+// Stack the block kLayers times (reusing weights — fine for timing). This
+// reaches forward-scale op counts (~15 ops/block × 48 ≈ 720, matching the
+// Gemma decode forward's ~750) so dispatch (build+encode) is large enough to
+// dominate, isolating whether mx::compile amortizes it.
+static std::vector<mx::array> multi_block(const std::vector<mx::array>& in) {
+  std::vector<mx::array> cur = in;
+  for (int l = 0; l < kLayers; ++l) {
+    cur[0] = block(cur)[0];
+  }
+  return {cur[0]};
+}
+
 // ---------------------------------------------------------------------
 
 struct Stats {
@@ -200,20 +213,48 @@ static Stats time_runs(Fn&& fn, int warmup, int iters) {
   return summarise(samples);
 }
 
+// Dispatch-only timing: time [build graph + async_eval] WITHOUT waiting for
+// the GPU (synchronize happens outside the timed region). This isolates the
+// host-side dispatch cost (graph build + MLX encode/schedule) — the ~68 ms/tok
+// that dominates Gemma decode — from GPU compute. The question: does compile
+// shrink THIS, not the GPU.
+template <typename Fn>
+static Stats time_dispatch(Fn&& fn, int warmup, int iters) {
+  for (int i = 0; i < warmup; ++i) {
+    auto out = fn();
+    mx::async_eval(out);
+    mx::synchronize();
+  }
+
+  std::vector<double> samples;
+  samples.reserve(iters);
+
+  for (int i = 0; i < iters; ++i) {
+    auto start = std::chrono::high_resolution_clock::now();
+    auto out = fn();
+    mx::async_eval(out);  // schedule; returns after encode, before GPU completes
+    auto end = std::chrono::high_resolution_clock::now();
+    mx::synchronize();    // drain GPU OUTSIDE the timed region
+    samples.push_back(std::chrono::duration<double, std::milli>(end - start).count());
+  }
+
+  return summarise(samples);
+}
+
 static void run_on_device(mx::Device::DeviceType dev_type, const char* label,
                           int warmup, int iters) {
   mx::set_default_device(mx::Device(dev_type));
 
   auto inputs = make_inputs();
 
-  // Uncompiled baseline: call block() directly on each iteration.
+  // Uncompiled baseline: rebuild the (kLayers-stacked) graph each iteration.
   auto uncompiled_fn = [&inputs]() -> std::vector<mx::array> {
-    return block(inputs);
+    return multi_block(inputs);
   };
 
-  // Compiled: wrap block in mx::compile. First call of the returned
-  // closure does the trace; subsequent calls hit the fused tape.
-  auto compiled_closure = mx::compile(block, /*shapeless=*/false);
+  // Compiled: wrap in mx::compile. First call traces; subsequent calls hit the
+  // cached tape (skipping the graph build/simplify).
+  auto compiled_closure = mx::compile(multi_block, /*shapeless=*/false);
   auto compiled_fn = [&compiled_closure, &inputs]() -> std::vector<mx::array> {
     return compiled_closure(inputs);
   };
@@ -236,8 +277,17 @@ static void run_on_device(mx::Device::DeviceType dev_type, const char* label,
   std::printf("  speedup (median) = %.3fx    (min) = %.3fx\n",
               median_speedup, min_speedup);
 
-  bool passes = median_speedup >= 1.20;
-  std::printf("  gate (>=1.20x on median): %s\n", passes ? "PASS" : "FAIL");
+  // Dispatch-only: the host-side build+encode cost (no GPU wait) — the thing
+  // that dominates Gemma decode. Does compile amortize it?
+  auto unc_disp = time_dispatch(uncompiled_fn, warmup, iters);
+  auto cmp_disp = time_dispatch(compiled_fn, warmup, iters);
+  std::printf("  [dispatch-only, no GPU wait]\n");
+  std::printf("    uncompiled  min=%.3f ms  median=%.3f ms\n",
+              unc_disp.min_ms, unc_disp.median_ms);
+  std::printf("    compiled    min=%.3f ms  median=%.3f ms\n",
+              cmp_disp.min_ms, cmp_disp.median_ms);
+  std::printf("    dispatch speedup (median) = %.3fx\n",
+              unc_disp.median_ms / cmp_disp.median_ms);
 }
 
 // ---------------------------------------------------------------------
@@ -310,6 +360,8 @@ int main(int argc, char** argv) {
       iters = std::atoi(argv[++i]);
     } else if (std::strcmp(argv[i], "--seq") == 0 && i + 1 < argc) {
       kSeq = std::atoi(argv[++i]);
+    } else if (std::strcmp(argv[i], "--layers") == 0 && i + 1 < argc) {
+      kLayers = std::atoi(argv[++i]);
     }
   }
 

@@ -87,6 +87,24 @@ defmodule EmilyTest do
       assert Emily.to_binary(t) == bin
     end
 
+    test "async_eval/1 schedules without blocking and yields the same values as eager" do
+      a = Nx.tensor([1.0, 2.0, 3.0, 4.0], backend: Emily.Backend)
+      b = a |> Nx.multiply(2.0) |> Nx.add(1.0)
+      c = Nx.subtract(b, a)
+
+      # Non-blocking schedule of several outputs at once returns :ok.
+      assert :ok = Emily.async_eval([b.data.ref, c.data.ref])
+
+      # The later host read (to_binary, via Nx) sees the awaited values —
+      # identical to the eager path, only the eval timing differs.
+      assert Nx.to_flat_list(b) == [3.0, 5.0, 7.0, 9.0]
+      assert Nx.to_flat_list(c) == [2.0, 3.0, 4.0, 5.0]
+    end
+
+    test "async_eval/1 of an empty list is a no-op" do
+      assert :ok = Emily.async_eval([])
+    end
+
     test "tensor survives GC as long as a ref is held" do
       bin = <<42.0::float-32-native>>
       t = Emily.from_binary(bin, [1], {:f, 32})

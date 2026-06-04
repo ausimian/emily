@@ -83,6 +83,16 @@ defmodule Emily.Native do
   @spec eval(worker(), tensor()) :: :ok
   def eval(w, tensor), do: await(eval_nif(w, tensor))
 
+  @doc false
+  @spec async_eval_nif(worker(), [tensor()]) :: reference()
+  def async_eval_nif(_w, _tensors), do: nif()
+
+  # Schedule (non-blocking) evaluation of several lazy graphs at once: the
+  # GPU work is queued and this returns as soon as it's enqueued, not when
+  # it finishes. See `async_eval_nif` in c_src/emily_nif.cpp.
+  @spec async_eval(worker(), [tensor()]) :: :ok
+  def async_eval(w, tensors), do: await(async_eval_nif(w, tensors))
+
   # --- Worker ------------------------------------------------------
 
   # Default per-worker queue depth. Each op is awaited synchronously, so
@@ -768,6 +778,45 @@ defmodule Emily.Native do
           traditional: traditional,
           base: base,
           scale: scale
+        )
+      )
+
+  @doc false
+  @spec fast_rope_int_nif(
+          worker(),
+          tensor(),
+          integer(),
+          boolean(),
+          float() | nil,
+          float(),
+          integer(),
+          tensor() | nil
+        ) :: reference()
+  def fast_rope_int_nif(_w, _x, _dims, _traditional, _base, _scale, _offset, _freqs), do: nif()
+
+  # Like `fast_rope/8` but `offset` is a plain integer (absolute position),
+  # routing to MLX's int-offset rope overload. Correct for single-token decode
+  # (seq == 1), where the tensor-offset `fast_rope/8` mis-rotates.
+  @spec fast_rope_int(
+          worker(),
+          tensor(),
+          integer(),
+          boolean(),
+          float() | nil,
+          float(),
+          integer(),
+          tensor() | nil
+        ) :: tensor()
+  def fast_rope_int(w, x, dims, traditional, base, scale, offset, freqs),
+    do:
+      await(
+        fast_rope_int_nif(w, x, dims, traditional, base, scale, offset, freqs),
+        native_context(:fast_rope_int, w, [x: x, freqs: freqs],
+          dims: dims,
+          traditional: traditional,
+          base: base,
+          scale: scale,
+          offset: offset
         )
       )
 

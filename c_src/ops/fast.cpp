@@ -84,6 +84,33 @@ fine::Term fast_rope_nif(
 }
 FINE_NIF(fast_rope_nif, 0);
 
+// Int-offset variant. `offset` is a plain integer absolute position (the
+// caller tracks it host-side). Uses MLX's int-offset rope overload, which is
+// correct for single-token (seq == 1) inputs — the array-offset overload
+// (fast_rope_nif) mis-rotates seq == 1, breaking incremental decode. `base`
+// is nullopt when `freqs` is supplied.
+fine::Term fast_rope_int_nif(
+    ErlNifEnv *env,
+    fine::ResourcePtr<WorkerThread> w,
+    fine::ResourcePtr<Tensor> x,
+    int64_t dims,
+    bool traditional,
+    std::optional<double> base,
+    double scale,
+    int64_t offset,
+    std::optional<fine::ResourcePtr<Tensor>> freqs) {
+  return async_encoded(env, w,
+      [x = std::move(x), dims, traditional, base, scale, offset,
+       freqs = std::move(freqs)](mx::Stream &s) {
+        std::optional<float> base_f;
+        if (base) base_f = static_cast<float>(*base);
+        return wrap(mx::fast::rope(x->array, emily::checked_int(dims, "dims"), traditional,
+                                   base_f, static_cast<float>(scale),
+                                   emily::checked_int(offset, "offset"), opt_array(freqs), s));
+      });
+}
+FINE_NIF(fast_rope_int_nif, 0);
+
 fine::Term fast_scaled_dot_product_attention_nif(
     ErlNifEnv *env,
     fine::ResourcePtr<WorkerThread> w,
