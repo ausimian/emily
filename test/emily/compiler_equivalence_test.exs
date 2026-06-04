@@ -137,6 +137,84 @@ defmodule Emily.CompilerEquivalenceTest do
     end
   end
 
+  describe "dot / matmul" do
+    test "2D @ 2D matmul matches" do
+      a = et([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]])
+      b = et([[1.0, 0.0], [0.0, 1.0], [1.0, 1.0]])
+      assert_equiv(&Nx.dot/2, [a, b])
+    end
+
+    test "vector dot product matches" do
+      a = et([1.0, 2.0, 3.0])
+      b = et([4.0, 5.0, 6.0])
+      assert_equiv(&Nx.dot/2, [a, b])
+    end
+
+    test "tensordot over explicit contraction axes matches" do
+      a = et([[1.0, 2.0], [3.0, 4.0]])
+      b = et([[5.0, 6.0], [7.0, 8.0]])
+      assert_equiv(fn x, y -> Nx.dot(x, [1], [], y, [0], []) end, [a, b])
+    end
+
+    test "batched dot (3-D) matches" do
+      a = et([[[1.0, 2.0], [3.0, 4.0]], [[5.0, 6.0], [7.0, 8.0]]])
+      b = et([[[1.0, 0.0], [0.0, 1.0]], [[2.0, 0.0], [0.0, 2.0]]])
+      assert_equiv(fn x, y -> Nx.dot(x, [2], [0], y, [1], [0]) end, [a, b])
+    end
+  end
+
+  describe "reductions" do
+    test "sum over all axes and specific axes" do
+      x = et([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]])
+      assert_equiv(fn t -> Nx.sum(t) end, [x])
+      assert_equiv(fn t -> Nx.sum(t, axes: [0]) end, [x])
+      assert_equiv(fn t -> Nx.sum(t, axes: [1]) end, [x])
+      assert_equiv(fn t -> Nx.sum(t, axes: [1], keep_axes: true) end, [x])
+    end
+
+    test "product / reduce_max / reduce_min" do
+      x = et([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]])
+      assert_equiv(fn t -> Nx.product(t, axes: [1]) end, [x])
+      assert_equiv(fn t -> Nx.reduce_max(t, axes: [0]) end, [x])
+      assert_equiv(fn t -> Nx.reduce_min(t) end, [x])
+    end
+
+    test "softmax-style exp/sum/divide composite matches" do
+      x = et([1.0, 2.0, 3.0, 4.0])
+
+      assert_equiv(
+        fn t ->
+          e = Nx.exp(t)
+          Nx.divide(e, Nx.sum(e))
+        end,
+        [x]
+      )
+    end
+  end
+
+  describe "two-layer MLP forward (matmul-dominated)" do
+    test "matches the evaluator end-to-end" do
+      x = et([[0.1, 0.2, 0.3, 0.4]])
+      w1 = et([[0.1, 0.2], [0.3, 0.4], [0.5, 0.6], [0.7, 0.8]])
+      b1 = et([0.01, 0.02])
+      w2 = et([[0.5], [0.6]])
+      b2 = et([0.001])
+
+      assert_equiv(
+        fn x, w1, b1, w2, b2 ->
+          x
+          |> Nx.dot(w1)
+          |> Nx.add(b1)
+          |> Nx.tanh()
+          |> Nx.dot(w2)
+          |> Nx.add(b2)
+          |> Nx.sigmoid()
+        end,
+        [x, w1, b1, w2, b2]
+      )
+    end
+  end
+
   describe "composite graphs" do
     test "elementwise MLP-style block (no matmul)" do
       x = et([0.1, -0.2, 0.3, -0.4])

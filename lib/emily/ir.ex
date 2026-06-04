@@ -84,7 +84,17 @@ defmodule Emily.IR do
     reshape: 40,
     transpose: 41,
     squeeze: 42,
-    broadcast_to: 43
+    broadcast_to: 43,
+    # linear algebra
+    matmul: 44,
+    tensordot: 45,
+    # reductions (iattrs: [[axes...], [keepdims]])
+    sum: 46,
+    prod: 47,
+    max: 48,
+    min: 49,
+    all: 50,
+    any: 51
   }
 
   @ref_kinds %{input: 0, capture: 1, const: 2, instr: 3}
@@ -335,11 +345,91 @@ defmodule Emily.IR do
     emit(state, :broadcast_to, [rr], [out_dims])
   end
 
+  # Reductions (sum/product/all/any/reduce_max/reduce_min): args
+  # [tensor, opts]. opts carries :axes (nil = all) and :keep_axes.
+  @reductions %{
+    sum: :sum,
+    product: :prod,
+    all: :all,
+    any: :any,
+    reduce_max: :max,
+    reduce_min: :min
+  }
+
+  defp lower_op(%T{data: %Nx.Defn.Expr{op: op, args: [a, opts]}} = t, state)
+       when is_map_key(@reductions, op) do
+    {ra, state} = lower_node(a, state)
+    axes = opts[:axes] || Nx.axes(a)
+    keep = if(opts[:keep_axes], do: 1, else: 0)
+    {r, state} = emit(state, Map.fetch!(@reductions, op), [ra], [axes, [keep]])
+    coerce(r, t.type, state)
+  end
+
+  # Non-batched dot -> tensordot over the contraction axes.
+  defp lower_op(%T{data: %Nx.Defn.Expr{op: :dot, args: [a, ca, [], b, cb, []]}} = t, state) do
+    {ra, state} = lower_node(a, state)
+    {rb, state} = lower_node(b, state)
+    {r, state} = emit(state, :tensordot, [ra, rb], [ca, cb])
+    coerce(r, t.type, state)
+  end
+
+  # Batched dot -> permute to [batch, free, contract] / [batch, contract,
+  # free], flatten to 3-D, MLX matmul (leading dims = batch), reshape to
+  # Nx's `batch ++ free_a ++ free_b`. Mirrors Emily.Backend.batched_matmul/7.
+  # MLX matmul is float-only; non-float batched dot raises (no fallback).
+  defp lower_op(
+         %T{data: %Nx.Defn.Expr{op: :dot, args: [a, ca, batch_a, b, cb, _batch_b]}} = t,
+         state
+       ) do
+    unless float_like?(t.type) do
+      raise ArgumentError,
+            "Emily Expr compiler: batched dot on #{inspect(t.type)} is not supported " <>
+              "(MLX matmul is float-only, and the compiler does not fall back)."
+    end
+
+    as = a.shape
+    bs = b.shape
+    a_rank = tuple_size(as)
+    b_rank = tuple_size(bs)
+    k = length(batch_a)
+
+    contract_set_a = MapSet.new(ca)
+    contract_set_b = MapSet.new(cb)
+    free_a = for i <- k..(a_rank - 1)//1, not MapSet.member?(contract_set_a, i), do: i
+    free_b = for i <- k..(b_rank - 1)//1, not MapSet.member?(contract_set_b, i), do: i
+
+    b_prod = dim_product(batch_a, as)
+    m = dim_product(free_a, as)
+    n = dim_product(free_b, bs)
+    k_prod = dim_product(ca, as)
+
+    {ra, state} = lower_node(a, state)
+    {rb, state} = lower_node(b, state)
+
+    {ra, state} = emit(state, :transpose, [ra], [batch_a ++ free_a ++ ca])
+    {ra, state} = emit(state, :reshape, [ra], [[b_prod, m, k_prod]])
+    {rb, state} = emit(state, :transpose, [rb], [batch_a ++ cb ++ free_b])
+    {rb, state} = emit(state, :reshape, [rb], [[b_prod, k_prod, n]])
+    {r, state} = emit(state, :matmul, [ra, rb])
+    {r, state} = emit(state, :reshape, [r], [Tuple.to_list(t.shape)])
+    coerce(r, t.type, state)
+  end
+
   defp lower_op(%T{data: %Nx.Defn.Expr{op: op}}, _state) do
     raise ArgumentError,
           "Emily Expr compiler does not yet lower op #{inspect(op)} " <>
             "(no fallback). It will be added in a later milestone."
   end
+
+  defp float_like?({kind, _}) when kind in [:f, :bf, :c], do: true
+  defp float_like?(_), do: false
+
+  defp dim_product(axes, shape), do: Enum.reduce(axes, 1, &(elem(shape, &1) * &2))
+
+  # Coerce a ref to `type` (emit an astype). MLX astype to the same dtype
+  # is a no-op, so this is safe to apply unconditionally — it mirrors
+  # Emily.Backend.wrap/3's coerce and keeps the node's dtype exact.
+  defp coerce(ref, type, state), do: emit(state, :astype, [ref], [[dtype_code(type)]])
 
   # Append an instruction, returning its {:instr, i} ref.
   defp emit(state, opcode, operands, iattrs \\ []) do

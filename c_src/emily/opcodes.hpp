@@ -76,9 +76,19 @@ enum class Opcode : int64_t {
   Transpose = 41, // iattrs: [[axis0, ...]]
   Squeeze = 42, // iattrs: [[axis0, ...]]
   BroadcastTo = 43, // iattrs: [[d0, ...]]
+  // Linear algebra
+  Matmul = 44,    // operands: [a, b]
+  Tensordot = 45, // operands: [a, b]; iattrs: [[axes_a], [axes_b]]
+  // Reductions (iattrs: [[axes...], [keepdims]])
+  Sum = 46,
+  Prod = 47,
+  ReduceMax = 48,
+  ReduceMin = 49,
+  All = 50,
+  Any = 51,
 };
 
-inline constexpr int64_t kOpcodeCount = 44;
+inline constexpr int64_t kOpcodeCount = 52;
 
 inline bool valid_opcode(int64_t v) { return v >= 0 && v < kOpcodeCount; }
 
@@ -115,6 +125,26 @@ inline int64_t scalar_attr(const std::vector<std::vector<int64_t>> &a,
     throw std::invalid_argument(std::string(name) + " expects one attribute value");
   }
   return v[0];
+}
+
+inline const std::vector<int64_t> &
+attr_at(const std::vector<std::vector<int64_t>> &a, std::size_t i,
+        const char *name) {
+  if (a.size() <= i) {
+    throw std::invalid_argument(std::string(name) + " is missing attribute " +
+                                std::to_string(i));
+  }
+  return a[i];
+}
+
+// Reduction keepdims flag lives in iattrs[1] as a single 0/1.
+inline bool keepdims_attr(const std::vector<std::vector<int64_t>> &a,
+                          const char *name) {
+  const auto &v = attr_at(a, 1, name);
+  if (v.size() != 1) {
+    throw std::invalid_argument(std::string(name) + " keepdims must be one value");
+  }
+  return v[0] != 0;
 }
 
 } // namespace __op
@@ -243,6 +273,34 @@ inline mx::array dispatch_op(Opcode op, const std::vector<mx::array> &in,
   case Opcode::BroadcastTo:
     return mx::broadcast_to(arg1(in, "broadcast_to"),
                             emily::to_mlx_shape(attr0(iattrs, "broadcast_to")), s);
+  // --- Linear algebra ---
+  case Opcode::Matmul:
+    need2(in, "matmul");
+    return mx::matmul(in[0], in[1], s);
+  case Opcode::Tensordot:
+    need2(in, "tensordot");
+    return mx::tensordot(in[0], in[1],
+                         emily::to_int_vec(attr_at(iattrs, 0, "tensordot")),
+                         emily::to_int_vec(attr_at(iattrs, 1, "tensordot")), s);
+  // --- Reductions ---
+  case Opcode::Sum:
+    return mx::sum(arg1(in, "sum"), emily::to_int_vec(attr0(iattrs, "sum")),
+                   keepdims_attr(iattrs, "sum"), s);
+  case Opcode::Prod:
+    return mx::prod(arg1(in, "prod"), emily::to_int_vec(attr0(iattrs, "prod")),
+                    keepdims_attr(iattrs, "prod"), s);
+  case Opcode::ReduceMax:
+    return mx::max(arg1(in, "max"), emily::to_int_vec(attr0(iattrs, "max")),
+                   keepdims_attr(iattrs, "max"), s);
+  case Opcode::ReduceMin:
+    return mx::min(arg1(in, "min"), emily::to_int_vec(attr0(iattrs, "min")),
+                   keepdims_attr(iattrs, "min"), s);
+  case Opcode::All:
+    return mx::all(arg1(in, "all"), emily::to_int_vec(attr0(iattrs, "all")),
+                   keepdims_attr(iattrs, "all"), s);
+  case Opcode::Any:
+    return mx::any(arg1(in, "any"), emily::to_int_vec(attr0(iattrs, "any")),
+                   keepdims_attr(iattrs, "any"), s);
   }
   throw std::invalid_argument("unknown opcode " +
                               std::to_string(static_cast<int64_t>(op)));
