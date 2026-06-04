@@ -1,6 +1,7 @@
 // Binary elementwise: arithmetic, compare, logical, bitwise.
 
 #include "../emily/async.hpp"
+#include "../emily/op_cores.hpp"
 #include "../emily/tensor.hpp"
 #include "../emily/worker.hpp"
 
@@ -29,7 +30,10 @@ namespace {
   FINE_NIF(op_name##_nif, 0);
 
 // Arithmetic
-EMILY_BINARY(add,           mx::add)
+// `add` routes through the shared op core (emily/op_cores.hpp) so the
+// eager NIF and the Expr-compiler program replay invoke one source of
+// truth. The rest are split into cores as CM1 lands.
+EMILY_BINARY(add,           emily::ops::add_core)
 EMILY_BINARY(subtract,      mx::subtract)
 EMILY_BINARY(multiply,      mx::multiply)
 EMILY_BINARY(divide,        mx::divide)

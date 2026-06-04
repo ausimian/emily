@@ -93,6 +93,48 @@ defmodule Emily.Native do
   @spec async_eval(worker(), [tensor()]) :: :ok
   def async_eval(w, tensors), do: await(async_eval_nif(w, tensors))
 
+  # --- Expr compiler (program replay) ------------------------------
+  #
+  # The Expr->MLX single-NIF compiler lowers a traced graph to a flat
+  # IR, compiles it once into a `program` resource (capturing weight
+  # refs), then replays the whole DAG in one round-trip per call. See
+  # c_src/program.cpp, lib/emily/ir.ex, lib/emily/program.ex.
+
+  # Parse the flat IR into a replayable program resource. Synchronous
+  # (no MLX work, no worker): builds the instruction list and captures
+  # strong refs to the weight/const tensors. Returns the resource.
+  @doc false
+  @spec compile_program(
+          non_neg_integer(),
+          [tensor()],
+          [tensor()],
+          [non_neg_integer()],
+          [[non_neg_integer()]],
+          [non_neg_integer()]
+        ) :: reference()
+  def compile_program(_n_inputs, _captures, _consts, _opcodes, _operands, _outputs), do: nif()
+
+  @doc false
+  @spec eval_program_nif(worker(), reference(), [tensor()], 0..2) :: reference()
+  def eval_program_nif(_w, _program, _inputs, _eval_mode), do: nif()
+
+  # Replay `program` on the worker with fresh `inputs`, returning the
+  # output refs. One round-trip for the whole graph. `eval_mode`:
+  # 0 = sync (mx::eval), 1 = async (mx::async_eval), 2 = build only
+  # (leave the graph lazy — isolates dispatch / lets a caller async_eval
+  # several programs together).
+  @spec eval_program(worker(), reference(), [tensor()], 0..2) :: [tensor()]
+  def eval_program(w, program, inputs, eval_mode \\ 0)
+      when eval_mode in 0..2,
+      do: await(eval_program_nif(w, program, inputs, eval_mode))
+
+  # Reflect a compiled program's stored IR back, for round-trip tests.
+  @doc false
+  @spec describe_program(reference()) ::
+          {non_neg_integer(), non_neg_integer(), non_neg_integer(), [non_neg_integer()],
+           [[non_neg_integer()]], [non_neg_integer()]}
+  def describe_program(_program), do: nif()
+
   # --- Worker ------------------------------------------------------
 
   # Default per-worker queue depth. Each op is awaited synchronously, so
