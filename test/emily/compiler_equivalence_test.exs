@@ -325,6 +325,35 @@ defmodule Emily.CompilerEquivalenceTest do
     end
   end
 
+  describe "concatenate / conv" do
+    test "concatenate along axes matches" do
+      a = et([[1.0, 2.0], [3.0, 4.0]])
+      b = et([[5.0, 6.0], [7.0, 8.0]])
+      assert_equiv(fn a, b -> Nx.concatenate([a, b], axis: 0) end, [a, b])
+      assert_equiv(fn a, b -> Nx.concatenate([a, b], axis: 1) end, [a, b])
+      assert_equiv(fn a, b -> Nx.concatenate([a, b, a]) end, [a, b])
+    end
+
+    test "2-D conv (patch-embed style) matches the evaluator" do
+      # NCHW input {1, 3, 8, 8}; OIHW kernel {4, 3, 2, 2}, stride 2 (patches).
+      x = Nx.iota({1, 3, 8, 8}, type: :f32, backend: Emily.Backend) |> Nx.divide(192.0)
+      k = Nx.iota({4, 3, 2, 2}, type: :f32, backend: Emily.Backend) |> Nx.divide(48.0)
+      assert_equiv(fn x, k -> Nx.conv(x, k, strides: [2, 2]) end, [x, k])
+    end
+
+    test "conv with padding + feature groups matches" do
+      x = Nx.iota({1, 4, 6, 6}, type: :f32, backend: Emily.Backend) |> Nx.divide(144.0)
+      k = Nx.iota({4, 2, 3, 3}, type: :f32, backend: Emily.Backend) |> Nx.divide(72.0)
+
+      assert_equiv(
+        fn x, k ->
+          Nx.conv(x, k, strides: [1, 1], padding: [{1, 1}, {1, 1}], feature_group_size: 2)
+        end,
+        [x, k]
+      )
+    end
+  end
+
   describe "take (embedding lookup)" do
     test "take matches the Evaluator" do
       embed = et([[1.0, 2.0], [3.0, 4.0], [5.0, 6.0], [7.0, 8.0]])

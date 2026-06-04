@@ -113,9 +113,12 @@ enum class Opcode : int64_t {
   // operands [src, update, start(s32 [naxes])]; iattrs [[axes...]] —
   // dynamic put_slice (runtime start indices) via mx::slice_update.
   DynSliceUpdate = 63,
+  // operands [input(NHWC), kernel(OHWI)]; iattrs [[stride],[pad_lo],
+  // [pad_hi],[kernel_dilation],[input_dilation],[groups],[flip]]
+  ConvGeneral = 64,
 };
 
-inline constexpr int64_t kOpcodeCount = 64;
+inline constexpr int64_t kOpcodeCount = 65;
 
 // Quant mode code (Emily.IR @quant_modes) -> MLX mode string.
 inline std::string qmode_from_code(int64_t code) {
@@ -478,6 +481,18 @@ inline mx::array dispatch_op(Opcode op, const std::vector<mx::array> &in,
     return mx::slice_update(in[0], in[1], in[2],
                             emily::to_int_vec(attr0(iattrs, "dyn_slice_update")),
                             s);
+  }
+  case Opcode::ConvGeneral: {
+    need2(in, "conv_general");
+    int groups =
+        emily::checked_int(scalar_at(iattrs, 5, "conv_general"), "groups");
+    bool flip = scalar_at(iattrs, 6, "conv_general") != 0;
+    return mx::conv_general(
+        in[0], in[1], emily::to_int_vec(attr_at(iattrs, 0, "conv_general")),
+        emily::to_int_vec(attr_at(iattrs, 1, "conv_general")),
+        emily::to_int_vec(attr_at(iattrs, 2, "conv_general")),
+        emily::to_int_vec(attr_at(iattrs, 3, "conv_general")),
+        emily::to_int_vec(attr_at(iattrs, 4, "conv_general")), groups, flip, s);
   }
   }
   throw std::invalid_argument("unknown opcode " +

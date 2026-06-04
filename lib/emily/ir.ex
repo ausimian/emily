@@ -109,7 +109,8 @@ defmodule Emily.IR do
     quantized_matmul: 60,
     take: 61,
     concatenate: 62,
-    dyn_slice_update: 63
+    dyn_slice_update: 63,
+    conv_general: 64
   }
 
   # Quant mode string -> code; decoded by qmode_from_code in
@@ -523,6 +524,61 @@ defmodule Emily.IR do
     lower_block(struct, in_args, expr, t, state)
   end
 
+  # concatenate(tensors, axis): join a list of tensors along `axis`.
+  # Mirrors Emily.Backend.concatenate/3 (no input cast; the result is
+  # coerced to out.type).
+  defp lower_op(%T{data: %Nx.Defn.Expr{op: :concatenate, args: [tensors, axis]}} = t, state) do
+    {refs, state} = Enum.map_reduce(tensors, state, &lower_node/2)
+    emit_coerced(state, :concatenate, refs, [[axis]], t.type)
+  end
+
+  # conv: ports Emily.Backend.conv/4 — permute input -> NHWC and kernel ->
+  # OHWI (casting both to out.type), mx::conv_general, then permute the
+  # result NHWC -> NCHW -> the user's output layout. batch_group_size > 1
+  # and complex types are unsupported (the backend falls back; we raise —
+  # no fallback).
+  defp lower_op(%T{data: %Nx.Defn.Expr{op: :conv, args: [input, kernel, opts]}} = t, state) do
+    if opts[:batch_group_size] > 1 or match?({:c, _}, t.type) do
+      raise ArgumentError,
+            "Emily Expr compiler: conv with batch_group_size > 1 or a complex " <>
+              "output type is not supported (no fallback)."
+    end
+
+    type = t.type
+    ip = opts[:input_permutation]
+    kp = opts[:kernel_permutation]
+    {lows, highs} = opts[:padding] |> Enum.unzip()
+
+    input_to_nhwc = [hd(ip)] ++ Enum.drop(ip, 2) ++ [Enum.at(ip, 1)]
+    kernel_to_ohwi = [hd(kp)] ++ Enum.drop(kp, 2) ++ [Enum.at(kp, 1)]
+    rank = tuple_size(t.shape)
+    nhwc_to_nchw = [0, rank - 1] ++ Enum.to_list(1..(rank - 2)//1)
+    inv_op = invert_permutation(opts[:output_permutation])
+
+    {ir, state} = lower_node(input, state)
+    {ir, state} = emit(state, :astype, [ir], [[dtype_code(type)]])
+    {ir, state} = emit(state, :transpose, [ir], [input_to_nhwc])
+
+    {kr, state} = lower_node(kernel, state)
+    {kr, state} = emit(state, :astype, [kr], [[dtype_code(type)]])
+    {kr, state} = emit(state, :transpose, [kr], [kernel_to_ohwi])
+
+    conv_attrs = [
+      opts[:strides],
+      lows,
+      highs,
+      opts[:kernel_dilation],
+      opts[:input_dilation],
+      [opts[:feature_group_size]],
+      [0]
+    ]
+
+    {r, state} = emit(state, :conv_general, [ir, kr], conv_attrs)
+    {r, state} = emit(state, :transpose, [r], [nhwc_to_nchw])
+    {r, state} = emit(state, :transpose, [r], [inv_op])
+    coerce(r, type, state)
+  end
+
   # cond: raw args [clauses, last], clauses = [{pred, body}, ...]. Lower to
   # a select chain `where(p1, b1, where(p2, b2, ... last))`. ALL branches
   # are evaluated (Nx branches are side-effect-free and shape-compatible);
@@ -694,6 +750,13 @@ defmodule Emily.IR do
 
   defp float_like?({kind, _}) when kind in [:f, :bf, :c], do: true
   defp float_like?(_), do: false
+
+  # Invert a 0-based permutation (mirrors Emily.Backend.invert_permutation/1)
+  # — reverse Nx's "user -> canonical" output_permutation to "canonical ->
+  # user" for the final conv transpose.
+  defp invert_permutation(perm) do
+    perm |> Enum.with_index() |> Enum.sort() |> Enum.map(&elem(&1, 1))
+  end
 
   defp dim_product(axes, shape), do: Enum.reduce(axes, 1, &(elem(shape, &1) * &2))
 
