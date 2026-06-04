@@ -87,7 +87,10 @@ defmodule Emily.Compiler do
 
   @behaviour Nx.Defn.Compiler
 
-  alias Nx.Defn.Evaluator
+  alias Emily.Backend, as: B
+  alias Emily.{IR, Program}
+  alias Nx.Defn.{Composite, Evaluator}
+  alias Nx.Tensor, as: T
 
   @valid_opts [
     :device,
@@ -96,19 +99,66 @@ defmodule Emily.Compiler do
     :garbage_collect,
     :max_concurrency,
     :batch_keys,
-    :cache
+    :cache,
+    :native
   ]
 
   @impl true
   def __jit__(key, vars, fun, args_list, opts) do
     opts = take_known_opts(opts)
-    Evaluator.__jit__(key, vars, fun, args_list, opts)
+
+    if Keyword.get(opts, :native, false) do
+      compile_native(vars, fun).(args_list)
+    else
+      Evaluator.__jit__(key, vars, fun, args_list, opts)
+    end
   end
 
   @impl true
   def __compile__(key, vars, fun, opts) do
     opts = take_known_opts(opts)
-    Evaluator.__compile__(key, vars, fun, opts)
+
+    if Keyword.get(opts, :native, false) do
+      compile_native(vars, fun)
+    else
+      Evaluator.__compile__(key, vars, fun, opts)
+    end
+  end
+
+  # The single-NIF compiled path (CM1+): trace the function into an
+  # Nx.Defn.Expr, lower it to a flat IR once, compile it into a `Program`
+  # resource (captured in this closure), and replay the whole graph in
+  # one NIF call per invocation. Op coverage is still partial — an
+  # unsupported op raises in `Emily.IR.lower/1` (no silent fallback).
+  defp compile_native(vars, fun) do
+    expr = fun.(vars)
+
+    {template, leaves_rev} =
+      Composite.traverse(expr, [], fn leaf, acc -> {Nx.to_template(leaf), [leaf | acc]} end)
+
+    program = leaves_rev |> Enum.reverse() |> IR.lower() |> Program.compile()
+
+    fn [params] ->
+      worker = Emily.MlxStream.default_worker()
+      # Params arrive as zero-arity realizer funs in slot order (see
+      # Nx.Defn.Evaluator's `:parameter` handling); realize each to a
+      # native ref. `{:input, i}` in the IR indexes this list.
+      input_refs = Enum.map(params, fn p -> p.() |> Nx.to_tensor() |> native_ref() end)
+      out_refs = Program.eval(worker, program, input_refs)
+      [reassemble(template, out_refs)]
+    end
+  end
+
+  defp native_ref(%T{data: %B{ref: r}}), do: r
+  defp native_ref(%T{} = t), do: Nx.backend_transfer(t, B).data.ref
+
+  defp reassemble(template, out_refs) do
+    {result, []} =
+      Composite.traverse(template, out_refs, fn leaf, [ref | rest] ->
+        {%{leaf | data: %B{ref: ref}}, rest}
+      end)
+
+    result
   end
 
   @impl true

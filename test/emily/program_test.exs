@@ -60,6 +60,83 @@ defmodule Emily.ProgramTest do
     end
   end
 
+  describe "attribute-carrying ops (replay vs eager)" do
+    test "unary + cast + binary chain matches eager" do
+      # f(x, y) = tanh(x) * astype(y, f32)
+      x = f32([0.1, 0.2, -0.3, 0.5], [4])
+      y = f32([1.0, 2.0, 3.0, 4.0], [4])
+
+      ir = %IR{
+        n_inputs: 2,
+        instrs: [
+          %{opcode: :tanh, operands: [{:input, 0}]},
+          %{opcode: :astype, operands: [{:input, 1}], iattrs: [[IR.dtype_code({:f, 32})]]},
+          %{opcode: :multiply, operands: [{:instr, 0}, {:instr, 1}]}
+        ],
+        outputs: [{:instr, 2}]
+      }
+
+      [out] = Program.eval(worker(), Program.compile(ir), [x, y])
+
+      eager =
+        Native.multiply(
+          worker(),
+          Native.tanh(worker(), x),
+          Native.astype(worker(), y, {:f, 32})
+        )
+
+      assert to_f32_list(out) == to_f32_list(eager)
+    end
+
+    test "reshape + transpose match eager" do
+      x = f32(Enum.map(1..6, &(&1 * 1.0)), [6])
+
+      ir = %IR{
+        n_inputs: 1,
+        instrs: [
+          %{opcode: :reshape, operands: [{:input, 0}], iattrs: [[2, 3]]},
+          %{opcode: :transpose, operands: [{:instr, 0}], iattrs: [[1, 0]]}
+        ],
+        outputs: [{:instr, 1}]
+      }
+
+      [out] = Program.eval(worker(), Program.compile(ir), [x])
+      eager = Native.transpose(worker(), Native.reshape(worker(), x, [2, 3]), [1, 0])
+
+      assert Native.shape(out) == [3, 2]
+      assert to_f32_list(out) == to_f32_list(eager)
+    end
+
+    test "broadcast_to matches eager" do
+      x = f32([1.0, 2.0, 3.0], [3])
+
+      ir = %IR{
+        n_inputs: 1,
+        instrs: [%{opcode: :broadcast_to, operands: [{:input, 0}], iattrs: [[2, 3]]}],
+        outputs: [{:instr, 0}]
+      }
+
+      [out] = Program.eval(worker(), Program.compile(ir), [x])
+
+      assert Native.shape(out) == [2, 3]
+      assert to_f32_list(out) == to_f32_list(Native.broadcast_to(worker(), x, [2, 3]))
+    end
+
+    test "describe round-trips iattrs" do
+      ir = %IR{
+        n_inputs: 1,
+        instrs: [%{opcode: :reshape, operands: [{:input, 0}], iattrs: [[2, 3]]}],
+        outputs: [{:instr, 0}]
+      }
+
+      {_n, _nc, _nk, opcodes, _operands, iattrs, _outputs} =
+        Program.describe(Program.compile(ir))
+
+      assert opcodes == [IR.opcode(:reshape)]
+      assert iattrs == [[[2, 3]]]
+    end
+  end
+
   describe "resource lifetime" do
     test "captured weight survives GC of the source tensor; handle is reusable" do
       input = f32([0.0, 0.0], [2])
@@ -93,6 +170,7 @@ defmodule Emily.ProgramTest do
           [],
           [999],
           [[IR.pack_ref({:input, 0})]],
+          [[]],
           [IR.pack_ref({:instr, 0})]
         )
       end
@@ -107,6 +185,7 @@ defmodule Emily.ProgramTest do
           [],
           [IR.opcode(:add)],
           [Enum.map([{:input, 0}, {:instr, 0}], &IR.pack_ref/1)],
+          [[]],
           [IR.pack_ref({:instr, 0})]
         )
       end
@@ -120,6 +199,7 @@ defmodule Emily.ProgramTest do
           [],
           [IR.opcode(:add)],
           [Enum.map([{:input, 0}, {:input, 5}], &IR.pack_ref/1)],
+          [[]],
           [IR.pack_ref({:instr, 0})]
         )
       end
@@ -127,7 +207,7 @@ defmodule Emily.ProgramTest do
 
     test "compile rejects opcode/operand length mismatch" do
       assert_raise ArgumentError, ~r/length mismatch/, fn ->
-        Native.compile_program(1, [], [], [IR.opcode(:add)], [], [IR.pack_ref({:input, 0})])
+        Native.compile_program(1, [], [], [IR.opcode(:add)], [], [[]], [IR.pack_ref({:input, 0})])
       end
     end
 

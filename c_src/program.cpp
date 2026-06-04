@@ -98,17 +98,19 @@ compile_program(ErlNifEnv *, int64_t n_inputs,
                 std::vector<fine::ResourcePtr<Tensor>> consts,
                 std::vector<int64_t> opcodes,
                 std::vector<std::vector<int64_t>> operands,
+                std::vector<std::vector<std::vector<int64_t>>> iattrs,
                 std::vector<int64_t> outputs) {
   if (n_inputs < 0) {
     throw std::invalid_argument(
         "compile_program: n_inputs must be non-negative, got " +
         std::to_string(n_inputs));
   }
-  if (opcodes.size() != operands.size()) {
+  if (opcodes.size() != operands.size() || opcodes.size() != iattrs.size()) {
     throw std::invalid_argument(
-        "compile_program: opcodes/operands length mismatch (" +
-        std::to_string(opcodes.size()) + " vs " +
-        std::to_string(operands.size()) + ")");
+        "compile_program: opcodes/operands/iattrs length mismatch (" +
+        std::to_string(opcodes.size()) + " / " +
+        std::to_string(operands.size()) + " / " +
+        std::to_string(iattrs.size()) + ")");
   }
 
   auto prog = fine::make_resource<Program>();
@@ -127,8 +129,9 @@ compile_program(ErlNifEnv *, int64_t n_inputs,
       validate_ref(r, n_inputs, prog->captures.size(), prog->consts.size(),
                    static_cast<int64_t>(i), "compile_program operand");
     }
-    prog->instrs.push_back(
-        CompiledInstr{static_cast<Opcode>(opcodes[i]), std::move(operands[i])});
+    prog->instrs.push_back(CompiledInstr{static_cast<Opcode>(opcodes[i]),
+                                         std::move(operands[i]),
+                                         std::move(iattrs[i])});
   }
 
   for (auto r : outputs) {
@@ -204,7 +207,8 @@ fine::Term eval_program_nif(ErlNifEnv *env, fine::ResourcePtr<WorkerThread> w,
           for (auto r : instr.operands) {
             operands.push_back(resolve(r));
           }
-          values.push_back(emily::dispatch_op(instr.opcode, operands, s));
+          values.push_back(
+              emily::dispatch_op(instr.opcode, operands, instr.iattrs, s));
         }
 
         std::vector<mx::array> roots;
@@ -235,23 +239,28 @@ fine::Term eval_program_nif(ErlNifEnv *env, fine::ResourcePtr<WorkerThread> w,
 FINE_NIF(eval_program_nif, 0);
 
 // describe_program/1 — reflect a compiled Program's stored IR back to
-// Elixir as {n_inputs, n_captures, n_consts, opcodes, operands, outputs}
-// so round-trip tests can assert (lower -> compile -> describe) is the
-// identity on the structural part of the IR.
+// Elixir as {n_inputs, n_captures, n_consts, opcodes, operands, iattrs,
+// outputs} so round-trip tests can assert (lower -> compile -> describe)
+// is the identity on the structural part of the IR.
 std::tuple<int64_t, int64_t, int64_t, std::vector<int64_t>,
-           std::vector<std::vector<int64_t>>, std::vector<int64_t>>
+           std::vector<std::vector<int64_t>>,
+           std::vector<std::vector<std::vector<int64_t>>>,
+           std::vector<int64_t>>
 describe_program(ErlNifEnv *, fine::ResourcePtr<Program> prog) {
   std::vector<int64_t> opcodes;
   std::vector<std::vector<int64_t>> operands;
+  std::vector<std::vector<std::vector<int64_t>>> iattrs;
   opcodes.reserve(prog->instrs.size());
   operands.reserve(prog->instrs.size());
+  iattrs.reserve(prog->instrs.size());
   for (const auto &instr : prog->instrs) {
     opcodes.push_back(static_cast<int64_t>(instr.opcode));
     operands.push_back(instr.operands);
+    iattrs.push_back(instr.iattrs);
   }
 
   return {prog->n_inputs, static_cast<int64_t>(prog->captures.size()),
-          static_cast<int64_t>(prog->consts.size()), opcodes, operands,
+          static_cast<int64_t>(prog->consts.size()), opcodes, operands, iattrs,
           prog->outputs};
 }
 FINE_NIF(describe_program, 0);

@@ -39,3 +39,6 @@ native_checksums.txt
 .DS_Store
 .elixir_ls/
 .lexical/
+
+# Claude Code runtime lock (machine/run-specific state)
+.claude/scheduled_tasks.lock
