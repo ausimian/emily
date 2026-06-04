@@ -43,7 +43,8 @@ inline int64_t index_of(int64_t r) { return r & kIndexMask; }
 
 struct CompiledInstr {
   Opcode opcode;
-  std::vector<int64_t> operands; // packed refs
+  std::vector<int64_t> operands;             // packed refs
+  std::vector<std::vector<int64_t>> iattrs;  // integer attrs (shapes/axes/dtype codes)
 };
 
 // One resource per compiled program. `captures` / `consts` hold strong

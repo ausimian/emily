@@ -36,16 +36,73 @@ defmodule Emily.IR do
 
   # Opcode wire values — keep in sync with `enum class Opcode` in
   # c_src/emily/opcodes.hpp.
-  @opcodes %{add: 0}
+  @opcodes %{
+    # binary arithmetic / bitwise
+    add: 0,
+    subtract: 1,
+    multiply: 2,
+    divide: 3,
+    power: 4,
+    maximum: 5,
+    minimum: 6,
+    remainder: 7,
+    bitwise_and: 8,
+    bitwise_or: 9,
+    bitwise_xor: 10,
+    left_shift: 11,
+    right_shift: 12,
+    # binary compare / logical
+    equal: 13,
+    not_equal: 14,
+    less: 15,
+    less_equal: 16,
+    greater: 17,
+    greater_equal: 18,
+    logical_and: 19,
+    logical_or: 20,
+    # unary
+    negative: 21,
+    abs: 22,
+    sign: 23,
+    sqrt: 24,
+    rsqrt: 25,
+    square: 26,
+    reciprocal: 27,
+    exp: 28,
+    log: 29,
+    log1p: 30,
+    sin: 31,
+    cos: 32,
+    tanh: 33,
+    sigmoid: 34,
+    floor: 35,
+    ceil: 36,
+    erf: 37,
+    logical_not: 38,
+    # cast / shape (carry iattrs)
+    astype: 39,
+    reshape: 40,
+    transpose: 41,
+    squeeze: 42,
+    broadcast_to: 43
+  }
 
   @ref_kinds %{input: 0, capture: 1, const: 2, instr: 3}
   @ref_kinds_inverse Map.new(@ref_kinds, fn {k, v} -> {v, k} end)
+
+  # Nx dtype kind -> code; packed dtype code is `kind_code * 256 + bits`.
+  # Keep in sync with `to_mlx_dtype_code` in c_src/emily/dtype.hpp.
+  @dtype_kind_codes %{f: 0, bf: 1, s: 2, u: 3, c: 4, pred: 5}
 
   defstruct n_inputs: 0, captures: [], consts: [], instrs: [], outputs: []
 
   @type kind :: :input | :capture | :const | :instr
   @type ref :: {kind(), non_neg_integer()}
-  @type instr :: %{opcode: atom(), operands: [ref()]}
+  @type instr :: %{
+          required(:opcode) => atom(),
+          required(:operands) => [ref()],
+          optional(:iattrs) => [[integer()]]
+        }
   @type t :: %__MODULE__{
           n_inputs: non_neg_integer(),
           captures: [Emily.Native.tensor()],
@@ -57,6 +114,18 @@ defmodule Emily.IR do
   @doc "Numeric wire value for an opcode name."
   @spec opcode(atom()) :: non_neg_integer()
   def opcode(name) when is_map_key(@opcodes, name), do: Map.fetch!(@opcodes, name)
+
+  @doc "Whether `name` is a known opcode."
+  @spec opcode?(atom()) :: boolean()
+  def opcode?(name), do: is_map_key(@opcodes, name)
+
+  @doc """
+  Pack an Nx dtype `{kind, bits}` into the int code the `astype` opcode
+  carries (`kind_code * 256 + bits`).
+  """
+  @spec dtype_code(Nx.Type.t()) :: non_neg_integer()
+  def dtype_code({kind, bits}) when is_map_key(@dtype_kind_codes, kind),
+    do: Map.fetch!(@dtype_kind_codes, kind) * 256 + bits
 
   @doc "Pack a tagged operand ref into the int64 the NIF expects."
   @spec pack_ref(ref()) :: non_neg_integer()

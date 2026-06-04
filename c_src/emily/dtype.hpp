@@ -43,6 +43,23 @@ inline mx::Dtype to_mlx_dtype(const std::tuple<fine::Atom, int64_t> &t) {
   return to_mlx_dtype(std::get<0>(t).to_string(), std::get<1>(t));
 }
 
+// Decode a packed dtype code used by the Expr-compiler IR
+// (`Emily.IR.dtype_code/1`): `code = kind_code * 256 + bits`, with kind
+// codes f=0, bf=1, s=2, u=3, c=4, pred=5. Keep in sync with lib/emily/ir.ex.
+inline mx::Dtype to_mlx_dtype_code(int64_t code) {
+  int64_t bits = code & 0xff;
+  switch (code >> 8) {
+  case 0: return to_mlx_dtype("f", bits);
+  case 1: return to_mlx_dtype("bf", bits);
+  case 2: return to_mlx_dtype("s", bits);
+  case 3: return to_mlx_dtype("u", bits);
+  case 4: return to_mlx_dtype("c", bits);
+  case 5: return to_mlx_dtype("pred", bits);
+  default:
+    throw std::invalid_argument("unknown dtype code " + std::to_string(code));
+  }
+}
+
 inline std::tuple<fine::Atom, int64_t> from_mlx_dtype(mx::Dtype dtype) {
   if (dtype == mx::float32)   return {atoms::f,    32};
   if (dtype == mx::float16)   return {atoms::f,    16};

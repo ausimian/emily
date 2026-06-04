@@ -43,13 +43,16 @@ defmodule Emily.IRTest do
       }
 
       prog = Program.compile(ir)
-      {n_inputs, n_captures, n_consts, opcodes, operands, outputs} = Program.describe(prog)
+
+      {n_inputs, n_captures, n_consts, opcodes, operands, iattrs, outputs} =
+        Program.describe(prog)
 
       assert n_inputs == 2
       assert n_captures == 0
       assert n_consts == 0
       assert opcodes == [IR.opcode(:add)]
       assert operands == [Enum.map([{:input, 0}, {:input, 1}], &IR.pack_ref/1)]
+      assert iattrs == [[]]
       assert outputs == [IR.pack_ref({:instr, 0})]
     end
 
@@ -58,11 +61,14 @@ defmodule Emily.IRTest do
       ir = add_chain_ir(100, bias)
 
       prog = Program.compile(ir)
-      {n_inputs, n_captures, n_consts, opcodes, operands, outputs} = Program.describe(prog)
+
+      {n_inputs, n_captures, n_consts, opcodes, operands, iattrs, outputs} =
+        Program.describe(prog)
 
       assert n_inputs == 1
       assert n_captures == 1
       assert n_consts == 0
+      assert iattrs == List.duplicate([], 100)
       assert length(opcodes) == 100
       assert Enum.all?(opcodes, &(&1 == IR.opcode(:add)))
       # instr 0 adds input0 + capture0; instr k adds instr_{k-1} + capture0.
@@ -75,11 +81,12 @@ defmodule Emily.IRTest do
       ir = %IR{n_inputs: 1, instrs: [], outputs: [{:input, 0}]}
 
       prog = Program.compile(ir)
-      {n_inputs, _nc, _nk, opcodes, operands, outputs} = Program.describe(prog)
+      {n_inputs, _nc, _nk, opcodes, operands, iattrs, outputs} = Program.describe(prog)
 
       assert n_inputs == 1
       assert opcodes == []
       assert operands == []
+      assert iattrs == []
       assert outputs == [IR.pack_ref({:input, 0})]
     end
   end

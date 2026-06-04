@@ -28,9 +28,18 @@ defmodule Emily.Program do
   def compile(%IR{} = ir) do
     opcodes = Enum.map(ir.instrs, fn %{opcode: op} -> IR.opcode(op) end)
     operands = Enum.map(ir.instrs, fn %{operands: ops} -> Enum.map(ops, &IR.pack_ref/1) end)
+    iattrs = Enum.map(ir.instrs, fn instr -> Map.get(instr, :iattrs, []) end)
     outputs = Enum.map(ir.outputs, &IR.pack_ref/1)
 
-    Native.compile_program(ir.n_inputs, ir.captures, ir.consts, opcodes, operands, outputs)
+    Native.compile_program(
+      ir.n_inputs,
+      ir.captures,
+      ir.consts,
+      opcodes,
+      operands,
+      iattrs,
+      outputs
+    )
   end
 
   @doc """
