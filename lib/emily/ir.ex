@@ -195,6 +195,7 @@ defmodule Emily.IR do
 
   alias Emily.Fast.Block, as: FB
   alias Emily.Quantization.Block, as: QB
+  alias Nx.Defn.Tree
   alias Nx.Tensor, as: T
 
   # Nx Expr op -> IR opcode. Arithmetic/bitwise cast both operands to the
@@ -547,13 +548,34 @@ defmodule Emily.IR do
   # hook the token is a no-op, so pass through to the inner expr. Hooks
   # would need a callback into Elixir mid-graph (program-split) — deferred.
   defp lower_op(%T{data: %Nx.Defn.Expr{op: :attach_token, args: [token, expr]}}, state) do
-    if Nx.Defn.Tree.has_hooks?(token, %{}) do
+    if Tree.has_hooks?(token, %{}) do
       raise ArgumentError,
             "Emily Expr compiler does not support hooks under native compilation " <>
               "(they require a mid-graph callback into Elixir)."
     end
 
     lower_node(expr, state)
+  end
+
+  # reduce / window_reduce with a user-supplied BEAM reducer cannot be
+  # compiled — the reducer would have to run on the host mid-graph. The
+  # fixed-identity aggregates (sum/product/max/min) are separate ops and
+  # already lower natively; only an arbitrary reducer reaches here.
+  defp lower_op(%T{data: %Nx.Defn.Expr{op: op}}, _state) when op in [:reduce, :window_reduce] do
+    raise ArgumentError,
+          "Emily Expr compiler cannot lower #{inspect(op)} with an arbitrary " <>
+            "reducer function (it would require a host callback mid-graph; no " <>
+            "fallback). Use the native aggregates (sum/product/reduce_max/" <>
+            "reduce_min) where possible."
+  end
+
+  # while / its tuple projection are deferred to a follow-up: the
+  # single-NIF replay has no loop construct, so a data-dependent while
+  # needs either static-trip unrolling or a worker-side synced loop.
+  defp lower_op(%T{data: %Nx.Defn.Expr{op: op}}, _state) when op in [:while, :elem] do
+    raise ArgumentError,
+          "Emily Expr compiler does not yet lower #{inspect(op)} (defn `while` " <>
+            "loops; deferred — the decode/generation loops run in Elixir today)."
   end
 
   defp lower_op(%T{data: %Nx.Defn.Expr{op: op}}, _state) do

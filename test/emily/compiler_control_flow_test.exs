@@ -33,6 +33,15 @@ defmodule Emily.CompilerControlFlowTest do
     if Nx.greater(Nx.reduce_max(y), 5), do: Nx.divide(y, 2), else: y
   end
 
+  defn while_fn(x) do
+    {_i, acc} =
+      while {i = 0, acc = x}, i < 5 do
+        {i + 1, Nx.multiply(acc, 2)}
+      end
+
+    acc
+  end
+
   defp equiv(fun, x) do
     native = Nx.Defn.jit(fun, @native).(x)
     eval = Nx.Defn.jit(fun, @eval).(x)
@@ -57,6 +66,22 @@ defmodule Emily.CompilerControlFlowTest do
     test "nested conds compose" do
       for data <- [[3.0, 3.0, 3.0], [-1.0, 0.0, 1.0], [10.0, 10.0, 10.0]] do
         equiv(&nested_if_fn/1, Nx.tensor(data, backend: Emily.Backend))
+      end
+    end
+  end
+
+  describe "unsupported control flow raises (no silent fallback)" do
+    test "arbitrary reduce/2 fn raises a clear error" do
+      f = fn x -> Nx.reduce(x, 0.0, fn a, b -> Nx.add(a, b) end) end
+
+      assert_raise ArgumentError, ~r/arbitrary reducer/, fn ->
+        Nx.Defn.jit(f, @native).(Nx.tensor([1.0, 2.0, 3.0], backend: Emily.Backend))
+      end
+    end
+
+    test "defn while raises (deferred)" do
+      assert_raise ArgumentError, ~r/while/, fn ->
+        Nx.Defn.jit(&while_fn/1, @native).(Nx.tensor([1.0, 2.0], backend: Emily.Backend))
       end
     end
   end
