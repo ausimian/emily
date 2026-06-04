@@ -522,6 +522,40 @@ defmodule Emily.IR do
     lower_block(struct, in_args, expr, t, state)
   end
 
+  # cond: raw args [clauses, last], clauses = [{pred, body}, ...]. Lower to
+  # a select chain `where(p1, b1, where(p2, b2, ... last))`. ALL branches
+  # are evaluated (Nx branches are side-effect-free and shape-compatible);
+  # the result value matches the Evaluator's chosen branch exactly — only
+  # the cost differs (not-taken branches are computed and discarded). The
+  # predicate is a whole-tensor scalar bool, so `where` selects a branch
+  # wholesale.
+  defp lower_op(%T{data: %Nx.Defn.Expr{op: :cond, args: [clauses, last]}} = t, state) do
+    {last_ref, state} = lower_node(last, state)
+
+    {result, state} =
+      Enum.reduce(Enum.reverse(clauses), {last_ref, state}, fn {pred, body}, {else_ref, st} ->
+        {pred_ref, st} = lower_node(pred, st)
+        {body_ref, st} = lower_node(body, st)
+        {pred_ref, st} = emit(st, :astype, [pred_ref], [[dtype_code({:pred, 1})]])
+        emit(st, :where, [pred_ref, body_ref, else_ref])
+      end)
+
+    coerce(result, t.type, state)
+  end
+
+  # attach_token: sequences a token (hooks) before `expr`. With no active
+  # hook the token is a no-op, so pass through to the inner expr. Hooks
+  # would need a callback into Elixir mid-graph (program-split) — deferred.
+  defp lower_op(%T{data: %Nx.Defn.Expr{op: :attach_token, args: [token, expr]}}, state) do
+    if Nx.Defn.Tree.has_hooks?(token, %{}) do
+      raise ArgumentError,
+            "Emily Expr compiler does not support hooks under native compilation " <>
+              "(they require a mid-graph callback into Elixir)."
+    end
+
+    lower_node(expr, state)
+  end
+
   defp lower_op(%T{data: %Nx.Defn.Expr{op: op}}, _state) do
     raise ArgumentError,
           "Emily Expr compiler does not yet lower op #{inspect(op)} " <>
