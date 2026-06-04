@@ -527,9 +527,14 @@ defmodule Emily.IR do
   # a select chain `where(p1, b1, where(p2, b2, ... last))`. ALL branches
   # are evaluated (Nx branches are side-effect-free and shape-compatible);
   # the result value matches the Evaluator's chosen branch exactly — only
-  # the cost differs (not-taken branches are computed and discarded). The
-  # predicate is a whole-tensor scalar bool, so `where` selects a branch
-  # wholesale.
+  # the cost differs (not-taken branches are computed and discarded by the
+  # elementwise select). The predicate is a whole-tensor scalar bool, so
+  # `where` selects a branch wholesale.
+  #
+  # Caveat: a not-taken branch is still computed. On MLX an out-of-bounds
+  # gather/index there clamps rather than faults, so the discarded value
+  # never changes the result; a hard-faulting op on a not-taken path would
+  # diverge from the Evaluator's lazy single-branch eval.
   defp lower_op(%T{data: %Nx.Defn.Expr{op: :cond, args: [clauses, last]}} = t, state) do
     {last_ref, state} = lower_node(last, state)
 
@@ -569,13 +574,23 @@ defmodule Emily.IR do
             "reduce_min) where possible."
   end
 
-  # while / its tuple projection are deferred to a follow-up: the
-  # single-NIF replay has no loop construct, so a data-dependent while
-  # needs either static-trip unrolling or a worker-side synced loop.
-  defp lower_op(%T{data: %Nx.Defn.Expr{op: op}}, _state) when op in [:while, :elem] do
+  # while is deferred to a follow-up: the single-NIF replay has no loop
+  # construct, so a data-dependent while needs static-trip unrolling or a
+  # worker-side synced loop. defn while is not used by the core transformer
+  # forwards (decode/generation loops run in Elixir today).
+  defp lower_op(%T{data: %Nx.Defn.Expr{op: :while}}, _state) do
     raise ArgumentError,
-          "Emily Expr compiler does not yet lower #{inspect(op)} (defn `while` " <>
-            "loops; deferred — the decode/generation loops run in Elixir today)."
+          "Emily Expr compiler does not yet lower defn `while` loops (deferred — " <>
+            "the single-NIF replay has no loop construct)."
+  end
+
+  # :elem is a tuple projection, emitted for any tuple-returning expression
+  # (defn `while`, multi-output ops). Deferred alongside the constructs
+  # that produce surviving tuples.
+  defp lower_op(%T{data: %Nx.Defn.Expr{op: :elem}}, _state) do
+    raise ArgumentError,
+          "Emily Expr compiler does not yet lower :elem (tuple projection) — it " <>
+            "arises from defn `while` and multi-output ops, which are deferred."
   end
 
   defp lower_op(%T{data: %Nx.Defn.Expr{op: op}}, _state) do
