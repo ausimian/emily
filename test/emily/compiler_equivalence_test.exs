@@ -40,6 +40,11 @@ defmodule Emily.CompilerEquivalenceTest do
     native
   end
 
+  defp assert_in_delta_list(a, b, tol) do
+    assert length(a) == length(b)
+    Enum.zip(a, b) |> Enum.each(fn {x, y} -> assert_in_delta(x, y, tol) end)
+  end
+
   describe "unary elementwise" do
     test "float unary ops match the evaluator" do
       x = et([0.5, -1.25, 2.0, 0.1])
@@ -285,6 +290,38 @@ defmodule Emily.CompilerEquivalenceTest do
         fn q, k, v, m -> Emily.Fast.scaled_dot_product_attention_with_mask(q, k, v, m) end,
         [q, k, v, mask]
       )
+    end
+  end
+
+  describe "quantized matmul block" do
+    test "affine int4 quantized_matmul_defn matches the Evaluator and the eager kernel" do
+      # weight {out=4, in=64}, transpose: true (MLX/from_dense default).
+      w = Nx.iota({4, 64}, type: :f32, backend: Emily.Backend) |> Nx.divide(64.0)
+      qw = Emily.QuantizedWeight.from_dense(w, group_size: 64, bits: 4)
+      x = Nx.iota({2, 64}, type: :f32, backend: Emily.Backend) |> Nx.divide(64.0)
+
+      # The QuantizedWeight (an Nx.Container) is passed as an argument so
+      # its tensors flow in as Expr parameters (device refs, no host copy).
+      f = fn x, qw -> Emily.Quantization.quantized_matmul_defn(x, qw) end
+
+      native = run(f, [x, qw], @native)
+      eval = run(f, [x, qw], @eval)
+
+      assert native.shape == {2, 4}
+      # Native single-NIF path vs Evaluator — both the fused kernel.
+      assert Nx.to_binary(native) == Nx.to_binary(eval)
+
+      # And it agrees with the eager quantized_matmul/2 (same kernel).
+      eager = Emily.Quantization.quantized_matmul(x, qw)
+      assert_in_delta_list(Nx.to_flat_list(native), Nx.to_flat_list(eager), 1.0e-4)
+    end
+
+    test "affine int8 quantized_matmul_defn matches the Evaluator" do
+      w = Nx.iota({3, 64}, type: :f32, backend: Emily.Backend) |> Nx.divide(96.0)
+      qw = Emily.QuantizedWeight.from_dense(w, group_size: 64, bits: 8)
+      x = Nx.iota({2, 64}, type: :f32, backend: Emily.Backend) |> Nx.divide(64.0)
+
+      assert_equiv(fn x, qw -> Emily.Quantization.quantized_matmul_defn(x, qw) end, [x, qw])
     end
   end
 

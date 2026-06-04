@@ -105,8 +105,13 @@ defmodule Emily.IR do
     fast_rope: 56,
     fast_rope_freqs: 57,
     fast_sdpa: 58,
-    fast_sdpa_mask: 59
+    fast_sdpa_mask: 59,
+    quantized_matmul: 60
   }
+
+  # Quant mode string -> code; decoded by qmode_from_code in
+  # c_src/emily/opcodes.hpp.
+  @quant_modes %{"affine" => 0, "mxfp4" => 1, "mxfp8" => 2, "nvfp4" => 3}
 
   @ref_kinds %{input: 0, capture: 1, const: 2, instr: 3}
   @ref_kinds_inverse Map.new(@ref_kinds, fn {k, v} -> {v, k} end)
@@ -186,6 +191,7 @@ defmodule Emily.IR do
   # (no silent fallback) per the compiler's no-fallback design.
 
   alias Emily.Fast.Block, as: FB
+  alias Emily.Quantization.Block, as: QB
   alias Nx.Tensor, as: T
 
   # Nx Expr op -> IR opcode. Arithmetic/bitwise cast both operands to the
@@ -540,6 +546,23 @@ defmodule Emily.IR do
     {rv, state} = lower_node(v, state)
     {rm, state} = lower_node(mask, state)
     {r, state} = emit(state, :fast_sdpa_mask, [rq, rk, rv, rm], [[float_bits(scale)]])
+    coerce(r, t.type, state)
+  end
+
+  defp lower_block(%QB.QuantizedMatmul{} = qb, [x, q, s, b], _expr, t, state) do
+    {rx, state} = lower_node(x, state)
+    {rq, state} = lower_node(q, state)
+    {rs, state} = lower_node(s, state)
+    {rb, state} = lower_node(b, state)
+
+    attrs = [
+      [bool_int(qb.transpose)],
+      [qb.group_size],
+      [qb.bits],
+      [Map.fetch!(@quant_modes, qb.mode)]
+    ]
+
+    {r, state} = emit(state, :quantized_matmul, [rx, rq, rs, rb], attrs)
     coerce(r, t.type, state)
   end
 

@@ -103,9 +103,25 @@ enum class Opcode : int64_t {
   FastSDPA = 58,
   // operands [q, k, v, mask]; iattrs [[scale_bits]]
   FastSDPAMask = 59,
+  // operands [x, w_q, scales, biases];
+  // iattrs [[transpose],[group_size],[bits],[mode_code]]
+  QuantizedMatmul = 60,
 };
 
-inline constexpr int64_t kOpcodeCount = 60;
+inline constexpr int64_t kOpcodeCount = 61;
+
+// Quant mode code (Emily.IR.mode_code/1) -> MLX mode string.
+inline std::string qmode_from_code(int64_t code) {
+  switch (code) {
+  case 0: return "affine";
+  case 1: return "mxfp4";
+  case 2: return "mxfp8";
+  case 3: return "nvfp4";
+  default:
+    throw std::invalid_argument("unknown quant mode code " +
+                                std::to_string(code));
+  }
+}
 
 inline bool valid_opcode(int64_t v) { return v >= 0 && v < kOpcodeCount; }
 
@@ -419,6 +435,27 @@ inline mx::array dispatch_op(Opcode op, const std::vector<mx::array> &in,
     return mx::fast::scaled_dot_product_attention(
         in[0], in[1], in[2], scale, "array", std::optional<mx::array>(in[3]),
         std::nullopt, s);
+  }
+  case Opcode::QuantizedMatmul: {
+    if (in.size() != 4) {
+      throw std::invalid_argument("quantized_matmul expects 4 operands, got " +
+                                  std::to_string(in.size()));
+    }
+    bool transpose = scalar_at(iattrs, 0, "quantized_matmul") != 0;
+    int gs = emily::checked_int(scalar_at(iattrs, 1, "quantized_matmul"),
+                                "group_size");
+    int bits =
+        emily::checked_int(scalar_at(iattrs, 2, "quantized_matmul"), "bits");
+    std::string mode =
+        emily::qmode_from_code(scalar_at(iattrs, 3, "quantized_matmul"));
+    // Affine carries real biases; microscaled modes pass nullopt (the
+    // 4th operand is a placeholder), matching Native.quantized_matmul.
+    std::optional<mx::array> biases;
+    if (mode == "affine") {
+      biases = in[3];
+    }
+    return mx::quantized_matmul(in[0], in[1], in[2], biases, transpose, gs, bits,
+                                mode, s);
   }
   }
   throw std::invalid_argument("unknown opcode " +

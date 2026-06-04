@@ -27,6 +27,7 @@ defmodule Emily.Quantization do
 
   alias Emily.Backend, as: B
   alias Emily.Native
+  alias Emily.Quantization.Block.QuantizedMatmul
   alias Emily.QuantizedWeight
   alias Nx.Tensor, as: T
 
@@ -115,6 +116,75 @@ defmodule Emily.Quantization do
       type: type,
       names: List.duplicate(nil, tuple_size(shape))
     }
+  end
+
+  @doc """
+  `defn`-traceable fused quantized matmul against a `QuantizedWeight`.
+
+  Emits an `Nx.block/4` carrying a `QuantizedMatmul` struct so that
+  `Emily.Backend` (and the Expr compiler) dispatch the fused
+  `mx::quantized_matmul` kernel — the single-kernel analogue of
+  `dequantize_defn/1` + `Nx.dot/2`. Unlike the eager
+  `quantized_matmul/2`, this composes inside a `defn` / `Nx.Defn.jit`
+  trace. Non-Emily backends fall back to `Nx.dot(x, dequantize_defn(qw))`
+  (two kernels) via the block's default fun.
+  """
+  @spec quantized_matmul_defn(Nx.Tensor.t(), QuantizedWeight.t()) :: Nx.Tensor.t()
+  deftransform quantized_matmul_defn(x, qw) do
+    %QuantizedWeight{
+      value: q,
+      scales: s,
+      biases: b,
+      group_size: group_size,
+      bits: bits,
+      transpose: transpose,
+      mode: mode
+    } = qw
+
+    block = %QuantizedMatmul{
+      transpose: transpose,
+      group_size: group_size,
+      bits: bits,
+      mode: mode
+    }
+
+    # Pass `x` and the weight tensors as block args. In a defn trace they
+    # are Exprs (the QuantizedWeight, an Nx.Container, flows in as
+    # parameters); the compiler lowers them to IR input slots / captures.
+    Nx.block(block, [x, q, s, b], qmm_output_template(x, qw, transpose), fn _b, x, _q, _s, _bi ->
+      qmm_fallback(x, qw, transpose)
+    end)
+  end
+
+  # Output template: x's leading axes with the last replaced by the
+  # weight's output-feature count. Built from shapes (not by dotting x
+  # with the concrete dequantized weight — that mixes an Expr with a
+  # captured tensor) and without eagerly dequantizing the weight.
+  defp qmm_output_template(x, qw, transpose) do
+    out_features = qmm_out_features(qw, transpose)
+    out_shape = put_elem(x.shape, tuple_size(x.shape) - 1, out_features)
+    Nx.template(out_shape, x.type)
+  end
+
+  # transpose: true (MLX/from_dense default) packs a [out, in] weight, so
+  # out = value's first axis. transpose: false packs [in, out]; for
+  # bits ∈ {2,4,8} the packed last axis unpacks by 32/bits.
+  defp qmm_out_features(%QuantizedWeight{value: value}, true), do: elem(Nx.shape(value), 0)
+
+  defp qmm_out_features(%QuantizedWeight{value: value, bits: bits}, false)
+       when bits in [2, 4, 8] do
+    shape = Nx.shape(value)
+    elem(shape, tuple_size(shape) - 1) * div(32, bits)
+  end
+
+  defp qmm_out_features(qw, false) do
+    shape = Nx.shape(dequantize_defn(qw))
+    elem(shape, tuple_size(shape) - 1)
+  end
+
+  defp qmm_fallback(x, qw, transpose) do
+    dense = dequantize_defn(qw)
+    if transpose, do: Nx.dot(x, Nx.transpose(dense)), else: Nx.dot(x, dense)
   end
 
   # Affine: MLX's quantized_matmul requires x and scales to share a dtype.
