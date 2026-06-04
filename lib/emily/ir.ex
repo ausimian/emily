@@ -501,16 +501,14 @@ defmodule Emily.IR do
   defp lower_block(%FB.RMSNorm{eps: eps}, [x, weight], _expr, t, state) do
     {rx, state} = lower_node(x, state)
     {rw, state} = lower_node(weight, state)
-    {r, state} = emit(state, :fast_rms_norm, [rx, rw], [[float_bits(eps)]])
-    coerce(r, t.type, state)
+    emit_coerced(state, :fast_rms_norm, [rx, rw], [[float_bits(eps)]], t.type)
   end
 
   defp lower_block(%FB.LayerNorm{eps: eps}, [x, weight, bias], _expr, t, state) do
     {rx, state} = lower_node(x, state)
     {rw, state} = lower_node(weight, state)
     {rb, state} = lower_node(bias, state)
-    {r, state} = emit(state, :fast_layer_norm, [rx, rw, rb], [[float_bits(eps)]])
-    coerce(r, t.type, state)
+    emit_coerced(state, :fast_layer_norm, [rx, rw, rb], [[float_bits(eps)]], t.type)
   end
 
   defp lower_block(%FB.RoPE{} = b, [x, offset], _expr, t, state) do
@@ -518,8 +516,7 @@ defmodule Emily.IR do
     {ro, state} = lower_node(offset, state)
 
     attrs = [[b.dims], [bool_int(b.traditional)], [float_bits(b.base)], [float_bits(b.scale)]]
-    {r, state} = emit(state, :fast_rope, [rx, ro], attrs)
-    coerce(r, t.type, state)
+    emit_coerced(state, :fast_rope, [rx, ro], attrs, t.type)
   end
 
   defp lower_block(%FB.RoPEWithFreqs{} = b, [x, offset, freqs], _expr, t, state) do
@@ -528,16 +525,21 @@ defmodule Emily.IR do
     {rf, state} = lower_node(freqs, state)
 
     attrs = [[b.dims], [bool_int(b.traditional)], [float_bits(b.scale)]]
-    {r, state} = emit(state, :fast_rope_freqs, [rx, ro, rf], attrs)
-    coerce(r, t.type, state)
+    emit_coerced(state, :fast_rope_freqs, [rx, ro, rf], attrs, t.type)
   end
 
   defp lower_block(%FB.SDPA{scale: scale, causal: causal}, [q, k, v], _expr, t, state) do
     {rq, state} = lower_node(q, state)
     {rk, state} = lower_node(k, state)
     {rv, state} = lower_node(v, state)
-    {r, state} = emit(state, :fast_sdpa, [rq, rk, rv], [[float_bits(scale)], [bool_int(causal)]])
-    coerce(r, t.type, state)
+
+    emit_coerced(
+      state,
+      :fast_sdpa,
+      [rq, rk, rv],
+      [[float_bits(scale)], [bool_int(causal)]],
+      t.type
+    )
   end
 
   defp lower_block(%FB.SDPAWithMask{scale: scale}, [q, k, v, mask], _expr, t, state) do
@@ -545,8 +547,7 @@ defmodule Emily.IR do
     {rk, state} = lower_node(k, state)
     {rv, state} = lower_node(v, state)
     {rm, state} = lower_node(mask, state)
-    {r, state} = emit(state, :fast_sdpa_mask, [rq, rk, rv, rm], [[float_bits(scale)]])
-    coerce(r, t.type, state)
+    emit_coerced(state, :fast_sdpa_mask, [rq, rk, rv, rm], [[float_bits(scale)]], t.type)
   end
 
   defp lower_block(%QB.QuantizedMatmul{} = qb, [x, q, s, b], _expr, t, state) do
@@ -562,14 +563,20 @@ defmodule Emily.IR do
       [Map.fetch!(@quant_modes, qb.mode)]
     ]
 
-    {r, state} = emit(state, :quantized_matmul, [rx, rq, rs, rb], attrs)
-    coerce(r, t.type, state)
+    emit_coerced(state, :quantized_matmul, [rx, rq, rs, rb], attrs, t.type)
   end
 
-  # Unknown block struct: lower its pre-composed default expansion (the
-  # `expr` arg) instead of the fused kernel — no runtime fallback.
-  defp lower_block(_struct, _in_args, expr, _t, state) do
-    lower_node(expr, state)
+  # Any other block struct raises. Lowering the block's composed
+  # expansion would silently diverge from the Evaluator whenever
+  # Emily.Backend.block/4 dispatches that struct through a fused / native
+  # kernel (e.g. SDPAWithSinks, the Nx.Block.LinAlg.* / Take / FFT /
+  # cumulative families) — a worse failure than a clear "unsupported".
+  # Additional fused blocks are added alongside their opcode.
+  defp lower_block(struct, _in_args, _expr, _t, _state) do
+    raise ArgumentError,
+          "Emily Expr compiler does not yet lower the block " <>
+            "#{inspect(struct.__struct__)} (no fallback). Supported: RMSNorm, " <>
+            "LayerNorm, RoPE, RoPEWithFreqs, SDPA, SDPAWithMask, QuantizedMatmul."
   end
 
   defp bool_int(true), do: 1
@@ -590,6 +597,14 @@ defmodule Emily.IR do
     ref = {:instr, state.n_instrs}
     instr = %{opcode: opcode, operands: operands, iattrs: iattrs}
     {ref, %{state | instrs: [instr | state.instrs], n_instrs: state.n_instrs + 1}}
+  end
+
+  # Emit an instruction then coerce its output to `type` (mirrors
+  # Emily.Backend.wrap/3). The trailing coerce is mandatory on every
+  # value-producing op, so the helper keeps the per-clause tail honest.
+  defp emit_coerced(state, opcode, operands, iattrs, type) do
+    {r, state} = emit(state, opcode, operands, iattrs)
+    coerce(r, type, state)
   end
 
   # Materialize an Nx tensor (already on a host backend) as a captured

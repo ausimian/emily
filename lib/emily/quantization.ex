@@ -171,12 +171,15 @@ defmodule Emily.Quantization do
   # bits ∈ {2,4,8} the packed last axis unpacks by 32/bits.
   defp qmm_out_features(%QuantizedWeight{value: value}, true), do: elem(Nx.shape(value), 0)
 
-  defp qmm_out_features(%QuantizedWeight{value: value, bits: bits}, false)
+  defp qmm_out_features(%QuantizedWeight{value: value, bits: bits, mode: "affine"}, false)
        when bits in [2, 4, 8] do
+    # Affine packs `32 / bits` lanes per u32 along the last axis.
     shape = Nx.shape(value)
     elem(shape, tuple_size(shape) - 1) * div(32, bits)
   end
 
+  # Other layouts (microscaled, or affine bits 3/6): derive the output
+  # feature count from the dequantized weight's shape.
   defp qmm_out_features(qw, false) do
     shape = Nx.shape(dequantize_defn(qw))
     elem(shape, tuple_size(shape) - 1)

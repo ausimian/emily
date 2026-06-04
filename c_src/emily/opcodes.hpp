@@ -110,7 +110,7 @@ enum class Opcode : int64_t {
 
 inline constexpr int64_t kOpcodeCount = 61;
 
-// Quant mode code (Emily.IR.mode_code/1) -> MLX mode string.
+// Quant mode code (Emily.IR @quant_modes) -> MLX mode string.
 inline std::string qmode_from_code(int64_t code) {
   switch (code) {
   case 0: return "affine";
@@ -158,15 +158,6 @@ inline const std::vector<int64_t> &attr0(const std::vector<std::vector<int64_t>>
     throw std::invalid_argument(std::string(name) + " is missing its attributes");
   }
   return a[0];
-}
-
-inline int64_t scalar_attr(const std::vector<std::vector<int64_t>> &a,
-                           const char *name) {
-  const auto &v = attr0(a, name);
-  if (v.size() != 1) {
-    throw std::invalid_argument(std::string(name) + " expects one attribute value");
-  }
-  return v[0];
 }
 
 inline const std::vector<int64_t> &
@@ -314,7 +305,7 @@ inline mx::array dispatch_op(Opcode op, const std::vector<mx::array> &in,
   // --- Cast / shape ---
   case Opcode::Astype:
     return mx::astype(arg1(in, "astype"),
-                      emily::to_mlx_dtype_code(scalar_attr(iattrs, "astype")), s);
+                      emily::to_mlx_dtype_code(scalar_at(iattrs, 0, "astype")), s);
   case Opcode::Reshape:
     return mx::reshape(arg1(in, "reshape"),
                        emily::to_mlx_shape(attr0(iattrs, "reshape")), s);
@@ -374,7 +365,7 @@ inline mx::array dispatch_op(Opcode op, const std::vector<mx::array> &in,
                                   std::to_string(in.size()));
     }
     auto eps = static_cast<float>(
-        emily::f64_from_bits(scalar_attr(iattrs, "fast_rms_norm")));
+        emily::f64_from_bits(scalar_at(iattrs, 0, "fast_rms_norm")));
     return mx::fast::rms_norm(in[0], std::optional<mx::array>(in[1]), eps, s);
   }
   case Opcode::FastLayerNorm: {
@@ -383,7 +374,7 @@ inline mx::array dispatch_op(Opcode op, const std::vector<mx::array> &in,
                                   std::to_string(in.size()));
     }
     auto eps = static_cast<float>(
-        emily::f64_from_bits(scalar_attr(iattrs, "fast_layer_norm")));
+        emily::f64_from_bits(scalar_at(iattrs, 0, "fast_layer_norm")));
     return mx::fast::layer_norm(in[0], std::optional<mx::array>(in[1]),
                                 std::optional<mx::array>(in[2]), eps, s);
   }
