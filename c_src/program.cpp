@@ -86,6 +86,49 @@ void validate_ref(int64_t r, int64_t n_inputs, std::size_t n_captures,
   throw std::invalid_argument(std::string(where) + ": invalid ref kind");
 }
 
+// Build the mx::array DAG from `prog` + the dynamic `inputs` (indexed by
+// input slot) and return the output roots. Shared by the direct replay
+// and the mx::compile'd path. Captures/consts are read from `prog`
+// (constant across calls); only `inputs` varies.
+std::vector<mx::array> replay_program(const Program &prog,
+                                      const std::vector<mx::array> &inputs,
+                                      mx::Stream &s) {
+  std::vector<mx::array> values;
+  values.reserve(prog.instrs.size());
+
+  auto resolve = [&](int64_t r) -> mx::array {
+    int64_t idx = emily::ref::index_of(r);
+    switch (emily::ref::kind_of(r)) {
+    case emily::ref::Kind::Input:
+      return inputs[idx];
+    case emily::ref::Kind::Capture:
+      return prog.captures[idx]->array;
+    case emily::ref::Kind::Const:
+      return prog.consts[idx]->array;
+    case emily::ref::Kind::Instr:
+      return values[idx];
+    }
+    throw std::runtime_error("eval_program: invalid ref kind");
+  };
+
+  for (const auto &instr : prog.instrs) {
+    std::vector<mx::array> operands;
+    operands.reserve(instr.operands.size());
+    for (auto r : instr.operands) {
+      operands.push_back(resolve(r));
+    }
+    values.push_back(
+        emily::dispatch_op(instr.opcode, operands, instr.iattrs, s));
+  }
+
+  std::vector<mx::array> roots;
+  roots.reserve(prog.outputs.size());
+  for (auto r : prog.outputs) {
+    roots.push_back(resolve(r));
+  }
+  return roots;
+}
+
 } // namespace
 
 // compile_program/6 — parse the flat IR into a replayable Program
@@ -158,6 +201,8 @@ FINE_NIF(compile_program, 0);
 //   * 2 (build) — no eval: return the lazy graph. Isolates the
 //                 build/dispatch cost (the lever the compiler pulls)
 //                 and lets a caller async_eval several programs at once.
+//   * 3 (compiled) — wrap the replay in mx::compile (cached per stream)
+//                 then mx::eval. The secondary encode win; opt-in.
 //
 // The Elixir wrapper `Emily.Native.eval_program/4` awaits the reply via
 // `Emily.Native.Async.call/1`.
@@ -171,61 +216,64 @@ fine::Term eval_program_nif(ErlNifEnv *env, fine::ResourcePtr<WorkerThread> w,
         "eval_program: expected " + std::to_string(prog->n_inputs) +
         " inputs, got " + std::to_string(inputs.size()));
   }
-  if (eval_mode < 0 || eval_mode > 2) {
+  if (eval_mode < 0 || eval_mode > 3) {
     throw std::invalid_argument("eval_program: invalid eval_mode " +
                                 std::to_string(eval_mode));
   }
 
+  // A weak handle to this worker, captured before `w` is handed to
+  // async_encoded, so the compiled-fn cache can be torn down on this same
+  // worker thread when the Program is collected (see Program::~Program).
+  auto worker_state = w->weak_state();
+
   return async_encoded(
       env, w,
-      [prog = std::move(prog), inputs = std::move(inputs),
-       eval_mode](mx::Stream &s) {
-        std::vector<mx::array> values;
-        values.reserve(prog->instrs.size());
-
-        // Resolve a packed ref to its mx::array. Returns by value — an
-        // mx::array copy is a cheap refcount bump, and it avoids any
-        // dangling reference into `values` as that vector grows.
-        auto resolve = [&](int64_t r) -> mx::array {
-          int64_t idx = emily::ref::index_of(r);
-          switch (emily::ref::kind_of(r)) {
-          case emily::ref::Kind::Input:
-            return inputs[idx]->array;
-          case emily::ref::Kind::Capture:
-            return prog->captures[idx]->array;
-          case emily::ref::Kind::Const:
-            return prog->consts[idx]->array;
-          case emily::ref::Kind::Instr:
-            return values[idx];
-          }
-          throw std::runtime_error("eval_program: invalid ref kind");
-        };
-
-        for (const auto &instr : prog->instrs) {
-          std::vector<mx::array> operands;
-          operands.reserve(instr.operands.size());
-          for (auto r : instr.operands) {
-            operands.push_back(resolve(r));
-          }
-          values.push_back(
-              emily::dispatch_op(instr.opcode, operands, instr.iattrs, s));
-        }
-
+      [prog = std::move(prog), inputs = std::move(inputs), eval_mode,
+       worker_state](mx::Stream &s) {
+        std::vector<mx::array> input_arrays = emily::unwrap_all(inputs);
         std::vector<mx::array> roots;
-        roots.reserve(prog->outputs.size());
-        for (auto r : prog->outputs) {
-          roots.push_back(resolve(r));
-        }
 
-        switch (eval_mode) {
-        case 0:
+        if (eval_mode == 3) {
+          // CM6: compiled path. Cache an mx::compile'd replay per stream
+          // (the compiled graph bakes in the captured weights + stream).
+          // Built lazily under the Program's mutex; the captures stay
+          // constant, only `input_arrays` varies, and the per-signature
+          // Program means shapes are stable -> cache hits. `mx::eval` only
+          // (no async): the compiled callable returns realized roots.
+          Program::CompiledFn fn;
+          {
+            std::lock_guard<std::mutex> lock(prog->compile_mtx);
+            auto it = prog->compiled.find(s.index);
+            if (it == prog->compiled.end()) {
+              // Raw pointer (not ResourcePtr) avoids a Program<->fn cycle;
+              // the fn is a member of the Program, so `p` outlives it.
+              Program *p = prog.get();
+              mx::Stream captured = s;
+              Program::CompiledFn raw =
+                  [p, captured](const std::vector<mx::array> &in) mutable {
+                    return replay_program(*p, in, captured);
+                  };
+              Program::CompiledEntry entry;
+              entry.worker = worker_state;
+              entry.fn = mx::compile(std::move(raw));
+              it = prog->compiled.emplace(s.index, std::move(entry)).first;
+            }
+            fn = it->second.fn;
+          }
+          roots = fn(input_arrays);
           mx::eval(roots);
-          break;
-        case 1:
-          mx::async_eval(roots);
-          break;
-        default:
-          break; // 2 == build only: leave the graph lazy
+        } else {
+          roots = replay_program(*prog, input_arrays, s);
+          switch (eval_mode) {
+          case 0:
+            mx::eval(roots);
+            break;
+          case 1:
+            mx::async_eval(roots);
+            break;
+          default:
+            break; // 2 == build only: leave the graph lazy
+          }
         }
 
         std::vector<fine::ResourcePtr<Tensor>> out;
