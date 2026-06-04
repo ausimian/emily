@@ -221,6 +221,37 @@ defmodule Emily.CompilerEquivalenceTest do
     end
   end
 
+  describe "fused kernels (Emily.Fast blocks)" do
+    test "rms_norm matches the fused kernel via the Evaluator" do
+      x = et([[0.1, 0.2, 0.3, 0.4], [1.0, -1.0, 2.0, -2.0]])
+      w = et([1.0, 1.0, 1.0, 1.0])
+      assert_equiv(fn x, w -> Emily.Fast.rms_norm(x, w) end, [x, w])
+      assert_equiv(fn x, w -> Emily.Fast.rms_norm(x, w, eps: 1.0e-5) end, [x, w])
+    end
+
+    test "layer_norm matches the fused kernel via the Evaluator" do
+      x = et([[0.1, 0.2, 0.3, 0.4], [1.0, -1.0, 2.0, -2.0]])
+      w = et([1.0, 0.5, 1.0, 0.5])
+      b = et([0.0, 0.1, 0.0, -0.1])
+      assert_equiv(fn x, w, b -> Emily.Fast.layer_norm(x, w, b) end, [x, w, b])
+    end
+
+    test "rms_norm composed inside a larger graph" do
+      x = et([[0.1, 0.2, 0.3, 0.4], [1.0, -1.0, 2.0, -2.0]])
+      w = et([1.0, 1.0, 1.0, 1.0])
+
+      assert_equiv(
+        fn x, w ->
+          x
+          |> Emily.Fast.rms_norm(w)
+          |> Nx.multiply(2.0)
+          |> Nx.add(1.0)
+        end,
+        [x, w]
+      )
+    end
+  end
+
   describe "two-layer MLP forward (matmul-dominated)" do
     test "matches the evaluator end-to-end" do
       x = et([[0.1, 0.2, 0.3, 0.4]])

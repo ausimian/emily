@@ -97,7 +97,11 @@ defmodule Emily.IR do
     any: 51,
     # indexing / selection
     where: 52,
-    slice: 53
+    slice: 53,
+    # fused transformer kernels (mx::fast::*); float attrs are int64 bit
+    # patterns (float_bits/1).
+    fast_rms_norm: 54,
+    fast_layer_norm: 55
   }
 
   @ref_kinds %{input: 0, capture: 1, const: 2, instr: 3}
@@ -140,6 +144,17 @@ defmodule Emily.IR do
   def dtype_code({kind, bits}) when is_map_key(@dtype_kind_codes, kind),
     do: Map.fetch!(@dtype_kind_codes, kind) * 256 + bits
 
+  @doc """
+  Encode a float as the signed int64 bit pattern carried in `iattrs`
+  (the IR's integer attribute channel). Decoded by `f64_from_bits` in
+  c_src/emily/opcodes.hpp.
+  """
+  @spec float_bits(number()) :: integer()
+  def float_bits(f) do
+    <<bits::signed-64-native>> = <<f * 1.0::float-64-native>>
+    bits
+  end
+
   @doc "Pack a tagged operand ref into the int64 the NIF expects."
   @spec pack_ref(ref()) :: non_neg_integer()
   def pack_ref({kind, index})
@@ -166,6 +181,7 @@ defmodule Emily.IR do
   # instructions instead of eager Native calls. Unsupported ops raise
   # (no silent fallback) per the compiler's no-fallback design.
 
+  alias Emily.Fast.Block, as: FB
   alias Nx.Tensor, as: T
 
   # Nx Expr op -> IR opcode. Arithmetic/bitwise cast both operands to the
@@ -454,10 +470,43 @@ defmodule Emily.IR do
     |> materialize_const(t.shape, t.type, state)
   end
 
+  # Nx.block node: args [struct, in_args, expr, callback]. Known fused
+  # structs lower to their fused opcode (matching Emily.Backend.block/4,
+  # which the Evaluator dispatches through); unknown structs lower by
+  # recursing into `expr` — the pre-composed default expansion into
+  # primitives — so there is still no runtime fallback.
+  defp lower_op(
+         %T{data: %Nx.Defn.Expr{op: :block, args: [struct, in_args, expr, _cb]}} = t,
+         state
+       ) do
+    lower_block(struct, in_args, expr, t, state)
+  end
+
   defp lower_op(%T{data: %Nx.Defn.Expr{op: op}}, _state) do
     raise ArgumentError,
           "Emily Expr compiler does not yet lower op #{inspect(op)} " <>
             "(no fallback). It will be added in a later milestone."
+  end
+
+  defp lower_block(%FB.RMSNorm{eps: eps}, [x, weight], _expr, t, state) do
+    {rx, state} = lower_node(x, state)
+    {rw, state} = lower_node(weight, state)
+    {r, state} = emit(state, :fast_rms_norm, [rx, rw], [[float_bits(eps)]])
+    coerce(r, t.type, state)
+  end
+
+  defp lower_block(%FB.LayerNorm{eps: eps}, [x, weight, bias], _expr, t, state) do
+    {rx, state} = lower_node(x, state)
+    {rw, state} = lower_node(weight, state)
+    {rb, state} = lower_node(bias, state)
+    {r, state} = emit(state, :fast_layer_norm, [rx, rw, rb], [[float_bits(eps)]])
+    coerce(r, t.type, state)
+  end
+
+  # Unknown block struct: lower its pre-composed default expansion (the
+  # `expr` arg) instead of the fused kernel — no runtime fallback.
+  defp lower_block(_struct, _in_args, expr, _t, state) do
+    lower_node(expr, state)
   end
 
   defp float_like?({kind, _}) when kind in [:f, :bf, :c], do: true

@@ -19,6 +19,8 @@
 #include <mlx/mlx.h>
 
 #include <cstdint>
+#include <cstring>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -89,11 +91,24 @@ enum class Opcode : int64_t {
   // Indexing / selection
   Where = 52, // operands: [cond, x, y]
   Slice = 53, // operands: [a]; iattrs: [[start...], [stop...], [strides...]]
+  // Fused transformer kernels (mx::fast::*); float attrs are int64 bit
+  // patterns (see Emily.IR.float_bits/1 + f64_from_bits below).
+  FastRMSNorm = 54,   // operands: [x, weight];        iattrs: [[eps_bits]]
+  FastLayerNorm = 55, // operands: [x, weight, bias];  iattrs: [[eps_bits]]
 };
 
-inline constexpr int64_t kOpcodeCount = 54;
+inline constexpr int64_t kOpcodeCount = 56;
 
 inline bool valid_opcode(int64_t v) { return v >= 0 && v < kOpcodeCount; }
+
+// Decode an IEEE-754 double from the int64 bit pattern carried in iattrs
+// (the IR's integer attribute channel). Keep in sync with
+// Emily.IR.float_bits/1.
+inline double f64_from_bits(int64_t bits) {
+  double d;
+  std::memcpy(&d, &bits, sizeof(d));
+  return d;
+}
 
 namespace __op {
 
@@ -316,6 +331,26 @@ inline mx::array dispatch_op(Opcode op, const std::vector<mx::array> &in,
                      emily::to_mlx_shape(attr_at(iattrs, 0, "slice")),
                      emily::to_mlx_shape(attr_at(iattrs, 1, "slice")),
                      emily::to_mlx_shape(attr_at(iattrs, 2, "slice")), s);
+  // --- Fused transformer kernels ---
+  case Opcode::FastRMSNorm: {
+    if (in.size() != 2) {
+      throw std::invalid_argument("fast_rms_norm expects 2 operands, got " +
+                                  std::to_string(in.size()));
+    }
+    auto eps = static_cast<float>(
+        emily::f64_from_bits(scalar_attr(iattrs, "fast_rms_norm")));
+    return mx::fast::rms_norm(in[0], std::optional<mx::array>(in[1]), eps, s);
+  }
+  case Opcode::FastLayerNorm: {
+    if (in.size() != 3) {
+      throw std::invalid_argument("fast_layer_norm expects 3 operands, got " +
+                                  std::to_string(in.size()));
+    }
+    auto eps = static_cast<float>(
+        emily::f64_from_bits(scalar_attr(iattrs, "fast_layer_norm")));
+    return mx::fast::layer_norm(in[0], std::optional<mx::array>(in[1]),
+                                std::optional<mx::array>(in[2]), eps, s);
+  }
   }
   throw std::invalid_argument("unknown opcode " +
                               std::to_string(static_cast<int64_t>(op)));
