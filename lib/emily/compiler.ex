@@ -41,10 +41,16 @@ defmodule Emily.Compiler do
   `Nx.Serving` hold that closure on warmup, so subsequent calls skip
   the walk.
 
-  The compiler does not wrap `mlx::core::compile`. The bench harness
-  under `bench/native/` measured the fusion win at <1.2× on
-  transformer-shaped workloads — below the threshold that justified
-  the integration cost.
+  The compiler does not wrap `mlx::core::compile` by default. The
+  single-NIF replay is the load-bearing win (it collapses the per-op
+  BEAM↔worker round-trips); `mx::compile` is exposed as an *opt-in*
+  compiled eval mode on the program resource, which fuses the
+  elementwise runs the replay leaves separate. On a decode-shaped
+  transformer block `bench/program_compile.exs` measures ~1.6× over the
+  sync replay (kernel-launch + intermediate-memory overhead dominates at
+  small sequence lengths, and fusion removes it), at the cost of
+  last-few-ULP f32 reassociation and a shape-stability requirement —
+  hence opt-in, not the default for the general compiler.
 
   ## Options
 

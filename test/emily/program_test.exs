@@ -16,6 +16,7 @@ defmodule Emily.ProgramTest do
   import Emily.TensorHelpers
 
   alias Emily.{IR, Native, Program}
+  alias Nx.Defn.{Composite, Expr}
 
   describe "replay vs eager (bit-identical)" do
     test "single add matches Native.add for f32" do
@@ -254,6 +255,56 @@ defmodule Emily.ProgramTest do
         Program.eval(worker(), prog, [f32([1.0], [1])], mode: :bogus)
       end
     end
+
+    test "compiled mode (mx::compile) matches sync, bit-for-bit, and caches" do
+      input = f32([1.0, 2.0, 3.0], [3])
+      bias = f32([1.0, 1.0, 1.0], [3])
+      prog = Program.compile(add_chain_ir(20, bias))
+
+      [sync_out] = Program.eval(worker(), prog, [input], mode: :sync)
+      # First compiled eval builds + caches the mx::compile'd replay;
+      # subsequent ones hit the cache. All must equal the sync result.
+      [c1] = Program.eval(worker(), prog, [input], mode: :compiled)
+      [c2] = Program.eval(worker(), prog, [input], mode: :compiled)
+      [c3] = Program.eval(worker(), prog, [f32([4.0, 5.0, 6.0], [3])], mode: :compiled)
+
+      assert to_f32_list(c1) == to_f32_list(sync_out)
+      assert to_f32_list(c2) == to_f32_list(sync_out)
+      # Same compiled program, fresh inputs (shape-stable): 6/7/8 + 20.
+      assert to_f32_list(c3) == [24.0, 25.0, 26.0]
+    end
+
+    test "compiled mode on a matmul + softmax block matches sync within f32 tol" do
+      # mx::compile leaves the matmuls alone but fuses the elementwise
+      # softmax run (max/sub/exp/sum/div). On a deep graph that fusion
+      # reassociates f32 arithmetic, so the compiled result matches sync
+      # to within a few ULP rather than bit-for-bit -- assert a tight
+      # absolute tolerance. (The add-chain above stays bit-identical
+      # because it is shallow and reassociation-free.)
+      d = 8
+      seq = 4
+      shapes = [{seq, d}, {d, d}]
+      [a_ref, b_ref] = Enum.map(shapes, &rand_f32/1)
+
+      fun = fn [a, b] ->
+        s = Nx.dot(a, b)
+        m = Nx.reduce_max(s, axes: [-1], keep_axes: true)
+        e = Nx.exp(Nx.subtract(s, m))
+        w = Nx.divide(e, Nx.sum(e, axes: [-1], keep_axes: true))
+        Nx.dot(w, b)
+      end
+
+      prog = trace_to_program(fun, shapes)
+      [sync_out] = Program.eval(worker(), prog, [a_ref, b_ref], mode: :sync)
+      [comp_out] = Program.eval(worker(), prog, [a_ref, b_ref], mode: :compiled)
+
+      drift =
+        Enum.zip(to_f32_list(sync_out), to_f32_list(comp_out))
+        |> Enum.reduce(0.0, fn {x, y}, acc -> max(acc, abs(x - y)) end)
+
+      assert Native.shape(comp_out) == [seq, d]
+      assert drift <= 1.0e-5, "compiled vs sync drift #{drift} exceeds 1.0e-5"
+    end
   end
 
   describe "memory" do
@@ -283,6 +334,51 @@ defmodule Emily.ProgramTest do
       assert after_400 - after_100 <= 64 * 1024,
              "active memory grew #{after_400 - after_100} bytes over 4x more replays"
     end
+
+    test "compiled-mode programs release their mx::compile cache on GC" do
+      # Each distinct Program evaled in :compiled mode installs an entry in
+      # the worker's *thread-local* mx::compile cache that pins copies of
+      # its captured weights. Program::~Program must drop that entry on the
+      # worker thread; if it instead erased the GC thread's cache (the bug
+      # this guards), the weights would stay live and active memory would
+      # scale with the number of compiled programs.
+      n = div(512 * 1024, 4)
+      zero = f32(List.duplicate(0.0, n), [n])
+
+      make_and_run = fn k ->
+        # A fresh capture per program -> a distinct cache entry / fun_id.
+        weight = f32(List.duplicate(k * 1.0, n), [n])
+        prog = Program.compile(add_chain_ir(4, weight))
+        [out] = Program.eval(worker(), prog, [zero], mode: :compiled)
+        _ = to_f32_list(out)
+        :ok
+      end
+
+      flush = fn ->
+        :erlang.garbage_collect()
+        # Teardown is posted to the worker queue during resource GC; a sync
+        # op after it (FIFO) guarantees every posted teardown has run before
+        # we read memory.
+        [out] = Program.eval(worker(), Program.compile(add_chain_ir(1, zero)), [zero])
+        _ = to_f32_list(out)
+        Native.clear_cache()
+        Native.get_active_memory()
+      end
+
+      run_n = fn count ->
+        for k <- 1..count, do: make_and_run.(k)
+        flush.()
+      end
+
+      _ = run_n.(20)
+      after_40 = run_n.(40)
+      after_80 = run_n.(80)
+
+      # A leaked cache entry pins ~512 KiB per program; 2x more programs
+      # would add tens of MiB. Assert it stays flat (generous slack).
+      assert after_80 - after_40 <= 4 * 1024 * 1024,
+             "compiled-mode cache leaked #{after_80 - after_40} bytes over 2x more programs"
+    end
   end
 
   # --- helpers ---
@@ -295,6 +391,32 @@ defmodule Emily.ProgramTest do
     }
 
     Program.eval(worker(), Program.compile(ir), [a, b])
+  end
+
+  # Trace a function of a parameter list into a `Program` (mirrors what
+  # `Emily.Compiler.compile_native/2` does), so a CM6 test can drive the
+  # same Program through different eval modes.
+  defp trace_to_program(fun, shapes) do
+    vars =
+      shapes
+      |> Enum.with_index()
+      |> Enum.map(fn {shape, i} ->
+        Expr.parameter(Nx.template(shape, {:f, 32}), :root, i)
+      end)
+
+    expr = fun.(vars)
+
+    {_template, leaves_rev} =
+      Composite.traverse(expr, [], fn leaf, acc -> {leaf, [leaf | acc]} end)
+
+    leaves_rev |> Enum.reverse() |> IR.lower() |> Program.compile()
+  end
+
+  defp rand_f32(shape) do
+    dims = Tuple.to_list(shape)
+    n = Enum.product(dims)
+    bin = for i <- 1..n, into: <<>>, do: <<:math.sin(i * 0.31) * 0.5::float-32-native>>
+    Native.from_binary(bin, dims, {:f, 32})
   end
 
   defp add_chain_ir(n, bias_ref) when n > 0 do

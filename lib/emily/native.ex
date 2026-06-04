@@ -117,17 +117,19 @@ defmodule Emily.Native do
     do: nif()
 
   @doc false
-  @spec eval_program_nif(worker(), reference(), [tensor()], 0..2) :: reference()
+  @spec eval_program_nif(worker(), reference(), [tensor()], 0..3) :: reference()
   def eval_program_nif(_w, _program, _inputs, _eval_mode), do: nif()
 
   # Replay `program` on the worker with fresh `inputs`, returning the
   # output refs. One round-trip for the whole graph. `eval_mode`:
   # 0 = sync (mx::eval), 1 = async (mx::async_eval), 2 = build only
   # (leave the graph lazy — isolates dispatch / lets a caller async_eval
-  # several programs together).
-  @spec eval_program(worker(), reference(), [tensor()], 0..2) :: [tensor()]
+  # several programs together), 3 = compiled (wrap the replay in
+  # mx::compile, cached per stream, then mx::eval — the opt-in secondary
+  # encode win; requires a shape-stable program).
+  @spec eval_program(worker(), reference(), [tensor()], 0..3) :: [tensor()]
   def eval_program(w, program, inputs, eval_mode \\ 0)
-      when eval_mode in 0..2,
+      when eval_mode in 0..3,
       do: await(eval_program_nif(w, program, inputs, eval_mode))
 
   # Reflect a compiled program's stored IR back, for round-trip tests.

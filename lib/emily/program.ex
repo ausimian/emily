@@ -57,6 +57,10 @@ defmodule Emily.Program do
         * `:build` — no eval: return the lazy graph. Isolates the
           build/dispatch cost and lets a caller `async_eval` several
           programs together.
+        * `:compiled` — wrap the replay in `mx::compile` (cached per
+          stream) then `mx::eval`. The secondary encode win; opt-in (the
+          single-NIF replay already delivers the main dispatch collapse).
+          Requires a shape-stable program (one input signature).
   """
   @spec eval(Native.worker(), t(), [Native.tensor()], keyword()) :: [Native.tensor()]
   def eval(worker, program, inputs, opts \\ []) do
@@ -71,9 +75,13 @@ defmodule Emily.Program do
         :build ->
           2
 
+        :compiled ->
+          3
+
         other ->
           raise ArgumentError,
-                "Emily.Program.eval/4 :mode must be :sync, :async or :build, got #{inspect(other)}"
+                "Emily.Program.eval/4 :mode must be :sync, :async, :build or " <>
+                  ":compiled, got #{inspect(other)}"
       end
 
     Native.eval_program(worker, program, inputs, eval_mode)

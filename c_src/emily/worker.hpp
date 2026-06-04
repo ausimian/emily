@@ -68,6 +68,24 @@ inline void signal_stop(State &st) {
   st.cv.notify_all();
 }
 
+// Best-effort: enqueue `fn` to run (and then be destroyed) on the worker
+// thread. Used to drop thread-affine resources — e.g. an `mx::compile`
+// cache entry, whose erase must happen on the thread whose thread-local
+// compiler cache holds it — on the thread that created them. Bypasses the
+// queue cap (teardown is tiny and must not be back-pressured). If the
+// worker is already stopping, does nothing: the thread's exit destroys its
+// thread-local state anyway, so the resource is reclaimed regardless.
+inline void post_to_worker(State &st, std::function<void()> fn) {
+  {
+    std::lock_guard<std::mutex> lock(st.mtx);
+    if (st.stop) {
+      return;
+    }
+    st.queue.push([fn = std::move(fn)](mx::Stream &, bool) mutable { fn(); });
+  }
+  st.cv.notify_one();
+}
+
 // Joins worker threads off the BEAM schedulers. Singleton; its thread is
 // created lazily on first use and joined in the NIF unload callback.
 class Reaper {
@@ -203,6 +221,12 @@ public:
     std::lock_guard<std::mutex> lock(state_->mtx);
     return state_->queue.size();
   }
+
+  // A non-owning handle to this worker's state, for posting thread-affine
+  // teardown (see `post_to_worker`) from an object that outlives — or is
+  // collected independently of — the worker resource. Weak so the worker
+  // can be reclaimed while the holder lives; `lock()` fails once it is.
+  std::weak_ptr<State> weak_state() const { return state_; }
 
 private:
   static void run(std::shared_ptr<State> st) {
