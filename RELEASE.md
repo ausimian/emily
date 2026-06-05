@@ -50,6 +50,15 @@
   selection on the native path. Remaining gaps (`gather`/scatter,
   pooling/`window_*`, cumulative) continue to work via the graceful fallback.
 
+- **`Emily.Generation` — a model-agnostic decode-loop driver.** JIT-compiles a
+  caller-supplied **shape-stable** per-token forward (`fn token, offset, cache,
+  params -> {logits, cache} end`) with the native single-NIF compiler and drives
+  the autoregressive loop from Elixir: offset bookkeeping, KV-cache threading,
+  stop conditions, next-token selection (greedy by default), and per-token
+  streaming via `:on_token`. The forward runs fully native; the loop stays in
+  Elixir, so token streaming and host-side control are preserved. Emily supplies
+  only the mechanism — the model (forward + cache) is the caller's.
+
 - `Emily.async_eval/1` (and `Emily.Native.async_eval/2`) schedule evaluation of
   one or more lazy graphs **without blocking on the GPU**, wrapping
   `mlx::core::async_eval`. The work is handed to the device's command queue and
