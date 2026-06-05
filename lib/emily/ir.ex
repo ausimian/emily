@@ -124,7 +124,15 @@ defmodule Emily.IR do
     # RNG / dynamic indexing primitives
     bitcast: 72,
     erf_inv: 73,
-    dyn_slice: 74
+    dyn_slice: 74,
+    # inclusive cumulative reductions (iattrs [[axis],[reverse]])
+    cumsum: 75,
+    cumprod: 76,
+    cummax: 77,
+    cummin: 78,
+    # multi-axis gather: operands [input, idx0, ...]; iattrs [[axes],[slice_sizes]]
+    gather: 79,
+    stack: 80
   }
 
   # Quant mode string -> code; decoded by qmode_from_code in
@@ -409,6 +417,14 @@ defmodule Emily.IR do
     reduce_min: :min
   }
 
+  # Cumulative reductions arrive as `Nx.block/4` nodes. Block struct -> opcode.
+  @cumulative_blocks %{
+    Nx.Block.CumulativeSum => :cumsum,
+    Nx.Block.CumulativeProduct => :cumprod,
+    Nx.Block.CumulativeMax => :cummax,
+    Nx.Block.CumulativeMin => :cummin
+  }
+
   defp lower_op(%T{data: %Nx.Defn.Expr{op: op, args: [a, opts]}} = t, state)
        when is_map_key(@reductions, op) do
     {ra, state} = lower_node(a, state)
@@ -568,6 +584,41 @@ defmodule Emily.IR do
     end
   end
 
+  # gather(input, indices, opts). Mirrors Emily.Backend.gather/4: single-axis
+  # gathers `take` along the one axis (indices cast to s32); multi-axis
+  # gathers split the `{..., R}` index tensor into R per-axis index arrays
+  # and use MLX's multi-index gather. Both reshape to the output shape (token
+  # selection in sampling is this shape). A layout MLX gather can't express
+  # raises, so the graceful fallback handles it.
+  defp lower_op(%T{data: %Nx.Defn.Expr{op: :gather, args: [input, indices, opts]}} = t, state) do
+    axes = opts[:axes]
+    indices_shape = Tuple.to_list(indices.shape)
+
+    {ri, state} = lower_node(input, state)
+    {rx, state} = lower_node(indices, state)
+
+    {r, state} =
+      case axes do
+        [axis] ->
+          {ix, state} = emit(state, :astype, [rx], [[dtype_code({:s, 32})]])
+          emit(state, :take, [ri, ix], [[axis]])
+
+        _ when is_list(axes) ->
+          unless scatter_gather_compatible?(indices_shape, axes) do
+            raise ArgumentError,
+                  "Emily Expr compiler: gather index layout #{inspect(indices_shape)} " <>
+                    "for axes #{inspect(axes)} is not MLX-gather-compatible."
+          end
+
+          {idx_refs, state} = split_indices_for_gather(rx, indices_shape, length(axes), state)
+          slice_sizes = slice_sizes_for_gather(input.shape, axes)
+          emit(state, :gather, [ri | idx_refs], [axes, slice_sizes])
+      end
+
+    {r, state} = emit(state, :reshape, [r], [Tuple.to_list(t.shape)])
+    coerce(r, t.type, state)
+  end
+
   # put_slice(src, start_indices, slice): write `slice` into `src` at
   # `start_indices`. Mirrors Emily.Backend.put_slice/4 (cast src + update
   # to out.type), but supports RUNTIME (tensor) start indices — the decode
@@ -621,6 +672,12 @@ defmodule Emily.IR do
   defp lower_op(%T{data: %Nx.Defn.Expr{op: :concatenate, args: [tensors, axis]}} = t, state) do
     {refs, state} = Enum.map_reduce(tensors, state, &lower_node/2)
     emit_coerced(state, :concatenate, refs, [[axis]], t.type)
+  end
+
+  # stack(tensors, axis): join along a NEW axis. Mirrors Emily.Backend.stack/3.
+  defp lower_op(%T{data: %Nx.Defn.Expr{op: :stack, args: [tensors, axis]}} = t, state) do
+    {refs, state} = Enum.map_reduce(tensors, state, &lower_node/2)
+    emit_coerced(state, :stack, refs, [[axis]], t.type)
   end
 
   # conv: ports Emily.Backend.conv/4 — permute input -> NHWC and kernel ->
@@ -858,11 +915,26 @@ defmodule Emily.IR do
     emit_coerced(state, :take, [ri, rx], [[axis]], t.type)
   end
 
+  # Cumulative families. Like Emily.Backend.block/4, the last-axis case uses
+  # the native MLX `cumsum`/`cumprod`/`cummax`/`cummin` kernel; interior axes
+  # (which MLX can't always factor) fall back to the block's composed
+  # expansion. Nx cumulation is always inclusive.
+  defp lower_block(%mod{axis: axis, reverse: reverse}, [t], expr, out, state)
+       when is_map_key(@cumulative_blocks, mod) do
+    if axis == tuple_size(out.shape) - 1 do
+      {rt, state} = lower_node(t, state)
+      op = Map.fetch!(@cumulative_blocks, mod)
+      emit_coerced(state, op, [rt], [[axis], [bool_int(reverse)]], out.type)
+    else
+      lower_node(expr, state)
+    end
+  end
+
   # Any other block struct raises. Lowering the block's composed
   # expansion would silently diverge from the Evaluator whenever
   # Emily.Backend.block/4 dispatches that struct through a fused / native
-  # kernel (e.g. SDPAWithSinks, the Nx.Block.LinAlg.* / Take / FFT /
-  # cumulative families) — a worse failure than a clear "unsupported".
+  # kernel (e.g. SDPAWithSinks, the Nx.Block.LinAlg.* / FFT families) — a
+  # worse failure than a clear "unsupported".
   # Additional fused blocks are added alongside their opcode.
   defp lower_block(struct, _in_args, _expr, _t, _state) do
     raise ArgumentError,
@@ -1006,5 +1078,40 @@ defmodule Emily.IR do
 
     {r, state} = emit(state, :maximum, [ref, lo_c])
     emit(state, :minimum, [r, hi_c])
+  end
+
+  # MLX's multi-index gather needs the index tensor's leading dims to be the
+  # batch and the last axis to select across `axes` (mirrors
+  # Emily.Backend.scatter_gather_compatible?/2).
+  defp scatter_gather_compatible?(indices_shape, axes) do
+    is_list(axes) and axes != [] and length(indices_shape) >= 2 and
+      List.last(indices_shape) == length(axes)
+  end
+
+  # Split an `{..., R}` index tensor into R per-axis s32 index arrays (each
+  # the leading batch with the last axis dropped) — ports
+  # Emily.Backend.split_indices_per_axis/4 with static slices.
+  defp split_indices_for_gather(indices_ref, indices_shape, n_axes, state) do
+    rank = length(indices_shape)
+    last_axis = rank - 1
+    batch_shape = Enum.take(indices_shape, last_axis)
+    strides = List.duplicate(1, rank)
+    batch_zeros = List.duplicate(0, last_axis)
+
+    Enum.map_reduce(0..(n_axes - 1)//1, state, fn i, state ->
+      {r, state} =
+        emit(state, :slice, [indices_ref], [batch_zeros ++ [i], batch_shape ++ [i + 1], strides])
+
+      {r, state} = emit(state, :squeeze, [r], [[last_axis]])
+      emit(state, :astype, [r], [[dtype_code({:s, 32})]])
+    end)
+  end
+
+  # Per-axis slice size for gather: 1 on a gathered axis, the full extent
+  # otherwise (mirrors Emily.Backend.slice_sizes_for_gather/2).
+  defp slice_sizes_for_gather(input_shape, axes) do
+    axes_set = MapSet.new(axes)
+    rank = tuple_size(input_shape)
+    for i <- 0..(rank - 1)//1, do: if(i in axes_set, do: 1, else: elem(input_shape, i))
   end
 end

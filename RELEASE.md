@@ -50,6 +50,16 @@
   selection on the native path. Remaining gaps (`gather`/scatter,
   pooling/`window_*`, cumulative) continue to work via the graceful fallback.
 
+- **`Bumblebee.Text.generation` compiles fully native — greedy and sampling.**
+  The headline result: an end-to-end Bumblebee generation (the transformer
+  forward, the `defn while` decode loop, dynamic KV-cache writes, `cumsum`
+  position ids, `argmax`/multinomial token selection, threefry sampling) now
+  lowers to the single-NIF replay with **no fallback**, producing token ids
+  bit-identical to the Evaluator. Wiring this required `cumsum`/`cumprod`/
+  `cummax`/`cummin` (last-axis fast path), single- and multi-axis `gather`,
+  and `stack`. Greedy and multinomial sampling are gated in
+  `generation_native_test.exs`.
+
 - **`defn while` compiles native.** Data-dependent loops — including
   `Bumblebee.Text.generation`'s decode loop — now lower to the single-NIF
   replay instead of falling back. The condition and body become nested

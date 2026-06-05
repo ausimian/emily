@@ -142,9 +142,20 @@ enum class Opcode : int64_t {
   // path indexes by a loop counter). operands [a, start(s32 [naxes])];
   // iattrs [[axes...], [slice_sizes...]]
   DynSlice = 74,
+  // Inclusive cumulative reductions along an axis. operands [a];
+  // iattrs [[axis], [reverse]] (Nx cumulation is always inclusive).
+  CumSum = 75,
+  CumProd = 76,
+  CumMax = 77,
+  CumMin = 78,
+  // Multi-axis gather. operands [input, idx0, idx1, ...] (one s32 index
+  // array per gathered axis); iattrs [[axes...], [slice_sizes...]]
+  Gather = 79,
+  // Stack tensors along a new axis. operands [t0, t1, ...]; iattrs [[axis]]
+  Stack = 80,
 };
 
-inline constexpr int64_t kOpcodeCount = 75;
+inline constexpr int64_t kOpcodeCount = 81;
 
 // Quant mode code (Emily.IR @quant_modes) -> MLX mode string.
 inline std::string qmode_from_code(int64_t code) {
@@ -565,6 +576,37 @@ inline mx::array dispatch_op(Opcode op, const std::vector<mx::array> &in,
     return mx::slice(in[0], in[1],
                      emily::to_int_vec(attr_at(iattrs, 0, "dyn_slice")),
                      emily::to_mlx_shape(attr_at(iattrs, 1, "dyn_slice")), s);
+  case Opcode::CumSum:
+    return mx::cumsum(arg1(in, "cumsum"),
+                      emily::checked_int(scalar_at(iattrs, 0, "cumsum"), "axis"),
+                      scalar_at(iattrs, 1, "cumsum") != 0, /*inclusive=*/true, s);
+  case Opcode::CumProd:
+    return mx::cumprod(arg1(in, "cumprod"),
+                       emily::checked_int(scalar_at(iattrs, 0, "cumprod"), "axis"),
+                       scalar_at(iattrs, 1, "cumprod") != 0, /*inclusive=*/true, s);
+  case Opcode::CumMax:
+    return mx::cummax(arg1(in, "cummax"),
+                      emily::checked_int(scalar_at(iattrs, 0, "cummax"), "axis"),
+                      scalar_at(iattrs, 1, "cummax") != 0, /*inclusive=*/true, s);
+  case Opcode::CumMin:
+    return mx::cummin(arg1(in, "cummin"),
+                      emily::checked_int(scalar_at(iattrs, 0, "cummin"), "axis"),
+                      scalar_at(iattrs, 1, "cummin") != 0, /*inclusive=*/true, s);
+  case Opcode::Gather: {
+    if (in.size() < 2) {
+      throw std::invalid_argument("gather expects input + >=1 index operand");
+    }
+    std::vector<mx::array> indices(in.begin() + 1, in.end());
+    return mx::gather(in[0], indices,
+                      emily::to_int_vec(attr_at(iattrs, 0, "gather")),
+                      emily::to_mlx_shape(attr_at(iattrs, 1, "gather")), s);
+  }
+  case Opcode::Stack:
+    if (in.empty()) {
+      throw std::invalid_argument("stack expects >= 1 operand");
+    }
+    return mx::stack(in, emily::checked_int(scalar_at(iattrs, 0, "stack"), "axis"),
+                     s);
   }
   throw std::invalid_argument("unknown opcode " +
                               std::to_string(static_cast<int64_t>(op)));

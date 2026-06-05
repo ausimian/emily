@@ -177,8 +177,15 @@ defmodule Emily.Compiler do
     {template, leaves_rev} =
       Composite.traverse(expr, [], fn leaf, acc -> {Nx.to_template(leaf), [leaf | acc]} end)
 
+    # The flattened parameter leaves are the true input count and slot order
+    # (the closure realises them in this order; `{:input, i}` indexes it).
+    # `IR.lower` only counts the parameters it *references*, which undercounts
+    # when an input is unused (e.g. the `seed` in greedy generation) — pin
+    # `n_inputs` to the real arity so the eval-time input count matches.
+    n_inputs = length(Composite.flatten_list(vars))
+
     case lower(Enum.reverse(leaves_rev), mode, key) do
-      {:ok, ir} -> {:ok, replay_closure(template, ir)}
+      {:ok, ir} -> {:ok, replay_closure(template, %{ir | n_inputs: n_inputs})}
       :fallback -> :fallback
     end
   end
