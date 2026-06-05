@@ -7,7 +7,10 @@ defmodule Emily.CompilerControlFlowTest do
   use ExUnit.Case, async: true
   import Nx.Defn
 
-  @native [compiler: Emily.Compiler, native: true]
+  # `native_fallback: :raise` is explicit (not relying on config/test.exs)
+  # so the "unsupported control flow raises" assertions below stay a local,
+  # config-independent gate.
+  @native [compiler: Emily.Compiler, native: true, native_fallback: :raise]
   @eval [compiler: Emily.Compiler]
 
   defn if_fn(x) do

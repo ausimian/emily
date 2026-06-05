@@ -394,7 +394,7 @@ defmodule Emily.ProgramTest do
   end
 
   # Trace a function of a parameter list into a `Program` (mirrors what
-  # `Emily.Compiler.compile_native/2` does), so a CM6 test can drive the
+  # `Emily.Compiler`'s native path does), so a CM6 test can drive the
   # same Program through different eval modes.
   defp trace_to_program(fun, shapes) do
     vars =

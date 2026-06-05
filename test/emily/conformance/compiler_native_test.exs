@@ -30,7 +30,13 @@ defmodule Emily.Conformance.CompilerNativeTest do
   # Run `model`'s forward both ways and assert every output leaf agrees,
   # while asserting no Backend fallback fires on the native path.
   defp assert_native_matches(model, params, inputs) do
-    {_init, native_predict} = Axon.build(model, compiler: Emily.Compiler, native: true)
+    # `native_fallback: :raise` is explicit so this gate proves full native
+    # op coverage even if the runtime default (`:eval`) is in effect: an
+    # unsupported op raises here rather than silently degrading to the
+    # evaluator (which would let the test pass without proving coverage).
+    {_init, native_predict} =
+      Axon.build(model, compiler: Emily.Compiler, native: true, native_fallback: :raise)
+
     {_init, eval_predict} = Axon.build(model, compiler: Emily.Compiler)
 
     {native, fallbacks} = with_fallback_count(fn -> native_predict.(params, inputs) end)

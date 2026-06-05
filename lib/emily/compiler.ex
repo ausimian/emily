@@ -68,6 +68,19 @@ defmodule Emily.Compiler do
       and Bumblebee passes `:cache` through for its own per-scope
       cache suffixing. Neither is used by the Evaluator walk, but
       rejecting them would break those servings.
+    * `:native` — `true` compiles the traced `Nx.Defn.Expr` to a flat
+      IR and replays the whole graph in a single NIF call per invocation.
+      Defaults to `false`, which runs the op-by-op Evaluator walk.
+    * `:native_fallback` — `:eval` (default) or `:raise`. Controls what
+      happens when `native: true` but the expression contains an op or
+      construct the IR can't lower yet. `:eval` routes the *whole* defn
+      through `Nx.Defn.Evaluator` (each op then dispatches through
+      `Emily.Backend`, with its own per-op `via_binary` fallback) and
+      fires a one-shot `[:emily, :compiler, :fallback]` event, so
+      installing `compiler: Emily.Compiler, native: true` globally is
+      safe on any model. `:raise` re-raises the lowering error instead —
+      use it in CI to prove a model lowers fully native. The per-call
+      option wins over `config :emily, :native_fallback, :eval | :raise`.
 
   Any other option is silently dropped. This matches how
   `Nx.Defn.Evaluator` and EXLA handle their own option lists, and is
@@ -106,7 +119,8 @@ defmodule Emily.Compiler do
     :max_concurrency,
     :batch_keys,
     :cache,
-    :native
+    :native,
+    :native_fallback
   ]
 
   @impl true
@@ -114,7 +128,10 @@ defmodule Emily.Compiler do
     opts = take_known_opts(opts)
 
     if Keyword.get(opts, :native, false) do
-      compile_native(vars, fun).(args_list)
+      case build_native(key, vars, fun, opts) do
+        {:ok, run} -> run.(args_list)
+        :fallback -> Evaluator.__jit__(key, vars, fun, args_list, drop_native_opts(opts))
+      end
     else
       Evaluator.__jit__(key, vars, fun, args_list, opts)
     end
@@ -125,24 +142,73 @@ defmodule Emily.Compiler do
     opts = take_known_opts(opts)
 
     if Keyword.get(opts, :native, false) do
-      compile_native(vars, fun)
+      case build_native(key, vars, fun, opts) do
+        {:ok, run} -> run
+        :fallback -> Evaluator.__compile__(key, vars, fun, drop_native_opts(opts))
+      end
     else
       Evaluator.__compile__(key, vars, fun, opts)
     end
   end
 
-  # The single-NIF compiled path (CM1+): trace the function into an
-  # Nx.Defn.Expr, lower it to a flat IR once, compile it into a `Program`
-  # resource (captured in this closure), and replay the whole graph in
-  # one NIF call per invocation. Op coverage is still partial — an
-  # unsupported op raises in `Emily.IR.lower/1` (no silent fallback).
-  defp compile_native(vars, fun) do
+  # Build the single-NIF native closure for `fun`, or signal `:fallback`.
+  #
+  # The Expr trace (`fun.(vars)`) runs *outside* the rescue so a genuine
+  # caller error surfaces unchanged; only the lowering + program build is
+  # guarded. `Emily.IR.lower/1` raises `ArgumentError` on an op or
+  # construct it can't lower yet. Unless `:native_fallback` is `:raise`,
+  # we emit a one-shot `[:emily, :compiler, :fallback]` event and return
+  # `:fallback`, so the caller routes the whole defn through
+  # `Nx.Defn.Evaluator` (which dispatches each op through `Emily.Backend`,
+  # with its own per-op `via_binary` fallback). This keeps a global
+  # `native: true` install safe on any model.
+  @spec build_native(term(), [Nx.Tensor.t()], fun(), keyword()) ::
+          {:ok, ([term()] -> [Nx.Tensor.t()])} | :fallback
+  defp build_native(key, vars, fun, opts) do
+    # Resolve (and validate) the mode up front so a misconfigured
+    # `:native_fallback` raises on every call — including the happy path —
+    # rather than lying dormant until the first lowering failure.
+    mode = native_fallback_mode(opts)
+
+    # The Expr trace runs outside `lower/3`'s guard so a genuine caller
+    # error surfaces unchanged.
     expr = fun.(vars)
 
     {template, leaves_rev} =
       Composite.traverse(expr, [], fn leaf, acc -> {Nx.to_template(leaf), [leaf | acc]} end)
 
-    program = leaves_rev |> Enum.reverse() |> IR.lower() |> Program.compile()
+    case lower(Enum.reverse(leaves_rev), mode, key) do
+      {:ok, ir} -> {:ok, replay_closure(template, ir)}
+      :fallback -> :fallback
+    end
+  end
+
+  # Lower the output leaves to a flat IR. `Emily.IR.lower/1` is the *only*
+  # guarded step: it raises `ArgumentError` on an op or construct it can't
+  # lower yet, which we turn into a graceful `:fallback` (or re-raise in
+  # `:raise` mode). `Program.compile/1` is deliberately kept outside the
+  # rescue (in `replay_closure/2`) — it raises only on malformed IR, i.e. a
+  # compiler bug, which must surface loudly rather than be masked as an
+  # "unsupported op" fallback.
+  defp lower(leaves, mode, key) do
+    {:ok, IR.lower(leaves)}
+  rescue
+    e in ArgumentError ->
+      case mode do
+        :raise ->
+          reraise(e, __STACKTRACE__)
+
+        :eval ->
+          Emily.Telemetry.compiler_fallback(key, e)
+          :fallback
+      end
+  end
+
+  # The single-NIF compiled path (CM1+): compile the lowered IR into a
+  # `Program` resource (captured in this closure) and replay the whole
+  # graph in one NIF call per invocation.
+  defp replay_closure(template, ir) do
+    program = Program.compile(ir)
 
     fn [params] ->
       worker = Emily.MlxStream.default_worker()
@@ -154,6 +220,32 @@ defmodule Emily.Compiler do
       [reassemble(template, out_refs)]
     end
   end
+
+  # Per-call `:native_fallback` opt wins over `config :emily,
+  # :native_fallback`, defaulting to `:eval`. `Keyword.fetch/2` (not `||`)
+  # so an explicit `native_fallback: false` is rejected, not silently
+  # treated as "unset".
+  defp native_fallback_mode(opts) do
+    mode =
+      case Keyword.fetch(opts, :native_fallback) do
+        {:ok, m} -> m
+        :error -> Application.get_env(:emily, :native_fallback, :eval)
+      end
+
+    case mode do
+      m when m in [:eval, :raise] ->
+        m
+
+      other ->
+        raise ArgumentError,
+              "invalid :native_fallback #{inspect(other)}; expected :eval | :raise"
+    end
+  end
+
+  # Strip the Emily-only native knobs before delegating to the Evaluator
+  # — it ignores keys it doesn't consume, but handing it `native: true`
+  # when we've decided *not* to compile natively would be misleading.
+  defp drop_native_opts(opts), do: Keyword.drop(opts, [:native, :native_fallback])
 
   defp native_ref(%T{data: %B{ref: r}}), do: r
   defp native_ref(%T{} = t), do: Nx.backend_transfer(t, B).data.ref

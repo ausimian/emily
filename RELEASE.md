@@ -21,14 +21,27 @@
   dynamic KV-cache writes (`put_slice` at a runtime offset), container/tuple
   outputs, and `cond` (lowered to a select-chain). DistilBERT and ViT forwards
   run end-to-end under the compiler with `config :emily, :fallback, :raise`.
-  Unsupported constructs — `while` loops and arbitrary BEAM `reduce` functions —
-  raise a clear compile-time error rather than silently falling back, so
-  generation loops stay driven from Elixir.
+  Constructs the IR can't lower yet — `while` loops, arbitrary BEAM `reduce`
+  functions — are handled by the graceful fallback below.
 
   An opt-in compiled eval mode additionally wraps the replay in
   `mlx::core::compile`, fusing the elementwise runs (rms-norm, softmax, SiLU
   gating, residual adds) the replay leaves as separate kernels — measured at
   ~1.5–1.6× over the plain replay on a decode-shaped transformer block.
+
+- **Graceful native fallback — `native_fallback: :eval` (the default).** When a
+  `native: true` defn contains an op or construct the Expr compiler can't lower
+  yet, the *whole* defn now routes through `Nx.Defn.Evaluator` (each op then
+  dispatches through `Emily.Backend`, with its own per-op fallback) and emits a
+  one-shot `[:emily, :compiler, :fallback]` telemetry event — instead of
+  raising. This makes it safe to install the compiler globally on any model:
+
+      Nx.Defn.global_default_options(compiler: Emily.Compiler, native: true)
+
+  Covered subgraphs (e.g. encoder forwards) run fully native; the rest is
+  transparently evaluated. Pass `native_fallback: :raise` (or set
+  `config :emily, native_fallback: :raise`) to fail instead — the conformance
+  suites use this to prove a model lowers fully native.
 
 - `Emily.async_eval/1` (and `Emily.Native.async_eval/2`) schedule evaluation of
   one or more lazy graphs **without blocking on the GPU**, wrapping
