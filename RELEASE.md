@@ -50,6 +50,17 @@
   selection on the native path. Remaining gaps (`gather`/scatter,
   pooling/`window_*`, cumulative) continue to work via the graceful fallback.
 
+- **`defn while` compiles native.** Data-dependent loops — including
+  `Bumblebee.Text.generation`'s decode loop — now lower to the single-NIF
+  replay instead of falling back. The condition and body become nested
+  sub-programs (their loop-carried state bound as inputs); the worker thread
+  runs the loop, evaluating the condition each iteration to decide whether to
+  continue, so the **whole loop is one NIF call** with no per-iteration
+  BEAM↔worker round-trip. The `while` instruction is multi-output — its
+  outputs are the final loop-carried state — and `:elem` projects them. (The
+  opt-in `mx::compile` eval mode degrades to a sync replay for while-containing
+  programs, which it can't trace.)
+
 - **`Emily.Generation` — a model-agnostic decode-loop driver.** JIT-compiles a
   caller-supplied **shape-stable** per-token forward (`fn token, offset, cache,
   params -> {logits, cache} end`) with the native single-NIF compiler and drives

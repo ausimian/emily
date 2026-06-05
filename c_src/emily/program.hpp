@@ -50,10 +50,18 @@ inline int64_t index_of(int64_t r) { return r & kIndexMask; }
 
 } // namespace ref
 
+class Program;
+
 struct CompiledInstr {
   Opcode opcode;
   std::vector<int64_t> operands;             // packed refs
   std::vector<std::vector<int64_t>> iattrs;  // integer attrs (shapes/axes/dtype codes)
+  // Nested programs an instruction carries (empty for all but control
+  // flow). `while` holds [condition, body]; each is replayed with the
+  // loop-carried state bound as its inputs (`{:input, i}` -> state[i]).
+  // Held by ResourcePtr so the child program resources stay alive for the
+  // parent's lifetime (refcounted, like every capture).
+  std::vector<fine::ResourcePtr<Program>> subprograms;
 };
 
 // One resource per compiled program. `captures` / `consts` hold strong

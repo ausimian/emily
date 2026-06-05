@@ -172,7 +172,8 @@ defmodule Emily.ProgramTest do
           [999],
           [[IR.pack_ref({:input, 0})]],
           [[]],
-          [IR.pack_ref({:instr, 0})]
+          [IR.pack_ref({:instr, 0})],
+          [[]]
         )
       end
     end
@@ -187,7 +188,8 @@ defmodule Emily.ProgramTest do
           [IR.opcode(:add)],
           [Enum.map([{:input, 0}, {:instr, 0}], &IR.pack_ref/1)],
           [[]],
-          [IR.pack_ref({:instr, 0})]
+          [IR.pack_ref({:instr, 0})],
+          [[]]
         )
       end
     end
@@ -201,14 +203,73 @@ defmodule Emily.ProgramTest do
           [IR.opcode(:add)],
           [Enum.map([{:input, 0}, {:input, 5}], &IR.pack_ref/1)],
           [[]],
-          [IR.pack_ref({:instr, 0})]
+          [IR.pack_ref({:instr, 0})],
+          [[]]
         )
       end
     end
 
     test "compile rejects opcode/operand length mismatch" do
       assert_raise ArgumentError, ~r/length mismatch/, fn ->
-        Native.compile_program(1, [], [], [IR.opcode(:add)], [], [[]], [IR.pack_ref({:input, 0})])
+        Native.compile_program(
+          1,
+          [],
+          [],
+          [IR.opcode(:add)],
+          [],
+          [[]],
+          [IR.pack_ref({:input, 0})],
+          []
+        )
+      end
+    end
+
+    test "compile rejects a while carrying the wrong number of subprograms" do
+      # `while` must carry exactly [condition, body]; here only one is given.
+      child =
+        Program.compile(%IR{
+          n_inputs: 1,
+          instrs: [%{opcode: :negative, operands: [{:input, 0}]}],
+          outputs: [{:instr, 0}]
+        })
+
+      assert_raise ArgumentError, ~r/2 subprograms/, fn ->
+        Native.compile_program(
+          1,
+          [],
+          [],
+          [IR.opcode(:while)],
+          [[IR.pack_ref({:input, 0})]],
+          [[[1]]],
+          [IR.pack_ref({:instr, 0})],
+          [[child]]
+        )
+      end
+    end
+
+    test "compile rejects a while whose body arity != loop-carried state size" do
+      # 1 state element, but the body returns 2 -> would desync the values
+      # vector; rejected at compile.
+      cond_p = Program.compile(%IR{n_inputs: 1, instrs: [], outputs: [{:input, 0}]})
+
+      body_p =
+        Program.compile(%IR{
+          n_inputs: 1,
+          instrs: [],
+          outputs: [{:input, 0}, {:input, 0}]
+        })
+
+      assert_raise ArgumentError, ~r/body output count/, fn ->
+        Native.compile_program(
+          1,
+          [],
+          [],
+          [IR.opcode(:while)],
+          [[IR.pack_ref({:input, 0})]],
+          [[[1]]],
+          [IR.pack_ref({:instr, 0})],
+          [[cond_p, body_p]]
+        )
       end
     end
 

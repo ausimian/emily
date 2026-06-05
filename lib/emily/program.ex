@@ -31,6 +31,15 @@ defmodule Emily.Program do
     iattrs = Enum.map(ir.instrs, fn instr -> Map.get(instr, :iattrs, []) end)
     outputs = Enum.map(ir.outputs, &IR.pack_ref/1)
 
+    # An instruction's nested programs (`while` carries [condition, body])
+    # are compiled to child Program resources here — the recursion lives in
+    # Elixir, so the NIF just receives already-built handles. The C++ side
+    # holds them by refcount for the parent's lifetime.
+    subprograms =
+      Enum.map(ir.instrs, fn instr ->
+        instr |> Map.get(:subprograms, []) |> Enum.map(&compile/1)
+      end)
+
     Native.compile_program(
       ir.n_inputs,
       ir.captures,
@@ -38,7 +47,8 @@ defmodule Emily.Program do
       opcodes,
       operands,
       iattrs,
-      outputs
+      outputs,
+      subprograms
     )
   end
 

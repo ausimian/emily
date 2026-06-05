@@ -127,9 +127,15 @@ enum class Opcode : int64_t {
   Argsort = 69,
   // Reverse along one axis (negative-stride slice). operands [a]; iattrs [[axis]]
   Flip = 70,
+  // Data-dependent loop. operands [s0, s1, ...] (initial loop-carried
+  // state); iattrs [[arity]]; subprograms [condition, body]. Produces
+  // `arity` outputs (the final state). Handled directly in
+  // `replay_program` (it needs the subprograms + multi-output), never via
+  // `dispatch_op`.
+  While = 71,
 };
 
-inline constexpr int64_t kOpcodeCount = 71;
+inline constexpr int64_t kOpcodeCount = 72;
 
 // Quant mode code (Emily.IR @quant_modes) -> MLX mode string.
 inline std::string qmode_from_code(int64_t code) {
@@ -531,6 +537,10 @@ inline mx::array dispatch_op(Opcode op, const std::vector<mx::array> &in,
     // Reverse along one axis — shared core with the eager flip_nif.
     return emily::ops::flip_core(arg1(in, "flip"), scalar_at(iattrs, 0, "flip"),
                                  s);
+  case Opcode::While:
+    // Multi-output + carries subprograms; handled directly in
+    // replay_program, never dispatched here.
+    throw std::invalid_argument("while is handled in replay_program");
   }
   throw std::invalid_argument("unknown opcode " +
                               std::to_string(static_cast<int64_t>(op)));

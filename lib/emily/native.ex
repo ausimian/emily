@@ -111,10 +111,20 @@ defmodule Emily.Native do
           [non_neg_integer()],
           [[non_neg_integer()]],
           [[[integer()]]],
-          [non_neg_integer()]
+          [non_neg_integer()],
+          [[reference()]]
         ) :: reference()
-  def compile_program(_n_inputs, _captures, _consts, _opcodes, _operands, _iattrs, _outputs),
-    do: nif()
+  def compile_program(
+        _n_inputs,
+        _captures,
+        _consts,
+        _opcodes,
+        _operands,
+        _iattrs,
+        _outputs,
+        _subprograms
+      ),
+      do: nif()
 
   @doc false
   @spec eval_program_nif(worker(), reference(), [tensor()], 0..3) :: reference()

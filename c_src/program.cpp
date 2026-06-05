@@ -112,6 +112,45 @@ std::vector<mx::array> replay_program(const Program &prog,
   };
 
   for (const auto &instr : prog.instrs) {
+    // `while` is the one multi-output, subprogram-carrying op: handle it
+    // here rather than in dispatch_op (which returns a single array and
+    // sees no subprograms). It reserves `arity` slots in `values` so the
+    // `{:instr, base + i}` refs its `:elem` consumers were lowered to
+    // resolve correctly.
+    if (instr.opcode == Opcode::While) {
+      std::vector<mx::array> state;
+      state.reserve(instr.operands.size());
+      for (auto r : instr.operands) {
+        state.push_back(resolve(r));
+      }
+
+      const Program &cond_p = *instr.subprograms.at(0);
+      const Program &body_p = *instr.subprograms.at(1);
+
+      // Host-controlled loop, entirely on this worker thread — no BEAM
+      // round-trip per iteration. Mirrors Nx.Defn.Evaluator: evaluate the
+      // condition *before* the body, so zero iterations returns the initial
+      // state unchanged. The loop-carried state binds as each subprogram's
+      // inputs (`{:input, i}` -> state[i]).
+      while (true) {
+        std::vector<mx::array> pred = replay_program(cond_p, state, s);
+        mx::array go = mx::astype(pred.at(0), mx::uint8, s);
+        mx::eval(go);
+        if (go.item<uint8_t>() == 0) {
+          break;
+        }
+        state = replay_program(body_p, state, s);
+        // Force the whole next state each iteration so the lazy graph (and
+        // memory) stays bounded by the state size, not the trip count.
+        mx::eval(state);
+      }
+
+      for (auto &v : state) {
+        values.push_back(std::move(v));
+      }
+      continue;
+    }
+
     std::vector<mx::array> operands;
     operands.reserve(instr.operands.size());
     for (auto r : instr.operands) {
@@ -131,9 +170,10 @@ std::vector<mx::array> replay_program(const Program &prog,
 
 } // namespace
 
-// compile_program/6 — parse the flat IR into a replayable Program
-// resource, capturing strong refs to weight/const tensors. Pure
-// bookkeeping: no MLX work, so it runs on a regular scheduler (no
+// compile_program/8 — parse the flat IR into a replayable Program
+// resource, capturing strong refs to weight/const tensors and to any
+// per-instruction child programs (`while` carries [condition, body]).
+// Pure bookkeeping: no MLX work, so it runs on a regular scheduler (no
 // worker) and returns the resource synchronously.
 fine::ResourcePtr<Program>
 compile_program(ErlNifEnv *, int64_t n_inputs,
@@ -142,7 +182,13 @@ compile_program(ErlNifEnv *, int64_t n_inputs,
                 std::vector<int64_t> opcodes,
                 std::vector<std::vector<int64_t>> operands,
                 std::vector<std::vector<std::vector<int64_t>>> iattrs,
-                std::vector<int64_t> outputs) {
+                std::vector<int64_t> outputs,
+                // Per-instruction child programs (already compiled in Elixir,
+                // so recursion lives there, not here). Empty for every op but
+                // `while`. May be globally empty when no instruction carries
+                // any (the common case + the direct-NIF tests).
+                std::vector<std::vector<fine::ResourcePtr<Program>>>
+                    subprograms) {
   if (n_inputs < 0) {
     throw std::invalid_argument(
         "compile_program: n_inputs must be non-negative, got " +
@@ -162,6 +208,13 @@ compile_program(ErlNifEnv *, int64_t n_inputs,
   prog->consts = std::move(consts);
   prog->instrs.reserve(opcodes.size());
 
+  // `slot` counts value slots produced so far, which differs from the
+  // instruction index once a multi-output op is present: `while` produces
+  // one value per loop-carried state element (= its operand count), so its
+  // outputs occupy `slot .. slot + arity`. An `{:instr, idx}` ref is valid
+  // iff it names an already-produced slot (`idx < slot`), so validation
+  // tracks `slot`, not the instruction position.
+  int64_t slot = 0;
   for (std::size_t i = 0; i < opcodes.size(); i++) {
     if (!emily::valid_opcode(opcodes[i])) {
       throw std::invalid_argument("compile_program: unknown opcode " +
@@ -170,16 +223,53 @@ compile_program(ErlNifEnv *, int64_t n_inputs,
     }
     for (auto r : operands[i]) {
       validate_ref(r, n_inputs, prog->captures.size(), prog->consts.size(),
-                   static_cast<int64_t>(i), "compile_program operand");
+                   slot, "compile_program operand");
     }
-    prog->instrs.push_back(CompiledInstr{static_cast<Opcode>(opcodes[i]),
-                                         std::move(operands[i]),
-                                         std::move(iattrs[i])});
+
+    Opcode op = static_cast<Opcode>(opcodes[i]);
+    int64_t out_count =
+        (op == Opcode::While) ? static_cast<int64_t>(operands[i].size()) : 1;
+
+    std::vector<fine::ResourcePtr<Program>> sub;
+    if (i < subprograms.size()) {
+      sub = std::move(subprograms[i]);
+    }
+
+    // `while` well-formedness, checked here so a malformed loop is rejected
+    // at compile rather than crashing (or silently desyncing the `values`
+    // vector) deep inside the replay: it carries exactly [condition, body],
+    // the condition yields one scalar, and the body returns one value per
+    // loop-carried state element (= operand count = out_count). The Elixir
+    // lowerer guarantees this; the check guards direct-NIF / future callers.
+    if (op == Opcode::While) {
+      if (sub.size() != 2) {
+        throw std::invalid_argument(
+            "compile_program: while at instruction " + std::to_string(i) +
+            " expects 2 subprograms (condition, body), got " +
+            std::to_string(sub.size()));
+      }
+      if (sub[0]->outputs.size() != 1) {
+        throw std::invalid_argument(
+            "compile_program: while condition must produce 1 output, got " +
+            std::to_string(sub[0]->outputs.size()));
+      }
+      if (static_cast<int64_t>(sub[1]->outputs.size()) != out_count) {
+        throw std::invalid_argument(
+            "compile_program: while body output count (" +
+            std::to_string(sub[1]->outputs.size()) +
+            ") must equal the loop-carried state size (" +
+            std::to_string(out_count) + ")");
+      }
+    }
+
+    prog->instrs.push_back(CompiledInstr{op, std::move(operands[i]),
+                                         std::move(iattrs[i]), std::move(sub)});
+    slot += out_count;
   }
 
   for (auto r : outputs) {
-    validate_ref(r, n_inputs, prog->captures.size(), prog->consts.size(),
-                 static_cast<int64_t>(opcodes.size()), "compile_program output");
+    validate_ref(r, n_inputs, prog->captures.size(), prog->consts.size(), slot,
+                 "compile_program output");
   }
   prog->outputs = std::move(outputs);
 
@@ -219,6 +309,21 @@ fine::Term eval_program_nif(ErlNifEnv *env, fine::ResourcePtr<WorkerThread> w,
   if (eval_mode < 0 || eval_mode > 3) {
     throw std::invalid_argument("eval_program: invalid eval_mode " +
                                 std::to_string(eval_mode));
+  }
+
+  // A `while` makes the replay a data-dependent, host-controlled loop that
+  // mx::compile cannot trace, so the compiled eval mode degrades to a plain
+  // sync replay — identical result, just no kernel fusion. The outermost
+  // loop is always a top-level instruction, so scanning the top level is
+  // enough. (The normal compiler path uses sync anyway; this guards the
+  // opt-in compiled mode against a confusing trace-time failure.)
+  if (eval_mode == 3) {
+    for (const auto &instr : prog->instrs) {
+      if (instr.opcode == Opcode::While) {
+        eval_mode = 0;
+        break;
+      }
+    }
   }
 
   // A weak handle to this worker, captured before `w` is handed to

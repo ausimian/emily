@@ -117,7 +117,10 @@ defmodule Emily.IR do
     clip: 67,
     sort: 68,
     argsort: 69,
-    flip: 70
+    flip: 70,
+    # control flow: operands = initial loop-carried state; iattrs [[arity]];
+    # subprograms [condition, body]. Multi-output (produces `arity` values).
+    while: 71
   }
 
   # Quant mode string -> code; decoded by qmode_from_code in
@@ -680,23 +683,58 @@ defmodule Emily.IR do
             "reduce_min) where possible."
   end
 
-  # while is deferred to a follow-up: the single-NIF replay has no loop
-  # construct, so a data-dependent while needs static-trip unrolling or a
-  # worker-side synced loop. defn while is not used by the core transformer
-  # forwards (decode/generation loops run in Elixir today).
-  defp lower_op(%T{data: %Nx.Defn.Expr{op: :while}}, _state) do
-    raise ArgumentError,
-          "Emily Expr compiler does not yet lower defn `while` loops (deferred — " <>
-            "the single-NIF replay has no loop construct)."
+  # while: args [flatten_initial, flatten_arg, condition, flatten_body] (see
+  # Nx.Defn.Expr.while/5). Each `flatten_*` is a single tensor or a tuple of
+  # tensors (the flattened loop-carried state). The condition and body are
+  # expressions over the `flatten_arg` parameter nodes.
+  #
+  # We lower the initial state in the *parent* program, then lower the
+  # condition and body into their own sub-programs whose inputs are the
+  # loop-carried state: each `flatten_arg` leaf is pre-bound to `{:input, i}`,
+  # so at replay the worker binds the current state vector as the
+  # subprogram's inputs. The `while` instruction reserves `arity` value slots
+  # (its outputs are the final state); `:elem` projects them.
+  defp lower_op(%T{data: %Nx.Defn.Expr{op: :while, args: [initial, arg, cond, body]}} = t, state) do
+    init_leaves = flatten_leaves(initial)
+    arg_leaves = flatten_leaves(arg)
+    body_leaves = flatten_leaves(body)
+    arity = length(init_leaves)
+
+    {init_refs, state} = Enum.map_reduce(init_leaves, state, &lower_node/2)
+
+    param_seed =
+      arg_leaves
+      |> Enum.with_index()
+      |> Map.new(fn {%T{data: %Nx.Defn.Expr{id: id}}, i} -> {id, {:input, i}} end)
+
+    cond_ir = lower_subgraph([cond], param_seed, arity)
+    body_ir = lower_subgraph(body_leaves, param_seed, arity)
+
+    {base, state} = emit_multi(state, :while, init_refs, [[arity]], [cond_ir, body_ir], arity)
+
+    # A tuple-typed `while` is consumed only through `:elem`; return the
+    # multi-output handle for those to project. A single-tensor `while`
+    # (arity 1, not tuple-typed) is used directly — return its one ref.
+    case t.type do
+      {:tuple, _} -> {{:multi, base, arity}, state}
+      _ -> {{:instr, base}, state}
+    end
   end
 
-  # :elem is a tuple projection, emitted for any tuple-returning expression
-  # (defn `while`, multi-output ops). Deferred alongside the constructs
-  # that produce surviving tuples.
-  defp lower_op(%T{data: %Nx.Defn.Expr{op: :elem}}, _state) do
-    raise ArgumentError,
-          "Emily Expr compiler does not yet lower :elem (tuple projection) — it " <>
-            "arises from defn `while` and multi-output ops, which are deferred."
+  # :elem projects the i-th output of a multi-output instruction (today,
+  # `while`). lower_node memoizes the producer, so sibling `:elem`s share one
+  # `while` instruction.
+  defp lower_op(%T{data: %Nx.Defn.Expr{op: :elem, args: [tuple_expr, i]}}, state) do
+    case lower_node(tuple_expr, state) do
+      {{:multi, base, _arity}, state} ->
+        {{:instr, base + i}, state}
+
+      {_handle, _state} ->
+        raise ArgumentError,
+              "Emily Expr compiler: :elem projects a tuple-producing op it can't " <>
+                "lower yet (only `while` produces projectable tuples today; other " <>
+                "multi-output ops are unsupported)."
+    end
   end
 
   defp lower_op(%T{data: %Nx.Defn.Expr{op: op}}, _state) do
@@ -793,6 +831,51 @@ defmodule Emily.IR do
           "Emily Expr compiler does not yet lower the block " <>
             "#{inspect(struct.__struct__)} (no fallback). Supported: RMSNorm, " <>
             "LayerNorm, RoPE, RoPEWithFreqs, SDPA, SDPAWithMask, QuantizedMatmul."
+  end
+
+  # The flattened loop-carried state of a `while` arg: Nx delivers it as a
+  # single tensor (single-tensor state) or a tuple of tensors.
+  defp flatten_leaves(%T{} = t), do: [t]
+  defp flatten_leaves(tuple) when is_tuple(tuple), do: Tuple.to_list(tuple)
+
+  # Lower `output_leaves` into a self-contained sub-IR whose inputs are the
+  # loop-carried state. `param_seed` maps each loop parameter's Expr id to
+  # `{:input, i}`, pre-seeded into the cache so those nodes resolve to the
+  # bound state rather than being treated as captures. The sub-IR carries its
+  # own captures/consts (e.g. weights the body closes over) and `n_inputs`
+  # = arity. Replayed by the C++ `while` arm with the current state as inputs.
+  defp lower_subgraph(output_leaves, param_seed, arity) do
+    state = %{
+      cache: param_seed,
+      instrs: [],
+      n_instrs: 0,
+      captures: [],
+      n_captures: 0,
+      consts: [],
+      n_consts: 0,
+      n_inputs: arity
+    }
+
+    {output_refs, state} = Enum.map_reduce(output_leaves, state, &lower_node/2)
+
+    %__MODULE__{
+      n_inputs: arity,
+      captures: Enum.reverse(state.captures),
+      consts: Enum.reverse(state.consts),
+      instrs: Enum.reverse(state.instrs),
+      outputs: output_refs
+    }
+  end
+
+  # Append a multi-output instruction (carrying sub-programs) producing
+  # `arity` values. Only one entry joins `instrs`, but `n_instrs` advances by
+  # `arity` to reserve the output slots — the i-th is `{:instr, base + i}` —
+  # so subsequent refs stay aligned with the `values` vector the C++ replay
+  # builds (its `while` arm pushes `arity` results for this one instruction).
+  defp emit_multi(state, opcode, operands, iattrs, subprograms, arity) do
+    base = state.n_instrs
+    instr = %{opcode: opcode, operands: operands, iattrs: iattrs, subprograms: subprograms}
+    {base, %{state | instrs: [instr | state.instrs], n_instrs: state.n_instrs + arity}}
   end
 
   defp bool_int(true), do: 1
