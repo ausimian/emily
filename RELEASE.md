@@ -61,6 +61,16 @@
   opt-in `mx::compile` eval mode degrades to a sync replay for while-containing
   programs, which it can't trace.)
 
+- **`Nx.Random` compiles native.** The PRNG surface (`split`, `uniform`,
+  `normal`, `randint`, `gumbel`, `choice`) now lowers under the native
+  compiler, so sampling-based generation runs on the single-NIF path and a
+  PRNG key threads through a decode loop as ordinary carried state. This
+  needed three primitives: `bitcast` (random bits → float), `erf_inv`
+  (`normal`), and a **dynamic-start `slice`** — threefry indexes its rotation
+  table by the loop counter, a genuine runtime-start slice (the eager backend
+  materialises the index to a host int; the compiled replay threads it as a
+  runtime `s32` instead, same result).
+
 - **`Emily.Generation` — a model-agnostic decode-loop driver.** JIT-compiles a
   caller-supplied **shape-stable** per-token forward (`fn token, offset, cache,
   params -> {logits, cache} end`) with the native single-NIF compiler and drives

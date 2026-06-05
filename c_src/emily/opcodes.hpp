@@ -133,9 +133,18 @@ enum class Opcode : int64_t {
   // `replay_program` (it needs the subprograms + multi-output), never via
   // `dispatch_op`.
   While = 71,
+  // Reinterpret the bytes as another dtype (Nx.bitcast). operands [a];
+  // iattrs [[dtype_code]]
+  Bitcast = 72,
+  // Inverse error function (for Nx.Random.normal). operands [a]
+  ErfInv = 73,
+  // Slice with runtime (dynamic) start indices, stride 1 (the threefry/RNG
+  // path indexes by a loop counter). operands [a, start(s32 [naxes])];
+  // iattrs [[axes...], [slice_sizes...]]
+  DynSlice = 74,
 };
 
-inline constexpr int64_t kOpcodeCount = 72;
+inline constexpr int64_t kOpcodeCount = 75;
 
 // Quant mode code (Emily.IR @quant_modes) -> MLX mode string.
 inline std::string qmode_from_code(int64_t code) {
@@ -541,6 +550,21 @@ inline mx::array dispatch_op(Opcode op, const std::vector<mx::array> &in,
     // Multi-output + carries subprograms; handled directly in
     // replay_program, never dispatched here.
     throw std::invalid_argument("while is handled in replay_program");
+  case Opcode::Bitcast:
+    return mx::view(arg1(in, "bitcast"),
+                    emily::to_mlx_dtype_code(scalar_at(iattrs, 0, "bitcast")), s);
+  case Opcode::ErfInv:
+    return mx::erfinv(arg1(in, "erf_inv"), s);
+  case Opcode::DynSlice:
+    // operands [a, start(s32 [naxes])]; iattrs [[axes...], [slice_sizes...]].
+    // Stride-1 dynamic slice (mx::slice's dynamic-start overload).
+    if (in.size() != 2) {
+      throw std::invalid_argument("dyn_slice expects 2 operands, got " +
+                                  std::to_string(in.size()));
+    }
+    return mx::slice(in[0], in[1],
+                     emily::to_int_vec(attr_at(iattrs, 0, "dyn_slice")),
+                     emily::to_mlx_shape(attr_at(iattrs, 1, "dyn_slice")), s);
   }
   throw std::invalid_argument("unknown opcode " +
                               std::to_string(static_cast<int64_t>(op)));

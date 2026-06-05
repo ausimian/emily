@@ -120,7 +120,11 @@ defmodule Emily.IR do
     flip: 70,
     # control flow: operands = initial loop-carried state; iattrs [[arity]];
     # subprograms [condition, body]. Multi-output (produces `arity` values).
-    while: 71
+    while: 71,
+    # RNG / dynamic indexing primitives
+    bitcast: 72,
+    erf_inv: 73,
+    dyn_slice: 74
   }
 
   # Quant mode string -> code; decoded by qmode_from_code in
@@ -256,7 +260,8 @@ defmodule Emily.IR do
     sigmoid: :sigmoid,
     floor: :floor,
     ceil: :ceil,
-    erf: :erf
+    erf: :erf,
+    erf_inv: :erf_inv
   }
 
   @doc """
@@ -356,6 +361,13 @@ defmodule Emily.IR do
   defp lower_op(%T{data: %Nx.Defn.Expr{op: :as_type, args: [a]}} = t, state) do
     {ra, state} = lower_node(a, state)
     emit(state, :astype, [ra], [[dtype_code(t.type)]])
+  end
+
+  # bitcast: reinterpret the bytes as out.type (mirrors Emily.Backend.bitcast/2,
+  # which calls mx::view). Used by the RNG path to turn random bits into floats.
+  defp lower_op(%T{data: %Nx.Defn.Expr{op: :bitcast, args: [a]}} = t, state) do
+    {ra, state} = lower_node(a, state)
+    emit(state, :bitcast, [ra], [[dtype_code(t.type)]])
   end
 
   defp lower_op(%T{data: %Nx.Defn.Expr{op: :reshape, args: [a]}} = t, state) do
@@ -510,24 +522,50 @@ defmodule Emily.IR do
     coerce(r, t.type, state)
   end
 
-  # slice(t, starts, lengths, strides): static integer starts only. Nx
-  # passes scalar-tensor starts for dynamic slicing; those depend on
-  # runtime values and are deferred (the decode offset becomes a runtime
-  # input in CM3). Stops = starts + lengths (see Emily.Backend.slice/5).
+  # slice(t, starts, lengths, strides). Nx passes starts as integers (static
+  # slice) or scalar tensors (dynamic slice — e.g. threefry indexing a
+  # rotation table by the loop counter). Static starts -> mx::slice with
+  # integer bounds. Dynamic starts -> mx::slice's dynamic-start overload via
+  # the `dyn_slice` opcode (stride 1 only; the eager backend materialises the
+  # start to a host int, but the compiled replay can't, so it threads the
+  # start as a runtime s32 array).
   defp lower_op(
          %T{data: %Nx.Defn.Expr{op: :slice, args: [a, starts, lengths, strides]}} = t,
          state
        ) do
-    unless Enum.all?(starts, &is_integer/1) do
-      raise ArgumentError,
-            "Emily Expr compiler: dynamic (tensor) slice start indices are not yet " <>
-              "supported (they require a runtime input). Got: #{inspect(starts)}"
-    end
-
     {ra, state} = lower_node(a, state)
-    stops = Enum.zip_with(starts, lengths, fn st, l -> st + l end)
-    {r, state} = emit(state, :slice, [ra], [starts, stops, strides])
-    coerce(r, t.type, state)
+
+    if Enum.all?(starts, &is_integer/1) do
+      stops = Enum.zip_with(starts, lengths, fn st, l -> st + l end)
+      {r, state} = emit(state, :slice, [ra], [starts, stops, strides])
+      coerce(r, t.type, state)
+    else
+      unless Enum.all?(strides, &(&1 == 1)) do
+        raise ArgumentError,
+              "Emily Expr compiler: dynamic (tensor) slice start indices are only " <>
+                "supported with unit strides. Got strides: #{inspect(strides)}"
+      end
+
+      # Build the [ndim] s32 start array from the mixed int / scalar-tensor
+      # starts (same machinery as the dynamic put_slice write). Each runtime
+      # start is clamped to `[0, dim - length]` — MLX's dynamic slice reads
+      # out of bounds, whereas Nx (XLA semantics) clamps the start so the
+      # window stays in range; clamp is a no-op for the in-bounds starts the
+      # threefry/RNG path produces.
+      dims = Tuple.to_list(a.shape)
+
+      {start_refs, state} =
+        [starts, lengths, dims]
+        |> Enum.zip()
+        |> Enum.map_reduce(state, fn {start, length, dim}, state ->
+          {r, state} = lower_start_index(start, state)
+          clamp_start(r, dim - length, state)
+        end)
+
+      {start_arr, state} = emit(state, :concatenate, start_refs, [[0]])
+      axes = Enum.to_list(0..(length(starts) - 1)//1)
+      emit_coerced(state, :dyn_slice, [ra, start_arr], [axes, lengths], t.type)
+    end
   end
 
   # put_slice(src, start_indices, slice): write `slice` into `src` at
@@ -944,5 +982,29 @@ defmodule Emily.IR do
     {r, state} = lower_node(expr, state)
     {r, state} = emit(state, :astype, [r], [[dtype_code({:s, 32})]])
     emit(state, :reshape, [r], [[1]])
+  end
+
+  # Clamp a runtime s32 `[1]` dynamic-slice start to `[0, hi]`
+  # (hi = dim - length), matching Nx/XLA dynamic-slice semantics — MLX's
+  # dynamic slice would otherwise read out of bounds. Both bounds are static.
+  defp clamp_start(ref, hi, state) do
+    {lo_c, state} =
+      materialize_const(
+        Nx.tensor([0], type: :s32, backend: Nx.BinaryBackend),
+        {1},
+        {:s, 32},
+        state
+      )
+
+    {hi_c, state} =
+      materialize_const(
+        Nx.tensor([hi], type: :s32, backend: Nx.BinaryBackend),
+        {1},
+        {:s, 32},
+        state
+      )
+
+    {r, state} = emit(state, :maximum, [ref, lo_c])
+    emit(state, :minimum, [r, hi_c])
   end
 end
