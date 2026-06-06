@@ -68,6 +68,80 @@ defmodule Emily.CompilerEquivalenceTest do
         assert_equiv(op, [x])
       end
     end
+
+    # Direct-mapped unary ops added alongside the Expr op-coverage sweep
+    # (see #188). Each routes through the same `mx::*` primitive as the
+    # eager unary NIF, so the native single-NIF path is bit-identical to
+    # the Evaluator (which dispatches the same op via Emily.Backend).
+    test "extra direct-mapped float unary ops match the evaluator" do
+      x = et([0.5, -1.25, 2.0, 0.1])
+
+      for op <- [
+            &Nx.expm1/1,
+            &Nx.tan/1,
+            &Nx.sinh/1,
+            &Nx.cosh/1,
+            &Nx.atan/1,
+            &Nx.asinh/1
+          ] do
+        assert_equiv(op, [x])
+      end
+    end
+
+    test "inverse-trig unary ops match the evaluator (domain-restricted inputs)" do
+      # asin/acos: |x| <= 1; atanh: |x| < 1; acosh: x >= 1.
+      x = et([0.1, -0.5, 0.25, -0.75])
+
+      for op <- [&Nx.asin/1, &Nx.acos/1, &Nx.atanh/1] do
+        assert_equiv(op, [x])
+      end
+
+      assert_equiv(&Nx.acosh/1, [et([1.0, 1.5, 2.0, 3.0])])
+    end
+
+    test "round (away from zero) matches the evaluator on tie-breaking inputs" do
+      # Nx.round/1 documents "round away from zero"; MLX's mx::round
+      # decimals=0 follows the same. The Backend hard-codes decimals=0
+      # and the IR dispatcher does too.
+      assert_equiv(&Nx.round/1, [et([-1.5, -0.5, 0.5, 1.5, 2.3, -2.7])])
+    end
+
+    test "composed erfc and cbrt match the evaluator (no MLX primitive)" do
+      # Both compose from existing ops (erfc: 1 - erf; cbrt: sign * abs^(1/3))
+      # the same way Emily.Backend does, so the bit pattern stays exact.
+      assert_equiv(&Nx.erfc/1, [et([0.0, 0.5, 1.0, -0.5, 2.0])])
+      assert_equiv(&Nx.cbrt/1, [et([8.0, -8.0, 0.125, -0.125, 0.0])])
+    end
+
+    test "bitwise_not on integer inputs matches the evaluator" do
+      for type <- [:s32, :s64, :u8, :u32] do
+        assert_equiv(&Nx.bitwise_not/1, [et([0, 1, 2, 255], type: type)])
+      end
+    end
+
+    test "is_nan / is_infinity on float inputs match the evaluator" do
+      # nan/inf live alongside finite values so the predicate output (Nx pred ==
+      # {:u, 8}) exercises all three branches; the trailing astype coerces
+      # MLX's bool to {:u, 8} like every other unary op.
+      x = et([1.0, :infinity, :neg_infinity, :nan, 0.0])
+
+      out = assert_equiv(&Nx.is_nan/1, [x])
+      assert out.type == {:u, 8}
+      assert_equiv(&Nx.is_infinity/1, [x])
+    end
+
+    test "complex unary ops (conjugate / real / imag) match the evaluator" do
+      x = et([Complex.new(1.0, 2.0), Complex.new(-3.0, 4.0), Complex.new(0.0, -1.0)])
+
+      conj = assert_equiv(&Nx.conjugate/1, [x])
+      assert conj.type == {:c, 64}
+
+      re = assert_equiv(&Nx.real/1, [x])
+      assert re.type == {:f, 32}
+
+      im = assert_equiv(&Nx.imag/1, [x])
+      assert im.type == {:f, 32}
+    end
   end
 
   describe "binary arithmetic" do

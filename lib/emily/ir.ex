@@ -158,7 +158,31 @@ defmodule Emily.IR do
     # idx0, ...] (one s32 index array per scattered axis); iattrs [[axes...]].
     # scatter overwrites (last-write on duplicates); scatter_add accumulates.
     scatter: 92,
-    scatter_add: 93
+    scatter_add: 93,
+    # Unary elementwise (round 2 — the missing Nx ops alongside the
+    # original @unary_ops set). Names mirror the eager unary NIF names
+    # (c_src/ops/unary.cpp) so the IR opcode atom matches the MLX entry
+    # point — Nx renaming (e.g. acos -> arccos, is_nan -> isnan) happens
+    # in @unary_ops below, just like the eager Backend's @renamed_unary.
+    expm1: 94,
+    tan: 95,
+    sinh: 96,
+    cosh: 97,
+    arccos: 98,
+    arcsin: 99,
+    arctan: 100,
+    arccosh: 101,
+    arcsinh: 102,
+    arctanh: 103,
+    # round/0 — Backend hard-codes mx::round's decimals to 0
+    # (Nx.round/1 takes no decimals arg). Dispatcher does the same.
+    round: 104,
+    bitwise_invert: 105,
+    isnan: 106,
+    isinf: 107,
+    conjugate: 108,
+    real: 109,
+    imag: 110
   }
 
   # Quant mode string -> code; decoded by qmode_from_code in
@@ -287,6 +311,10 @@ defmodule Emily.IR do
   }
 
   # Unary elementwise: no coercion (MLX preserves the dtype Nx expects).
+  # The post-emit `coerce/3` then astype-casts to out.type so MLX ops
+  # whose dtype rule differs from Nx (e.g. `is_nan`/`is_infinity` returning
+  # a bool that Nx wants as {:u, 8}, or `real`/`imag` whose Nx out.type is
+  # the real component) line up — same machinery as the original 16 ops.
   @unary_ops %{
     negate: :negative,
     abs: :abs,
@@ -294,16 +322,33 @@ defmodule Emily.IR do
     sqrt: :sqrt,
     rsqrt: :rsqrt,
     exp: :exp,
+    expm1: :expm1,
     log: :log,
     log1p: :log1p,
     sin: :sin,
     cos: :cos,
+    tan: :tan,
     tanh: :tanh,
+    sinh: :sinh,
+    cosh: :cosh,
+    acos: :arccos,
+    asin: :arcsin,
+    atan: :arctan,
+    acosh: :arccosh,
+    asinh: :arcsinh,
+    atanh: :arctanh,
     sigmoid: :sigmoid,
     floor: :floor,
     ceil: :ceil,
+    round: :round,
     erf: :erf,
-    erf_inv: :erf_inv
+    erf_inv: :erf_inv,
+    bitwise_not: :bitwise_invert,
+    is_nan: :isnan,
+    is_infinity: :isinf,
+    conjugate: :conjugate,
+    real: :real,
+    imag: :imag
   }
 
   @doc """
@@ -403,6 +448,30 @@ defmodule Emily.IR do
   defp lower_op(%T{data: %Nx.Defn.Expr{op: :as_type, args: [a]}} = t, state) do
     {ra, state} = lower_node(a, state)
     emit(state, :astype, [ra], [[dtype_code(t.type)]])
+  end
+
+  # erfc(x) := 1 - erf(x). Mirrors Emily.Backend.erfc/2 — MLX has no
+  # erfc primitive, so the eager path also composes from erf + subtract.
+  defp lower_op(%T{data: %Nx.Defn.Expr{op: :erfc, args: [a]}} = t, state) do
+    {ra, state} = lower_node(a, state)
+    {erf_r, state} = emit(state, :erf, [ra])
+    {one_ref, state} = scalar_const(1.0, t.type, state)
+    {r, state} = emit(state, :subtract, [one_ref, erf_r])
+    coerce(r, t.type, state)
+  end
+
+  # cbrt(x) := sign(x) * abs(x)^(1/3). Mirrors Emily.Backend.cbrt/2 —
+  # MLX has no cbrt primitive. Splitting via sign+abs keeps the negative
+  # branch correct (`x^(1/3)` over negatives lands in complex), matching
+  # the eager path's bit pattern.
+  defp lower_op(%T{data: %Nx.Defn.Expr{op: :cbrt, args: [a]}} = t, state) do
+    {ra, state} = lower_node(a, state)
+    {sign_r, state} = emit(state, :sign, [ra])
+    {abs_r, state} = emit(state, :abs, [ra])
+    {third, state} = scalar_const(1.0 / 3.0, t.type, state)
+    {pow_r, state} = emit(state, :power, [abs_r, third])
+    {r, state} = emit(state, :multiply, [sign_r, pow_r])
+    coerce(r, t.type, state)
   end
 
   # bitcast: reinterpret the bytes as out.type (mirrors Emily.Backend.bitcast/2,
@@ -1341,6 +1410,13 @@ defmodule Emily.IR do
     ref = Emily.Native.from_binary(Nx.to_binary(tensor), Tuple.to_list(shape), type)
     idx = state.n_consts
     {{:const, idx}, %{state | consts: [ref | state.consts], n_consts: idx + 1}}
+  end
+
+  # Bake a `{}` scalar of `type` as a captured const operand. Used by the
+  # composite lowerers (erfc, cbrt) whose Backend mirrors build the same
+  # scalar through `scalar_ref/2`.
+  defp scalar_const(value, type, state) do
+    materialize_const(Nx.tensor(value, type: type, backend: Nx.BinaryBackend), {}, type, state)
   end
 
   defp materialize_capture(tensor, shape, type, state) do

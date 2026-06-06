@@ -50,6 +50,14 @@
   selection on the native path. Remaining gaps (`gather`/scatter,
   pooling/`window_*`, cumulative) continue to work via the graceful fallback.
 
+- **19 more unary ops lower natively** — `expm1`, `tan`, `sinh`, `cosh`,
+  `acos`/`asin`/`atan`, `acosh`/`asinh`/`atanh`, `round`, `bitwise_not`,
+  `is_nan`/`is_infinity`, `conjugate`, `real`/`imag` route to the same
+  `mx::*` primitive as the eager unary NIF (bit-identical to the
+  Evaluator); `erfc` and `cbrt` compose from existing ops, mirroring
+  `Emily.Backend`'s eager composition. Closes the largest cluster on the
+  Expr op-coverage checklist (#188).
+
 - **`take_along_axis` lowers natively** — `Nx.take_along_axis` (the
   `Nx.Block.TakeAlongAxis` block) now compiles under the native single-NIF
   path, mirroring `Emily.Backend.native_take_along_axis/4` (cast indices to

@@ -179,9 +179,31 @@ enum class Opcode : int64_t {
   // idx0, ...] (one s32 index array per scattered axis); iattrs [[axes...]].
   Scatter = 92,    // overwrite (last write wins on duplicates)
   ScatterAdd = 93, // accumulate
+  // Unary elementwise (round 2 — added alongside the @unary_ops expansion
+  // for the missing Nx ops; map to the same mx::* primitives the eager
+  // unary NIFs use, see c_src/ops/unary.cpp).
+  Expm1 = 94,
+  Tan = 95,
+  Sinh = 96,
+  Cosh = 97,
+  Arccos = 98,
+  Arcsin = 99,
+  Arctan = 100,
+  Arccosh = 101,
+  Arcsinh = 102,
+  Arctanh = 103,
+  // Round-half-away-from-zero. Backend hard-codes decimals=0
+  // (Nx.round/1 takes no decimals arg); the dispatcher does too.
+  Round = 104,
+  BitwiseInvert = 105,
+  Isnan = 106,
+  Isinf = 107,
+  Conjugate = 108,
+  Real = 109,
+  Imag = 110,
 };
 
-inline constexpr int64_t kOpcodeCount = 94;
+inline constexpr int64_t kOpcodeCount = 111;
 
 // Quant mode code (Emily.IR @quant_modes) -> MLX mode string.
 inline std::string qmode_from_code(int64_t code) {
@@ -695,6 +717,41 @@ inline mx::array dispatch_op(Opcode op, const std::vector<mx::array> &in,
                            emily::to_mlx_shape(attr_at(iattrs, 0, "irfftn")),
                            emily::to_int_vec(attr_at(iattrs, 1, "irfftn")),
                            mx::fft::FFTNorm::Backward, s);
+  // --- Unary elementwise (round 2) ---
+  case Opcode::Expm1:
+    return mx::expm1(arg1(in, "expm1"), s);
+  case Opcode::Tan:
+    return mx::tan(arg1(in, "tan"), s);
+  case Opcode::Sinh:
+    return mx::sinh(arg1(in, "sinh"), s);
+  case Opcode::Cosh:
+    return mx::cosh(arg1(in, "cosh"), s);
+  case Opcode::Arccos:
+    return mx::arccos(arg1(in, "arccos"), s);
+  case Opcode::Arcsin:
+    return mx::arcsin(arg1(in, "arcsin"), s);
+  case Opcode::Arctan:
+    return mx::arctan(arg1(in, "arctan"), s);
+  case Opcode::Arccosh:
+    return mx::arccosh(arg1(in, "arccosh"), s);
+  case Opcode::Arcsinh:
+    return mx::arcsinh(arg1(in, "arcsinh"), s);
+  case Opcode::Arctanh:
+    return mx::arctanh(arg1(in, "arctanh"), s);
+  case Opcode::Round:
+    return mx::round(arg1(in, "round"), /*decimals=*/0, s);
+  case Opcode::BitwiseInvert:
+    return mx::bitwise_invert(arg1(in, "bitwise_invert"), s);
+  case Opcode::Isnan:
+    return mx::isnan(arg1(in, "isnan"), s);
+  case Opcode::Isinf:
+    return mx::isinf(arg1(in, "isinf"), s);
+  case Opcode::Conjugate:
+    return mx::conjugate(arg1(in, "conjugate"), s);
+  case Opcode::Real:
+    return mx::real(arg1(in, "real"), s);
+  case Opcode::Imag:
+    return mx::imag(arg1(in, "imag"), s);
   // --- Scatter (shares the eager index.cpp entry points) ---
   case Opcode::Scatter:
   case Opcode::ScatterAdd: {
