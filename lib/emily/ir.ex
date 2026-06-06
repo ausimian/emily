@@ -166,6 +166,14 @@ defmodule Emily.IR do
           outputs: [ref()]
         }
 
+  @doc """
+  The opcode name -> wire-value map. Exposed for the opcode-parity test,
+  which checks these stay in lockstep with the `Opcode` enum and
+  `kOpcodeCount` in `c_src/emily/opcodes.hpp`.
+  """
+  @spec opcodes() :: %{atom() => non_neg_integer()}
+  def opcodes, do: @opcodes
+
   @doc "Numeric wire value for an opcode name."
   @spec opcode(atom()) :: non_neg_integer()
   def opcode(name) when is_map_key(@opcodes, name), do: Map.fetch!(@opcodes, name)
