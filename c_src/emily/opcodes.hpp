@@ -175,9 +175,13 @@ enum class Opcode : int64_t {
   Ifftn = 89,  // complex -> complex (inverse)
   Rfftn = 90,  // real -> complex (half spectrum)
   Irfftn = 91, // complex half-spectrum -> real
+  // Scatter (Nx.indexed_put / indexed_add). operands [target, updates,
+  // idx0, ...] (one s32 index array per scattered axis); iattrs [[axes...]].
+  Scatter = 92,    // overwrite (last write wins on duplicates)
+  ScatterAdd = 93, // accumulate
 };
 
-inline constexpr int64_t kOpcodeCount = 92;
+inline constexpr int64_t kOpcodeCount = 94;
 
 // Quant mode code (Emily.IR @quant_modes) -> MLX mode string.
 inline std::string qmode_from_code(int64_t code) {
@@ -691,6 +695,21 @@ inline mx::array dispatch_op(Opcode op, const std::vector<mx::array> &in,
                            emily::to_mlx_shape(attr_at(iattrs, 0, "irfftn")),
                            emily::to_int_vec(attr_at(iattrs, 1, "irfftn")),
                            mx::fft::FFTNorm::Backward, s);
+  // --- Scatter (shares the eager index.cpp entry points) ---
+  case Opcode::Scatter:
+  case Opcode::ScatterAdd: {
+    if (in.size() < 3) {
+      throw std::invalid_argument(
+          "scatter expects >= 3 operands (target, updates, >=1 index), got " +
+          std::to_string(in.size()));
+    }
+    // operands [target, updates, idx0, ...]; the index arrays follow updates.
+    std::vector<mx::array> indices(in.begin() + 2, in.end());
+    auto axes = emily::to_int_vec(attr0(iattrs, "scatter"));
+    return op == Opcode::Scatter
+               ? mx::scatter(in[0], indices, in[1], axes, s)
+               : mx::scatter_add(in[0], indices, in[1], axes, s);
+  }
   }
   throw std::invalid_argument("unknown opcode " +
                               std::to_string(static_cast<int64_t>(op)));

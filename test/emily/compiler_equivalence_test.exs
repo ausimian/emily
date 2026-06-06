@@ -395,6 +395,32 @@ defmodule Emily.CompilerEquivalenceTest do
     end
   end
 
+  describe "scatter (indexed_put / indexed_add)" do
+    test "indexed_put / indexed_add into a 2-D target match the evaluator" do
+      target = et([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]])
+      # Two distinct cells in the {2,3} grid -> order-independent.
+      idx = Nx.tensor([[0, 0], [1, 2]], type: :s64, backend: Emily.Backend)
+      upd = et([10.0, 20.0])
+
+      assert_equiv(fn t, i, u -> Nx.indexed_put(t, i, u) end, [target, idx, upd])
+      assert_equiv(fn t, i, u -> Nx.indexed_add(t, i, u) end, [target, idx, upd])
+    end
+
+    test "indexed_add accumulates duplicate indices (same MLX kernel both paths)" do
+      target = et([0.0, 0.0, 0.0, 0.0])
+      idx = Nx.tensor([[1], [1], [3]], type: :s64, backend: Emily.Backend)
+      upd = et([5.0, 7.0, 2.0])
+      assert_equiv(fn t, i, u -> Nx.indexed_add(t, i, u) end, [target, idx, upd])
+    end
+
+    test "indexed_put on a partial axis set (axes: [0], whole-row writes) matches" do
+      target = et([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0], [7.0, 8.0, 9.0]])
+      idx = Nx.tensor([[0], [2]], type: :s64, backend: Emily.Backend)
+      upd = et([[10.0, 11.0, 12.0], [13.0, 14.0, 15.0]])
+      assert_equiv(fn t, i, u -> Nx.indexed_put(t, i, u, axes: [0]) end, [target, idx, upd])
+    end
+  end
+
   describe "window reductions (pooling forward)" do
     test "2x2 maxpool / sumpool / minpool (CNN-shaped) match the Evaluator" do
       # {batch, channels, h, w}; pool only the spatial axes, stride 2.
