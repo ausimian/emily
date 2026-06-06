@@ -1,12 +1,23 @@
 # Qwen3-0.6B greedy-decode throughput on `Emily.Backend`.
 #
+# Reports two lanes by default and prints the speedup between them:
+#
+#   * baseline — the op-by-op `Nx.Defn.Evaluator` walk.
+#   * native   — the single-NIF `Emily.Compiler` (`native: true`): the whole
+#                generation graph, including the `defn while` decode loop,
+#                replays as one NIF call per step. Run with
+#                `native_fallback: :raise`, so the number is a true
+#                full-native measurement, not a silent fallback.
+#
+# (The opt-in `EMILY_BENCH_FAST_KERNELS` lane is orthogonal — it benches the
+# fused MLX kernels under the evaluator.)
+#
 # Usage:
 #
 #     elixir bench/qwen3_tokens_per_sec.exs
 #
-# Standalone Mix.install so the bench doesn't need the github-ref
-# Bumblebee pinned in Emily's own mix.exs — same rationale as
-# `scripts/qwen3_conformance.exs`. See that script's header.
+# Standalone via Mix.install so a reader can run it without the project's
+# test setup; the dep versions below track Emily's own (keep in sync).
 #
 # Optional environment variables:
 #
@@ -40,16 +51,12 @@
 
 Mix.install([
   {:emily, path: Path.expand("..", __DIR__)},
-  # `override: true` because Emily's mix.exs declares
-  # `{:bumblebee, "~> 0.6", optional: true}` — Mix would otherwise
-  # refuse the github ref here as a child-dep conflict.
-  {:bumblebee,
-   github: "elixir-nx/bumblebee",
-   ref: "273805e95507dc7866b958d90e0012a3abad1761",
-   override: true},
-  {:axon, "~> 0.7"},
+  # Versions track Emily's own deps (Bumblebee 0.7 / Axon 0.8 / Nx 0.12);
+  # keep them in sync with mix.exs so the standalone install resolves.
+  {:bumblebee, "~> 0.7"},
+  {:axon, "~> 0.8"},
   {:tokenizers, "~> 0.5"},
-  {:nx, "~> 0.10"}
+  {:nx, "~> 0.12"}
 ])
 
 defmodule Emily.Bench.Qwen3 do
@@ -99,9 +106,32 @@ defmodule Emily.Bench.Qwen3 do
         strategy: %{type: :greedy_search}
       )
 
-    IO.puts("=== baseline (composed defn kernels) ===")
-    baseline = bench(model_info, tokenizer, generation_config, prompt, new_tokens, warmup, runs)
-    {baseline_mean, _, _, _} = baseline
+    cfg = %{
+      tokenizer: tokenizer,
+      generation_config: generation_config,
+      prompt: prompt,
+      new_tokens: new_tokens,
+      warmup: warmup,
+      runs: runs
+    }
+
+    # Baseline: the op-by-op Evaluator walk (~one BEAM↔worker round-trip per
+    # op). Native: the single-NIF replay — the whole generation graph,
+    # including the `defn while` decode loop, runs as one NIF call per step
+    # (`native_fallback: :raise` so this is a true full-native measurement,
+    # never a silent fallback to the evaluator).
+    {baseline_mean, _, _, _} =
+      bench("baseline (evaluator, op-by-op)", model_info, [compiler: Nx.Defn.Evaluator], cfg)
+
+    {native_mean, _, _, _} =
+      bench(
+        "native (single-NIF Emily.Compiler)",
+        model_info,
+        [compiler: Emily.Compiler, native: true, native_fallback: :raise],
+        cfg
+      )
+
+    IO.puts("\nnative speedup : #{Float.round(native_mean / baseline_mean, 2)}× over the evaluator")
 
     if fast_kernels? do
       unless Code.ensure_loaded?(Emily.Bumblebee.FastKernels) do
@@ -113,16 +143,18 @@ defmodule Emily.Bench.Qwen3 do
         System.halt(1)
       end
 
-      IO.puts("\n=== fused (Emily.Bumblebee.FastKernels) ===")
+      fused_model_info = update_in(model_info.model, &Emily.Bumblebee.FastKernels.apply/1)
 
-      fused_model_info =
-        update_in(model_info.model, &Emily.Bumblebee.FastKernels.apply/1)
-
-      fused = bench(fused_model_info, tokenizer, generation_config, prompt, new_tokens, warmup, runs)
-      {fused_mean, _, _, _} = fused
+      {fused_mean, _, _, _} =
+        bench(
+          "fused (Emily.Bumblebee.FastKernels)",
+          fused_model_info,
+          [compiler: Nx.Defn.Evaluator],
+          cfg
+        )
 
       speedup = fused_mean / baseline_mean
-      IO.puts("\nspeedup        : #{Float.round(speedup, 2)}× (fused mean / baseline mean)")
+      IO.puts("\nfused speedup  : #{Float.round(speedup, 2)}× (fused mean / baseline mean)")
 
       if pin_threshold do
         if speedup >= pin_threshold do
@@ -135,10 +167,21 @@ defmodule Emily.Bench.Qwen3 do
     end
   end
 
-  defp bench(model_info, tokenizer, generation_config, prompt, new_tokens, warmup, runs) do
+  defp bench(label, model_info, defn_options, cfg) do
+    %{
+      tokenizer: tokenizer,
+      generation_config: generation_config,
+      prompt: prompt,
+      new_tokens: new_tokens,
+      warmup: warmup,
+      runs: runs
+    } = cfg
+
+    IO.puts("=== #{label} ===")
+
     serving =
       Bumblebee.Text.generation(model_info, tokenizer, generation_config,
-        defn_options: [compiler: Nx.Defn.Evaluator]
+        defn_options: defn_options
       )
 
     for _ <- Stream.duplicate(:ok, warmup) do
