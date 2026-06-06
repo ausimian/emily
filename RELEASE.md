@@ -67,6 +67,14 @@
   `speech_to_text` serving — the log-mel featurizer's STFT — so that path
   now compiles fully native too.
 
+- **`indexed_put` / `indexed_add` (scatter) lower natively** — both now
+  compile under the native single-NIF path for MLX-scatter-compatible index
+  layouts (the same layout the native gather already requires), mirroring
+  `Emily.Backend`'s scatter — split the index tensor into per-axis s32
+  arrays, reshape updates into MLX's layout, then `mx::scatter` (overwrite)
+  / `mx::scatter_add` (accumulate) bit-for-bit. Layouts MLX can't scatter
+  still route through the evaluator under `native_fallback: :eval`.
+
 - **Window (pooling) ops lower natively — forward and backward.** The
   forward window family (`window_sum`/`window_max`/`window_min`/
   `window_product`, i.e. average and max pooling), the select-and-scatter

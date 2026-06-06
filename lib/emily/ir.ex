@@ -153,7 +153,12 @@ defmodule Emily.IR do
     fftn: 88,
     ifftn: 89,
     rfftn: 90,
-    irfftn: 91
+    irfftn: 91,
+    # Scatter (Nx.indexed_put / indexed_add). operands [target, updates,
+    # idx0, ...] (one s32 index array per scattered axis); iattrs [[axes...]].
+    # scatter overwrites (last-write on duplicates); scatter_add accumulates.
+    scatter: 92,
+    scatter_add: 93
   }
 
   # Quant mode string -> code; decoded by qmode_from_code in
@@ -659,6 +664,39 @@ defmodule Emily.IR do
 
     {r, state} = emit(state, :reshape, [r], [Tuple.to_list(t.shape)])
     coerce(r, t.type, state)
+  end
+
+  # indexed_put / indexed_add (Nx scatter). Mirrors Emily.Backend's
+  # apply_scatter: split the {..., R} index tensor into R per-axis s32 index
+  # arrays, reshape `updates` into MLX's scatter layout, then mx::scatter
+  # (overwrite) / mx::scatter_add (accumulate). Only MLX-scatter-compatible
+  # index layouts lower; others raise (no fallback) — the Evaluator handles
+  # them via_binary under `native_fallback: :eval`, matching native gather.
+  # Operands [target, updates, idx0, ...]; iattrs [[axes...]].
+  defp lower_op(
+         %T{data: %Nx.Defn.Expr{op: op, args: [target, indices, updates, opts]}} = t,
+         state
+       )
+       when op in [:indexed_put, :indexed_add] do
+    axes = opts[:axes] || Enum.to_list(0..(tuple_size(target.shape) - 1)//1)
+    indices_shape = Tuple.to_list(indices.shape)
+
+    unless scatter_gather_compatible?(indices_shape, axes) do
+      raise ArgumentError,
+            "Emily Expr compiler: #{op} index layout #{inspect(indices_shape)} for axes " <>
+              "#{inspect(axes)} is not MLX-scatter-compatible (no fallback)."
+    end
+
+    {rt, state} = lower_node(target, state)
+    {rx, state} = lower_node(indices, state)
+    {idx_refs, state} = split_indices_for_gather(rx, indices_shape, length(axes), state)
+
+    {ru, state} = lower_node(updates, state)
+    updates_shape = updates_shape_for_scatter(indices_shape, target.shape, axes)
+    {ru, state} = emit(state, :reshape, [ru], [updates_shape])
+
+    opcode = if op == :indexed_put, do: :scatter, else: :scatter_add
+    emit_coerced(state, opcode, [rt, ru | idx_refs], [axes], t.type)
   end
 
   # put_slice(src, start_indices, slice): write `slice` into `src` at
@@ -1284,5 +1322,20 @@ defmodule Emily.IR do
     axes_set = MapSet.new(axes)
     rank = tuple_size(input_shape)
     for i <- 0..(rank - 1)//1, do: if(i in axes_set, do: 1, else: elem(input_shape, i))
+  end
+
+  # Rewrap Nx's updates shape {batch ++ non_indexed_dims} into MLX's scatter
+  # layout {batch ++ per_axis_slot}, where per_axis_slot has length
+  # rank(target) with 1 on indexed axes and target_shape[i] elsewhere. Mirrors
+  # Emily.Backend.updates_shape_for_scatter/3.
+  defp updates_shape_for_scatter(indices_shape, target_shape, axes) do
+    batch = Enum.take(indices_shape, length(indices_shape) - 1)
+    axes_set = MapSet.new(axes)
+    rank = tuple_size(target_shape)
+
+    trailing =
+      for i <- 0..(rank - 1)//1, do: if(i in axes_set, do: 1, else: elem(target_shape, i))
+
+    batch ++ trailing
   end
 end
