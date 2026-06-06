@@ -30,7 +30,7 @@ defmodule Emily.ConformanceHelper do
   defmacro __using__(_opts) do
     quote do
       import Emily.ConformanceHelper,
-        only: [assert_all_close: 2, assert_all_close: 3, mode_test: 2]
+        only: [assert_all_close: 2, assert_all_close: 3, mode_test: 2, mode_test: 3]
 
       setup do
         Nx.default_backend(Emily.Backend)
@@ -86,36 +86,65 @@ defmodule Emily.ConformanceHelper do
   `native_fallback: :raise` makes the native lane a no-fallback gate: an
   op that does not lower fails the test rather than silently degrading to
   the evaluator, so a red native lane is a concrete op-coverage gap.
+
+  ## Options
+
+    * `:lane_tags` (default `true`) — when `false`, the native and fusion
+      lanes are emitted *without* the cross-cutting `:native` /
+      `:native_compiled` tags. The heavyweight `*_full` suites pass
+      `lane_tags: false` so their compiler lanes stay gated behind the
+      suite's own `:*_full` moduletag; otherwise `--only native` would
+      start pulling full-size checkpoints. `--only vit_full` then runs all
+      three lanes of that suite.
   """
-  defmacro mode_test(name, do: body) do
+  defmacro mode_test(name, opts \\ [], do: body) do
+    tag_lanes? = Keyword.get(opts, :lane_tags, true)
+
+    lanes = [
+      lane(false, name, "", [], body),
+      lane(
+        tag_lanes? && :native,
+        name,
+        " [native]",
+        [compiler: Emily.Compiler, native: true, native_fallback: :raise],
+        body
+      ),
+      lane(
+        tag_lanes? && :native_compiled,
+        name,
+        " [native_compiled]",
+        [compiler: Emily.Compiler, native: true, native_fallback: :raise, native_compiled: true],
+        body
+      )
+    ]
+
     quote do
-      test unquote(name) do
-        var!(predict_opts) = []
-        unquote(body)
+      (unquote_splicing(lanes))
+    end
+  end
+
+  # Build one `mode_test` lane: a `test` that binds `predict_opts` for the
+  # body, optionally preceded by `@tag tag`. `tag` is `false` to emit no
+  # lane tag (the `*_full` suites rely on their own `:*_full` moduletag).
+  defp lane(tag, name, suffix, predict_opts, body) do
+    name_ast =
+      if suffix == "", do: name, else: quote(do: unquote(name) <> unquote(suffix))
+
+    test =
+      quote do
+        test unquote(name_ast) do
+          var!(predict_opts) = unquote(predict_opts)
+          unquote(body)
+        end
       end
 
-      @tag :native
-      test unquote(name) <> " [native]" do
-        var!(predict_opts) = [
-          compiler: Emily.Compiler,
-          native: true,
-          native_fallback: :raise
-        ]
-
-        unquote(body)
+    if tag do
+      quote do
+        @tag unquote(tag)
+        unquote(test)
       end
-
-      @tag :native_compiled
-      test unquote(name) <> " [native_compiled]" do
-        var!(predict_opts) = [
-          compiler: Emily.Compiler,
-          native: true,
-          native_fallback: :raise,
-          native_compiled: true
-        ]
-
-        unquote(body)
-      end
+    else
+      test
     end
   end
 

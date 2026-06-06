@@ -31,7 +31,7 @@ defmodule Emily.Conformance.WhisperFullTest do
   @moduletag capture_log: true
   @moduletag timeout: 600_000
 
-  test "openai/whisper-tiny forward pass matches pinned logits slice" do
+  mode_test "openai/whisper-tiny forward pass matches pinned logits slice", lane_tags: false do
     {:ok, %{model: model, params: params, spec: spec}} =
       Bumblebee.load_model({:hf, "openai/whisper-tiny"})
 
@@ -58,7 +58,7 @@ defmodule Emily.Conformance.WhisperFullTest do
       "decoder_attention_mask" => decoder_attention_mask
     }
 
-    outputs = Axon.predict(model, params, inputs)
+    outputs = Axon.predict(model, params, inputs, predict_opts)
 
     assert Nx.shape(outputs.logits) == {1, 6, 51_865}
 
