@@ -135,6 +135,22 @@ defmodule Emily.CompilerWhileTest do
       # No body ran, so nothing was fused — bit-identical to the input.
       assert Nx.to_binary(out) == Nx.to_binary(x)
     end
+
+    test "dynamic put_slice (KV-write shape) body fuses correctly" do
+      # The generation-shaped body: a `Nx.put_slice` at the runtime loop
+      # offset — the same dynamic write a KV-cache update lowers to, and the
+      # one mx::compile must trace correctly for native generation. The body
+      # writes exact integer-valued floats (no reassociation), so the fused
+      # result is bit-identical to both the evaluator and the plain native
+      # lane here, which pins the dynamic-slice-under-fusion path.
+      buf0 = Nx.broadcast(t(0.0), {4})
+      fused = Nx.Defn.jit(&fill_buffer/1, @native_compiled).(buf0)
+      eval = Nx.Defn.jit(&fill_buffer/1, @eval).(buf0)
+
+      assert %Emily.Backend{} = fused.data
+      assert Nx.to_flat_list(fused) == [1.0, 2.0, 3.0, 4.0]
+      assert Nx.to_binary(fused) == Nx.to_binary(eval)
+    end
   end
 
   describe "defn while compiles native == evaluator" do
