@@ -870,7 +870,7 @@ defmodule Emily.IR do
   # gather/index there clamps rather than faults, so the discarded value
   # never changes the result; a hard-faulting op on a not-taken path would
   # diverge from the Evaluator's lazy single-branch eval.
-  defp lower_op(%T{data: %Nx.Defn.Expr{op: :cond, args: [clauses, last]}} = t, state) do
+  defp lower_op(%T{data: %Nx.Defn.Expr{op: :cond, args: [clauses, %T{} = last]}} = t, state) do
     {last_ref, state} = lower_node(last, state)
 
     {result, state} =
@@ -882,6 +882,52 @@ defmodule Emily.IR do
       end)
 
     coerce(result, t.type, state)
+  end
+
+  # Multi-output cond: each branch returns a tuple of tensors. Lower to one
+  # `where`-chain per leaf position — identical wholesale-select semantics to
+  # the single-output case above (the predicate is a whole-tensor scalar bool;
+  # every branch is still computed). Returns a `{:multi_refs, [...]}` handle
+  # that `:elem` projects; sibling `:elem`s share it via lower_node's memo.
+  # A nested / non-tensor container raises (no fallback path for it yet).
+  defp lower_op(%T{data: %Nx.Defn.Expr{op: :cond, args: [clauses, last]}}, state)
+       when is_tuple(last) do
+    last_leaves = Tuple.to_list(last)
+
+    unless tensors?(last_leaves) and
+             Enum.all?(clauses, fn {_p, b} -> is_tuple(b) and tensors?(Tuple.to_list(b)) end) do
+      raise ArgumentError,
+            "Emily Expr compiler: cond over a nested / non-tensor container is not " <>
+              "lowered yet (only a flat tuple of tensors)."
+    end
+
+    # Lower each predicate (cast to pred) + its branch's leaf refs once, so the
+    # per-leaf where-chains share them.
+    {clauses, state} =
+      Enum.map_reduce(clauses, state, fn {pred, body}, st ->
+        {pred_ref, st} = lower_node(pred, st)
+        {pred_ref, st} = emit(st, :astype, [pred_ref], [[dtype_code({:pred, 1})]])
+        {body_refs, st} = Enum.map_reduce(Tuple.to_list(body), st, &lower_node/2)
+        {{pred_ref, body_refs}, st}
+      end)
+
+    rev = Enum.reverse(clauses)
+
+    {refs, state} =
+      last_leaves
+      |> Enum.with_index()
+      |> Enum.map_reduce(state, fn {leaf, j}, st ->
+        {last_ref, st} = lower_node(leaf, st)
+
+        {result, st} =
+          Enum.reduce(rev, {last_ref, st}, fn {pred_ref, body_refs}, {else_ref, st2} ->
+            emit(st2, :where, [pred_ref, Enum.at(body_refs, j), else_ref])
+          end)
+
+        coerce(result, leaf.type, st)
+      end)
+
+    {{:multi_refs, refs}, state}
   end
 
   # attach_token: sequences a token (hooks) before `expr`. With no active
@@ -955,11 +1001,14 @@ defmodule Emily.IR do
       {{:multi, base, _arity}, state} ->
         {{:instr, base + i}, state}
 
+      {{:multi_refs, refs}, state} ->
+        {Enum.at(refs, i), state}
+
       {_handle, _state} ->
         raise ArgumentError,
               "Emily Expr compiler: :elem projects a tuple-producing op it can't " <>
-                "lower yet (only `while` produces projectable tuples today; other " <>
-                "multi-output ops are unsupported)."
+                "lower yet (only `while` and tuple `cond` produce projectable " <>
+                "tuples today; other multi-output ops are unsupported)."
     end
   end
 
@@ -1156,6 +1205,8 @@ defmodule Emily.IR do
 
   defp bool_int(true), do: 1
   defp bool_int(false), do: 0
+
+  defp tensors?(list), do: Enum.all?(list, &match?(%T{}, &1))
 
   defp float_like?({kind, _}) when kind in [:f, :bf, :c], do: true
   defp float_like?(_), do: false

@@ -45,6 +45,34 @@ defmodule Emily.CompilerControlFlowTest do
     acc
   end
 
+  # Tuple-returning cond (multi-output): both branches produce a {vec, vec}
+  # tuple; `:elem` projects each leaf out of the lowered per-leaf where-chains.
+  defn tuple_if_fn(x) do
+    {a, b} =
+      if Nx.greater(Nx.sum(x), 0) do
+        {Nx.multiply(x, 2), Nx.add(x, 1)}
+      else
+        {Nx.negate(x), Nx.subtract(x, 1)}
+      end
+
+    Nx.add(a, b)
+  end
+
+  # Multi-clause tuple cond with leaves of DIFFERENT shapes (vector + scalar),
+  # so each leaf's where-chain is built and coerced independently.
+  defn tuple_cond3_fn(x) do
+    s = Nx.sum(x)
+
+    {vec, scalar} =
+      cond do
+        Nx.greater(s, 10) -> {Nx.multiply(x, 10), Nx.reduce_max(x)}
+        Nx.greater(s, 0) -> {Nx.multiply(x, 2), Nx.product(x)}
+        true -> {Nx.negate(x), s}
+      end
+
+    Nx.add(vec, scalar)
+  end
+
   defp equiv(fun, x) do
     native = Nx.Defn.jit(fun, @native).(x)
     eval = Nx.Defn.jit(fun, @eval).(x)
@@ -69,6 +97,18 @@ defmodule Emily.CompilerControlFlowTest do
     test "nested conds compose" do
       for data <- [[3.0, 3.0, 3.0], [-1.0, 0.0, 1.0], [10.0, 10.0, 10.0]] do
         equiv(&nested_if_fn/1, Nx.tensor(data, backend: Emily.Backend))
+      end
+    end
+
+    test "tuple-returning if (multi-output cond) projects each leaf" do
+      for data <- [[1.0, 2.0, 3.0], [-1.0, -2.0, -3.0]] do
+        equiv(&tuple_if_fn/1, Nx.tensor(data, backend: Emily.Backend))
+      end
+    end
+
+    test "multi-clause tuple cond with mixed-shape leaves matches the evaluator" do
+      for data <- [[5.0, 4.0, 3.0], [1.0, 1.0, 1.0], [-2.0, -2.0, -2.0]] do
+        equiv(&tuple_cond3_fn/1, Nx.tensor(data, backend: Emily.Backend))
       end
     end
   end
