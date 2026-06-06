@@ -54,7 +54,11 @@ Emily backend smoke test.
   with a `[:emily, :fallback, *]` telemetry event. See the
   `Fallbacks` section of `Emily.Backend` for the per-op catalogue.
 - **Defn compiler.** `Emily.Compiler` runs `defn` / `Nx.Serving` /
-  Bumblebee inference on MLX. Backs the results with lazy MLX graphs.
+  Bumblebee inference on MLX. The default mode dispatches op-by-op
+  through `Emily.Backend`; opt in to `native: true` for a single-NIF
+  replay of the whole graph (~5× decode throughput on Qwen3-0.6B), and
+  `fuse: true` for `mx::compile` kernel fusion on top. See
+  [Native compilation](#native-compilation).
 - **Fused transformer kernels.** `Emily.Fast` exposes
   `mx::fast::rms_norm`, `layer_norm`, `rope`, and scaled-dot-product
   attention as defn-callable helpers with composed-defn fallbacks for
@@ -197,6 +201,52 @@ runnable Livebooks.
 The low-level tensor API (`Emily.from_binary/3`, `to_binary/1`,
 `shape/1`, `dtype/1`, `eval/1`) remains available for diagnostics
 and direct MLX round-trips, but most users should go through Nx.
+
+## Native compilation
+
+`Emily.Compiler` has three modes; opt in per-call or globally via
+`Nx.Defn.global_default_options/1`:
+
+```elixir
+# Default: op-by-op dispatch through Emily.Backend. Bit-identical to
+# the Nx evaluator.
+Nx.Defn.jit(&forward/1, compiler: Emily.Compiler).(input)
+
+# Native single-NIF replay. Lowers the traced Nx.Defn.Expr to a flat
+# IR and replays the whole forward graph in one NIF call per
+# invocation — ~5× decode throughput on Qwen3-0.6B, bit-identical to
+# the evaluator. Safe to install globally: anything the IR can't lower
+# routes through Nx.Defn.Evaluator under the default
+# `native_fallback: :eval` (with a `[:emily, :compiler, :fallback]`
+# telemetry event).
+Nx.Defn.jit(&forward/1, compiler: Emily.Compiler, native: true).(input)
+
+# Native + mx::compile kernel fusion. Fuses elementwise runs the plain
+# replay leaves as separate kernels (RMSNorm / softmax / SiLU gating /
+# residual adds) — ~1.1× over the plain native lane on Qwen3-0.6B
+# greedy decode (~5.4× the evaluator overall). For a `defn while`,
+# the loop body is fused under mx::compile and cached per stream so
+# it cache-hits across iterations.
+Nx.Defn.jit(&forward/1, compiler: Emily.Compiler, native: true, fuse: true).(input)
+```
+
+Trade-off for `:fuse`: `mx::compile` reassociates f32, so logits drift
+by a few ULP and the output is **not** bit-identical to the evaluator.
+Greedy argmax is empirically robust to that drift (Qwen3-0.6B token
+ids matched the evaluator's exactly in our benchmarks), but
+**sampling strategies will diverge** from the evaluator even with a
+fixed seed.
+
+Pass `native_fallback: :raise` to fail rather than silently degrade to
+the Evaluator — the conformance suites use this to prove a model
+lowers fully native. See the `Emily.Compiler` moduledoc for the full
+option list (`:device`, `:hooks`, `:max_concurrency`, etc.) and the
+trade-offs around `:fuse` in depth.
+
+For autoregressive decode specifically, `Emily.Generation` is a
+model-agnostic loop driver that JIT-compiles a caller-supplied
+shape-stable per-token forward and runs the loop from Elixir with
+KV-cache threading, stop conditions, and per-token streaming.
 
 ## Livebooks
 
