@@ -185,6 +185,18 @@
 
 ### Fixed
 
+- **A tuple-returning `cond` hard-crashed the native compiler instead of
+  lowering.** A `cond`/`if` whose branches return a tuple (multi-output) hit a
+  `FunctionClauseError` in the lowerer — and because that isn't an
+  `ArgumentError`, it escaped the graceful-fallback rescue and faulted rather
+  than degrading to the evaluator. It now lowers to one `where`-chain per leaf
+  (same wholesale-select semantics as a single-output `cond`), projected by
+  `:elem`; a nested/non-tensor container raises cleanly (graceful fallback).
+  Surfaced by a Whisper `speech_to_text` serving — with this, plus the native
+  `fft` and `indexed_put` lowering above, the **full Whisper serving
+  (featurizer STFT + encoder/decoder + autoregressive decode loop) compiles
+  fully native end-to-end**, gated by `whisper_full_test.exs`.
+
 - **Dilated window reductions (`window_dilations > 1`) returned wrong values.**
   `window_sum`/`window_max`/`window_min`/`window_product` with a dilated kernel
   silently produced garbage for windows past the first stride positions, on both
