@@ -80,10 +80,17 @@
   On Qwen3-0.6B this lifts greedy decode to **~5.4× the evaluator (~1.1× over
   the plain native lane**, ~68 vs ~62 tok/s on an M-series Mac). The trade-off:
   `mx::compile` reassociates f32, so logits drift by a few ULP and the output
-  is **not** bit-identical to the evaluator — greedy argmax is stable under
-  that, so the generated token ids still match exactly (the completions are
-  byte-identical). The `native-fused` lane in `bench/qwen3_tokens_per_sec.exs`
-  measures it; `generation_native_test.exs` gates the greedy token match.
+  is **not** bit-identical to the evaluator. Greedy argmax is robust to that
+  drift, so in our Qwen3-0.6B run the generated token ids matched the
+  evaluator's exactly (byte-identical completions) — but that is an *empirical*
+  result, not a guarantee: a near-tie top-2 logit can flip a token, and any
+  decision the drift can tip over — argmax, or a loop trip count whose
+  condition reads a reassociated reduction — diverges by more than a few ULP
+  once it flips. **Sampling strategies (e.g. multinomial) will diverge from the
+  evaluator under fusion** even with a fixed seed; the gate and bench cover the
+  greedy lane only. The `native-fused` lane in `bench/qwen3_tokens_per_sec.exs`
+  measures throughput; `generation_native_test.exs` gates the greedy token
+  match.
 
 - **`defn while` compiles native.** Data-dependent loops — including
   `Bumblebee.Text.generation`'s decode loop — now lower to the single-NIF

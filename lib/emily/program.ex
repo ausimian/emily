@@ -75,9 +75,14 @@ defmodule Emily.Program do
           can't trace) is instead replayed host-controlled with each loop
           *body* fused under `mx::compile` and cached per stream — the body
           is shape-stable, so the fused callable cache-hits across
-          iterations rather than recompiling per step. Either way the
-          fusion reassociates f32 to within a few ULP, so the result is
-          not bit-identical to `:sync`.
+          iterations rather than recompiling per step. The loop condition
+          is left as a raw (un-fused) replay. Either way the fusion
+          reassociates f32 to within a few ULP, so the result is not
+          bit-identical to `:sync` — and for a `while` whose condition
+          reads a reassociated reduction of the fused body, the drift can
+          change the *trip count*, diverging by more than a few ULP. Safe
+          for the generation loop (its condition is an integer offset, not
+          a function of the drifted logits).
   """
   @spec eval(Native.worker(), t(), [Native.tensor()], keyword()) :: [Native.tensor()]
   def eval(worker, program, inputs, opts \\ []) do

@@ -82,9 +82,12 @@ defmodule Emily.Conformance.GenerationNativeTest do
     # The opt-in fused-while lane (CM14): the `defn while` decode loop runs
     # host-controlled, but each per-token forward (the loop body) replays
     # through a per-stream-cached `mx::compile`'d callable. `mx::compile`
-    # reassociates f32 so the logits drift by a few ULP — but greedy argmax
-    # is stable under that, so the generated token ids still match the
-    # evaluator exactly. (Not a binary-identical gate, by construction.)
+    # reassociates f32 so the logits drift by a few ULP — greedy argmax is
+    # robust to that drift, so the token ids match here. This is a
+    # token-id gate, not a binary-identical one (the logits aren't), and
+    # the match is empirical: a near-tie top-2 logit could in principle
+    # flip a token on another model/prompt. Sampling strategies would
+    # diverge under fusion, so only greedy is gated.
     gc = configure(ctx.gen_config, %{type: :greedy_search})
     fused = generate_ids(ctx.model_info, gc, @native_compiled)
     eval = generate_ids(ctx.model_info, gc, @eval)

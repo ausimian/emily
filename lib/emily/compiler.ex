@@ -88,9 +88,14 @@ defmodule Emily.Compiler do
       the decode loop host-controlled but fuses each loop **body** under
       `mx::compile`, replaying the cached fused callable every token. Defaults
       to `false`; a non-boolean raises `ArgumentError`. Opt-in because the
-      fusion reassociates f32 to within a few ULP — greedy token ids still
-      match the evaluator, but logits are not bit-identical. Only the native
-      path consults it, so it is ignored unless `native: true`.
+      fusion reassociates f32 to within a few ULP — logits are not
+      bit-identical to the evaluator. Greedy argmax is robust to that drift
+      (greedy token ids matched the evaluator in our tests), but the match is
+      empirical, not guaranteed: any discrete decision the drift can tip —
+      argmax on a near-tie, or a `while` trip count whose condition reads a
+      reassociated reduction — diverges once it flips. **Sampling strategies
+      diverge from the evaluator under fusion** even with a fixed seed. Only
+      the native path consults it, so it is ignored unless `native: true`.
 
   Any other option is silently dropped. This matches how
   `Nx.Defn.Evaluator` and EXLA handle their own option lists, and is
@@ -228,7 +233,7 @@ defmodule Emily.Compiler do
   # guarded step: it raises `ArgumentError` on an op or construct it can't
   # lower yet, which we turn into a graceful `:fallback` (or re-raise in
   # `:raise` mode). `Program.compile/1` is deliberately kept outside the
-  # rescue (in `replay_closure/2`) — it raises only on malformed IR, i.e. a
+  # rescue (in `replay_closure/3`) — it raises only on malformed IR, i.e. a
   # compiler bug, which must surface loudly rather than be masked as an
   # "unsupported op" fallback.
   defp lower(leaves, mode, key) do
