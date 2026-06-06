@@ -196,7 +196,19 @@ defmodule Emily.IR do
     # CPU-only triangular solve (operands [a, b]; iattrs [[upper]]); the
     # lowerer handles transform_a/left_side by transposing a/b/output
     # around this bare kernel call, mirroring Emily.Backend.triangular_solve/4.
-    linalg_solve_triangular: 114
+    linalg_solve_triangular: 114,
+    # CPU-only linalg decompositions / solvers (mx::linalg::*). Each
+    # routes through MLX's CPU stream like the eager NIFs in
+    # c_src/ops/linalg.cpp. Single-output: Cholesky, Solve. Multi-output:
+    # QR (Q,R), Eigh (vals,vecs), LU (perm[s32],L,U), SVD (U,S,V) — the
+    # IR emits them via emit_multi (one instr, N reserved output slots)
+    # the same way `while` does, and replay_program pushes N values.
+    linalg_cholesky: 115,
+    linalg_solve: 116,
+    linalg_qr: 117,
+    linalg_eigh: 118,
+    linalg_lu: 119,
+    linalg_svd: 120
   }
 
   # Quant mode string -> code; decoded by qmode_from_code in
@@ -1428,6 +1440,119 @@ defmodule Emily.IR do
     lower_node(expr, state)
   end
 
+  # ---- LinAlg blocks (Nx.Block.LinAlg.*) ----
+  #
+  # Each mirrors the matching Emily.Backend.native_* helper. Single-output
+  # ops (Cholesky, Solve) emit a single instruction; multi-output ops
+  # (QR/Eigh/LU/SVD) use emit_multi/6 to reserve their output slots,
+  # same machinery as `:while`. The CPU stream is forced inside the C++
+  # dispatcher because mx::linalg::* is CPU-only.
+
+  # Nx.LinAlg.cholesky — Backend hard-codes upper: false (lower).
+  defp lower_block(%Nx.Block.LinAlg.Cholesky{}, [t], _expr, out, state) do
+    {rt, state} = lower_node(t, state)
+    emit_coerced(state, :linalg_cholesky, [rt], [[0]], out.type)
+  end
+
+  # Nx.LinAlg.solve — single-output, no opts.
+  defp lower_block(%Nx.Block.LinAlg.Solve{}, [a, b], _expr, out, state) do
+    {ra, state} = lower_node(a, state)
+    {rb, state} = lower_node(b, state)
+    emit_coerced(state, :linalg_solve, [ra, rb], [], out.type)
+  end
+
+  # Nx.LinAlg.qr (mode: :reduced). Backend's `:complete` mode falls back
+  # via_binary; here we don't lower `:complete` (the catch-all raises),
+  # matching the no-fallback contract.
+  defp lower_block(%Nx.Block.LinAlg.QR{mode: :reduced}, [t], expr, _out, state)
+       when is_tuple(expr) do
+    {rt, state} = lower_node(t, state)
+    {base, state} = emit_multi(state, :linalg_qr, [rt], [], [], 2)
+    [q_leaf, r_leaf] = Tuple.to_list(expr)
+    {q_ref, state} = coerce({:instr, base + 0}, q_leaf.type, state)
+    {r_ref, state} = coerce({:instr, base + 1}, r_leaf.type, state)
+    {{:multi_refs, [q_ref, r_ref]}, state}
+  end
+
+  # Nx.LinAlg.eigh — uplo hard-coded "L" (lower) inside the dispatcher,
+  # matching Emily.Backend.native_eigh/3.
+  defp lower_block(%Nx.Block.LinAlg.Eigh{}, [t], expr, _out, state) when is_tuple(expr) do
+    {rt, state} = lower_node(t, state)
+    {base, state} = emit_multi(state, :linalg_eigh, [rt], [], [], 2)
+    [vals_leaf, vecs_leaf] = Tuple.to_list(expr)
+    {vals_ref, state} = coerce({:instr, base + 0}, vals_leaf.type, state)
+    {vecs_ref, state} = coerce({:instr, base + 1}, vecs_leaf.type, state)
+    {{:multi_refs, [vals_ref, vecs_ref]}, state}
+  end
+
+  # Nx.LinAlg.lu — MLX returns (perm[s32], L, U); Backend post-processes
+  # perm into a permutation matrix via `take(eye(n), perm, 0)`. The IR
+  # mirrors that here.
+  defp lower_block(%Nx.Block.LinAlg.LU{}, [t], expr, _out, state) when is_tuple(expr) do
+    {rt, state} = lower_node(t, state)
+    {base, state} = emit_multi(state, :linalg_lu, [rt], [], [], 3)
+    [p_leaf, l_leaf, u_leaf] = Tuple.to_list(expr)
+
+    # perm is a 1-D s32 vector (or batched). Use the leaf p_leaf's
+    # shape to size the eye matrix used as the row-selection source.
+    p_rank = tuple_size(p_leaf.shape)
+    n = elem(p_leaf.shape, p_rank - 1)
+
+    {eye_ref, state} =
+      materialize_const(
+        Nx.eye({n, n}, type: p_leaf.type, backend: Nx.BinaryBackend),
+        {n, n},
+        p_leaf.type,
+        state
+      )
+
+    {perm_s32, state} = emit(state, :astype, [{:instr, base + 0}], [[dtype_code({:s, 32})]])
+    {p_ref, state} = emit(state, :take, [eye_ref, perm_s32], [[0]])
+    {p_ref, state} = coerce(p_ref, p_leaf.type, state)
+    {l_ref, state} = coerce({:instr, base + 1}, l_leaf.type, state)
+    {u_ref, state} = coerce({:instr, base + 2}, u_leaf.type, state)
+    {{:multi_refs, [p_ref, l_ref, u_ref]}, state}
+  end
+
+  # Nx.LinAlg.svd — MLX's full SVD (`compute_uv: true`, U is m×m, V is
+  # n×n, S is length min(m,n)). For thin SVD (`full_matrices?: false`),
+  # slice U and V down to the requested output shape, mirroring
+  # Emily.Backend.maybe_slice_svd/4. The Gram-matrix workaround for very
+  # tall 2-D matrices (Issue #84) is left to the eager path; the IR
+  # equivalent can land alongside it.
+  defp lower_block(%Nx.Block.LinAlg.SVD{}, [t], expr, _out, state) when is_tuple(expr) do
+    {rt, state} = lower_node(t, state)
+    {base, state} = emit_multi(state, :linalg_svd, [rt], [], [], 3)
+    [u_leaf, s_leaf, v_leaf] = Tuple.to_list(expr)
+
+    rank = tuple_size(t.shape)
+    m = elem(t.shape, rank - 2)
+    n = elem(t.shape, rank - 1)
+
+    {u_ref, state} = maybe_slice_svd_ir({:instr, base + 0}, u_leaf.shape, {m, m}, state)
+    {u_ref, state} = coerce(u_ref, u_leaf.type, state)
+    {s_ref, state} = coerce({:instr, base + 1}, s_leaf.type, state)
+    {v_ref, state} = maybe_slice_svd_ir({:instr, base + 2}, v_leaf.shape, {n, n}, state)
+    {v_ref, state} = coerce(v_ref, v_leaf.type, state)
+    {{:multi_refs, [u_ref, s_ref, v_ref]}, state}
+  end
+
+  # Nx.LinAlg.determinant — Backend has no fused kernel; the eager path
+  # runs the block's composed expansion (2x2 / 3x3 / NxN). The IR does
+  # the same here via TopK-style param seeding so the result is
+  # bit-identical to the evaluator.
+  defp lower_block(%Nx.Block.LinAlg.Determinant{}, [t], expr, _out, state) do
+    {arg_ref, state} = lower_node(t, state)
+
+    seed =
+      expr
+      |> collect_block_params(%{})
+      |> Map.new(fn {id, 0} -> {id, arg_ref} end)
+
+    state = %{state | cache: Map.merge(state.cache, seed)}
+    lower_node(expr, state)
+  end
+
   # Any other block struct raises. Lowering the block's composed
   # expansion would silently diverge from the Evaluator whenever
   # Emily.Backend.block/4 dispatches that struct through a fused / native
@@ -1492,12 +1617,21 @@ defmodule Emily.IR do
   defp tensors?(list), do: Enum.all?(list, &match?(%T{}, &1))
 
   # Collect `{parameter_id => position}` for every block-local `:parameter`
-  # reachable from `node`. Used to bind a block expansion's fresh parameters
-  # to the real in_args (see the Nx.Block.TopK lowering). Walks only the small
-  # expansion graph — parameters are leaves, so it never descends into the
-  # in_args' own (possibly large) graph.
+  # reachable from `node` *in the current block scope*. Used to bind a
+  # block expansion's fresh parameters to the real in_args (see the
+  # Nx.Block.TopK / Nx.Block.LinAlg.Determinant lowerings). For nested
+  # `:block` nodes (e.g. determinant's expansion calls Nx.LinAlg.lu),
+  # walk only the in_args — which reference outer-scope tensors — and
+  # NOT the nested `expr`, whose fresh inner block params live in a
+  # different scope and would otherwise leak in as spurious positions.
   defp collect_block_params(%T{data: %Nx.Defn.Expr{op: :parameter, id: id, args: [pos]}}, acc),
     do: Map.put_new(acc, id, pos)
+
+  defp collect_block_params(
+         %T{data: %Nx.Defn.Expr{op: :block, args: [_struct, in_args, _expr, _cb]}},
+         acc
+       ),
+       do: Enum.reduce(in_args, acc, &collect_block_params/2)
 
   defp collect_block_params(%T{data: %Nx.Defn.Expr{args: args}}, acc),
     do: Enum.reduce(args, acc, &collect_block_params/2)
@@ -1527,6 +1661,23 @@ defmodule Emily.IR do
   defp mat_transpose_axes(shape) do
     rank = tuple_size(shape)
     Enum.to_list(0..(rank - 3)//1) ++ [rank - 1, rank - 2]
+  end
+
+  # Slice U/V from the SVD's full output down to the thin-SVD shape if the
+  # block requested it. Mirrors Emily.Backend.maybe_slice_svd/4 — when the
+  # trailing two dims match the full shape (`full_last2`), no-op; otherwise
+  # slice from origin to `out_shape` with stride 1.
+  defp maybe_slice_svd_ir(ref, out_shape, full_last2, state) do
+    rank = tuple_size(out_shape)
+
+    if {elem(out_shape, rank - 2), elem(out_shape, rank - 1)} == full_last2 do
+      {ref, state}
+    else
+      starts = List.duplicate(0, rank)
+      strides = List.duplicate(1, rank)
+      stops = Tuple.to_list(out_shape)
+      emit(state, :slice, [ref], [starts, stops, strides])
+    end
   end
 
   # Coerce a ref to `type` (emit an astype). MLX astype to the same dtype

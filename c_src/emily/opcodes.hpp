@@ -218,9 +218,32 @@ enum class Opcode : int64_t {
   // Routed to MLX's CPU stream (`mx::linalg::solve_triangular` is CPU-only),
   // mirroring c_src/ops/linalg.cpp's eager NIF.
   LinalgSolveTriangular = 114,
+  // CPU-only linalg decompositions / solvers (mx::linalg::*). Each
+  // routes the call to the CPU stream like the eager NIFs in
+  // c_src/ops/linalg.cpp. Single-output (Cholesky, Solve) dispatches
+  // through the standard `dispatch_op` path; multi-output (QR/Eigh/LU/SVD)
+  // is special-cased in replay_program — the dispatcher returns one
+  // array; multi-output instructions push N values into the program
+  // values vector, the same shape `while` uses.
+  // operands [a]; iattrs [[upper]]
+  LinalgCholesky = 115,
+  // operands [a, b]; no iattrs
+  LinalgSolve = 116,
+  // operands [a]; arity 2 (Q, R); no iattrs
+  LinalgQR = 117,
+  // operands [a]; arity 2 (vals, vecs); uplo hard-coded "L" to match
+  // Emily.Backend.native_eigh/3.
+  LinalgEigh = 118,
+  // operands [a]; arity 3 (perm[s32], L, U); the IR post-processes the
+  // perm vector into a permutation matrix via take(eye, perm, 0),
+  // mirroring Emily.Backend.native_lu/3.
+  LinalgLU = 119,
+  // operands [a]; arity 3 (U, S, V); `full_matrices` hard-coded `true` —
+  // the IR slices for the thin case, matching Emily.Backend.native_svd/3.
+  LinalgSVD = 120,
 };
 
-inline constexpr int64_t kOpcodeCount = 115;
+inline constexpr int64_t kOpcodeCount = 121;
 
 // Quant mode code (Emily.IR @quant_modes) -> MLX mode string.
 inline std::string qmode_from_code(int64_t code) {
@@ -801,6 +824,27 @@ inline mx::array dispatch_op(Opcode op, const std::vector<mx::array> &in,
     auto cpu = mx::default_stream(mx::Device(mx::Device::DeviceType::cpu));
     return mx::linalg::solve_triangular(in[0], in[1], upper, cpu);
   }
+  case Opcode::LinalgCholesky: {
+    // CPU-only, mirrors c_src/ops/linalg.cpp's eager NIF.
+    bool upper = scalar_at(iattrs, 0, "linalg_cholesky") != 0;
+    auto cpu = mx::default_stream(mx::Device(mx::Device::DeviceType::cpu));
+    return mx::linalg::cholesky(arg1(in, "linalg_cholesky"), upper, cpu);
+  }
+  case Opcode::LinalgSolve: {
+    need2(in, "linalg_solve");
+    auto cpu = mx::default_stream(mx::Device(mx::Device::DeviceType::cpu));
+    return mx::linalg::solve(in[0], in[1], cpu);
+  }
+  // Multi-output linalg (QR/Eigh/LU/SVD) is special-cased in
+  // replay_program (it pushes N values per instruction instead of one).
+  // Reaching these here would be a compiler bug — surface it loudly
+  // rather than silently fall through to "unknown opcode".
+  case Opcode::LinalgQR:
+  case Opcode::LinalgEigh:
+  case Opcode::LinalgLU:
+  case Opcode::LinalgSVD:
+    throw std::invalid_argument(
+        "multi-output linalg op is handled in replay_program");
   // --- Scatter (shares the eager index.cpp entry points) ---
   case Opcode::Scatter:
   case Opcode::ScatterAdd: {

@@ -88,6 +88,28 @@
   seeding (every primitive in the expansion was already on the native
   path), bit-identical to the Evaluator.
 
+- **`Nx.LinAlg.cholesky` / `solve` / `qr` / `eigh` / `lu` / `svd` /
+  `determinant` lower natively** — closes the LinAlg-block cluster on
+  #188. Two new infrastructure pieces enable this: a small extension to
+  `replay_program` that pushes N values per instruction for multi-output
+  linalg ops (mirroring how `while` already pushes one value per
+  loop-carried state element), and a "shallow" parameter collector that
+  stops at nested `:block` nodes so the outer block's seeding doesn't
+  leak across scope boundaries (Determinant's expansion calls
+  `Nx.LinAlg.lu` internally — without the fix the IR would try to bind
+  LU's fresh inner block-params from the outer scope). Cholesky and
+  Solve are single-output; QR/Eigh/LU/SVD are multi-output. LU's
+  `s32` perm vector is post-processed into a permutation matrix via
+  `take(eye(n), perm, 0)` exactly like `Emily.Backend.native_lu/3`; SVD
+  in `full_matrices?: false` mode is sliced from the full output the
+  same way `Emily.Backend.maybe_slice_svd/4` does (the Gram thin-tall
+  workaround for Issue #84 stays on the eager path for now);
+  Determinant has no fused kernel — both paths run the block's composed
+  2x2 / 3x3 / NxN expansion, via the same TopK-style parameter seeding.
+  All seven dispatch to the CPU stream per call (MLX's `linalg::*` is
+  CPU-only); the C++ side overrides the replay stream just like the
+  eager linalg NIFs.
+
 - **`take_along_axis` lowers natively** — `Nx.take_along_axis` (the
   `Nx.Block.TakeAlongAxis` block) now compiles under the native single-NIF
   path, mirroring `Emily.Backend.native_take_along_axis/4` (cast indices to

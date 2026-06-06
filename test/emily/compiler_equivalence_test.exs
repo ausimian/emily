@@ -366,6 +366,109 @@ defmodule Emily.CompilerEquivalenceTest do
     end
   end
 
+  describe "LinAlg blocks" do
+    # Each mirrors the corresponding Emily.Backend.native_* helper and
+    # dispatches to the same mx::linalg::* CPU kernel — so the native
+    # single-NIF path and the evaluator land on the same bits even
+    # though the decomposition itself runs on the CPU stream.
+
+    test "Cholesky on a 2x2 SPD matrix matches the evaluator" do
+      a = et([[4.0, 2.0], [2.0, 3.0]])
+      assert_equiv(&Nx.LinAlg.cholesky/1, [a])
+    end
+
+    test "Cholesky on a 3x3 SPD matrix matches" do
+      # SPD: a = LLᵀ for L = [[1,0,0],[2,1,0],[3,4,1]].
+      a = et([[1.0, 2.0, 3.0], [2.0, 5.0, 10.0], [3.0, 10.0, 26.0]])
+      assert_equiv(&Nx.LinAlg.cholesky/1, [a])
+    end
+
+    test "Solve on a 2x2 well-conditioned A matches the evaluator" do
+      a = et([[4.0, 1.0], [2.0, 3.0]])
+      b = et([6.0, 7.0])
+      assert_equiv(&Nx.LinAlg.solve/2, [a, b])
+    end
+
+    test "QR (mode :reduced) on a 3x2 matrix matches the evaluator" do
+      a = et([[1.0, 0.0], [1.0, 1.0], [0.0, 1.0]])
+      {nq, nr} = run(&Nx.LinAlg.qr/1, [a], @native)
+      {eq, er} = run(&Nx.LinAlg.qr/1, [a], @eval)
+
+      assert %Emily.Backend{} = nq.data
+      assert Nx.to_binary(nq) == Nx.to_binary(eq)
+      assert Nx.to_binary(nr) == Nx.to_binary(er)
+    end
+
+    test "Eigh on a 2x2 symmetric matrix matches the evaluator" do
+      a = et([[2.0, 1.0], [1.0, 2.0]])
+      {nv, nve} = run(&Nx.LinAlg.eigh/1, [a], @native)
+      {ev, eve} = run(&Nx.LinAlg.eigh/1, [a], @eval)
+
+      assert Nx.to_binary(nv) == Nx.to_binary(ev)
+      assert Nx.to_binary(nve) == Nx.to_binary(eve)
+    end
+
+    test "LU on a 3x3 matrix matches the evaluator (P matrix, L, U)" do
+      a = et([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0], [7.0, 8.0, 10.0]])
+      {np, nl, nu} = run(&Nx.LinAlg.lu/1, [a], @native)
+      {ep, el, eu} = run(&Nx.LinAlg.lu/1, [a], @eval)
+
+      assert %Emily.Backend{} = np.data
+      assert Nx.to_binary(np) == Nx.to_binary(ep)
+      assert Nx.to_binary(nl) == Nx.to_binary(el)
+      assert Nx.to_binary(nu) == Nx.to_binary(eu)
+    end
+
+    test "SVD (full_matrices: true, default) on a 3x3 matrix matches the evaluator" do
+      # SVD is mathematically non-unique up to sign/order of U/V columns
+      # (Backend's property tests acknowledge this at backend_test.exs:771);
+      # MLX's SVD also drifts by ~1 ULP in S across separate calls even for
+      # the same input. Compare with tolerance for everything SVD-related.
+      a = et([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0], [7.0, 8.0, 10.0]])
+      {nu, ns, nv} = run(&Nx.LinAlg.svd/1, [a], @native)
+      {eu, es, ev} = run(&Nx.LinAlg.svd/1, [a], @eval)
+
+      assert %Emily.Backend{} = nu.data
+      assert nu.shape == eu.shape
+      assert nv.shape == ev.shape
+      assert_in_delta_list(Nx.to_flat_list(ns), Nx.to_flat_list(es), 1.0e-4)
+    end
+
+    test "SVD (full_matrices?: false) on a 3x2 thin matrix matches (IR slices U/V)" do
+      a = et([[1.0, 0.0], [1.0, 1.0], [0.0, 1.0]])
+
+      {nu, ns, nv} = run(fn t -> Nx.LinAlg.svd(t, full_matrices?: false) end, [a], @native)
+      {eu, es, ev} = run(fn t -> Nx.LinAlg.svd(t, full_matrices?: false) end, [a], @eval)
+
+      # Thin shapes: U = {m, min(m,n)} = {3, 2}; V = {min(m,n), n} = {2, 2}.
+      assert nu.shape == {3, 2}
+      assert nv.shape == {2, 2}
+      assert nu.shape == eu.shape
+      assert nv.shape == ev.shape
+      assert_in_delta_list(Nx.to_flat_list(ns), Nx.to_flat_list(es), 1.0e-4)
+    end
+
+    test "Determinant on 2x2, 3x3, and NxN matrices matches the evaluator" do
+      # 2x2 and 3x3 use closed-form expansions inside the block; NxN
+      # uses the LU decomposition. All three paths should land on bits
+      # identical to the evaluator.
+      assert_equiv(&Nx.LinAlg.determinant/1, [et([[1.0, 2.0], [3.0, 4.0]])])
+
+      assert_equiv(&Nx.LinAlg.determinant/1, [
+        et([[1.0, 2.0, 3.0], [0.0, 4.0, 5.0], [1.0, 0.0, 6.0]])
+      ])
+
+      assert_equiv(&Nx.LinAlg.determinant/1, [
+        et([
+          [1.0, 0.0, 0.0, 1.0],
+          [0.0, 2.0, 0.0, 1.0],
+          [0.0, 0.0, 3.0, 1.0],
+          [1.0, 1.0, 1.0, 4.0]
+        ])
+      ])
+    end
+  end
+
   describe "misc Nx.Block lowerings" do
     # Nx.logical_not (Nx.Block.LogicalNot) — emits the IR :logical_not
     # opcode directly, mirroring Emily.Backend.native_logical_not/2. The
