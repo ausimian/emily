@@ -7,8 +7,10 @@ defmodule Emily.ProgramTest do
   replay must produce **bit-identical** results to a fold of `Native.add`
   on the same inputs. Plus: captures keep weights alive across source GC,
   handles are reusable, malformed IR is rejected cleanly (worker
-  survives), async parity holds, and repeated replay leaves no memory
-  drift. The dispatch-collapse speedup itself is measured by
+  survives), and async parity holds. Memory-leak detection (replay drift,
+  mx::compile cache release) lives in `Emily.ProgramMemoryTest` — split out
+  as `async: false` because it reads the process-global memory metric. The
+  dispatch-collapse speedup itself is measured by
   `bench/program_dispatch.exs`.
   """
   use ExUnit.Case, async: true
@@ -365,80 +367,6 @@ defmodule Emily.ProgramTest do
 
       assert Native.shape(comp_out) == [seq, d]
       assert drift <= 1.0e-5, "compiled vs sync drift #{drift} exceeds 1.0e-5"
-    end
-  end
-
-  describe "memory" do
-    test "repeated replay does not grow active memory with iteration count" do
-      input = f32([1.0, 2.0, 3.0], [3])
-      bias = f32([1.0, 1.0, 1.0], [3])
-      prog = Program.compile(add_chain_ir(50, bias))
-
-      replay = fn n ->
-        for _ <- 1..n do
-          [out] = Program.eval(worker(), prog, [input])
-          _ = to_f32_list(out)
-        end
-
-        :erlang.garbage_collect()
-        Native.clear_cache()
-        Native.get_active_memory()
-      end
-
-      # Warm up so the allocator reaches steady state.
-      _ = replay.(50)
-      after_100 = replay.(100)
-      after_400 = replay.(400)
-
-      # A genuine per-replay leak would make active memory scale with the
-      # 4x iteration count; assert it stays flat (small allocator slack).
-      assert after_400 - after_100 <= 64 * 1024,
-             "active memory grew #{after_400 - after_100} bytes over 4x more replays"
-    end
-
-    test "compiled-mode programs release their mx::compile cache on GC" do
-      # Each distinct Program evaled in :compiled mode installs an entry in
-      # the worker's *thread-local* mx::compile cache that pins copies of
-      # its captured weights. Program::~Program must drop that entry on the
-      # worker thread; if it instead erased the GC thread's cache (the bug
-      # this guards), the weights would stay live and active memory would
-      # scale with the number of compiled programs.
-      n = div(512 * 1024, 4)
-      zero = f32(List.duplicate(0.0, n), [n])
-
-      make_and_run = fn k ->
-        # A fresh capture per program -> a distinct cache entry / fun_id.
-        weight = f32(List.duplicate(k * 1.0, n), [n])
-        prog = Program.compile(add_chain_ir(4, weight))
-        [out] = Program.eval(worker(), prog, [zero], mode: :compiled)
-        _ = to_f32_list(out)
-        :ok
-      end
-
-      flush = fn ->
-        :erlang.garbage_collect()
-        # Teardown is posted to the worker queue during resource GC; a sync
-        # op after it (FIFO) guarantees every posted teardown has run before
-        # we read memory.
-        [out] = Program.eval(worker(), Program.compile(add_chain_ir(1, zero)), [zero])
-        _ = to_f32_list(out)
-        Native.clear_cache()
-        Native.get_active_memory()
-      end
-
-      run_n = fn count ->
-        for k <- 1..count, do: make_and_run.(k)
-        flush.()
-      end
-
-      _ = run_n.(20)
-      after_40 = run_n.(40)
-      after_80 = run_n.(80)
-
-      # A leaked cache entry pins ~512 KiB per program; 2x more programs
-      # would add tens of MiB. Assert it stays flat (generous slack).
-      assert after_80 - after_40 <= 4 * 1024 * 1024,
-             "compiled-mode cache leaked #{after_80 - after_40} bytes over 2x more programs"
     end
   end
 
