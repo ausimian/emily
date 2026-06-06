@@ -502,6 +502,47 @@ defmodule Emily.CompilerEquivalenceTest do
     end
   end
 
+  describe "top_k (multi-output block)" do
+    test "values and indices both match the evaluator" do
+      x = et([[3.0, 1.0, 4.0, 1.5, 5.0], [9.0, 2.0, 6.0, 5.0, 3.0]])
+
+      {nv, ni} = run(fn t -> Nx.top_k(t, k: 3) end, [x], @native)
+      {ev, ei} = run(fn t -> Nx.top_k(t, k: 3) end, [x], @eval)
+
+      assert %Emily.Backend{} = nv.data
+      assert Nx.to_binary(nv) == Nx.to_binary(ev)
+      assert Nx.to_binary(ni) == Nx.to_binary(ei)
+      assert ni.type == {:s, 32}
+    end
+
+    test "top_k feeding a downstream op lowers (both leaves projected)" do
+      x = et([[3.0, 1.0, 4.0, 1.5, 5.0]])
+
+      assert_equiv(
+        fn t ->
+          {v, i} = Nx.top_k(t, k: 2)
+          Nx.add(v, Nx.as_type(i, :f32))
+        end,
+        [x]
+      )
+    end
+
+    test "top_k binds its block param to the real arg, not outer {:input, 0} (regression)" do
+      # Mirrors the ModernBERT failure: outer input 0 is lower-rank than the
+      # top_k input. The `Nx.Block.TopK` expansion is built against fresh
+      # parameters, so an unbound parameter falls through to `{:input, 0}` —
+      # here the 1-D tensor — and argsort hits "axis 1 on a 1-D array".
+      one_d = et([0.0, 0.0])
+      scores = et([[3.0, 1.0, 4.0], [1.0, 5.0, 9.0]])
+
+      {nv, ni} = run(fn _i, s -> Nx.top_k(s, k: 2) end, [one_d, scores], @native)
+      {ev, ei} = run(fn _i, s -> Nx.top_k(s, k: 2) end, [one_d, scores], @eval)
+
+      assert Nx.to_binary(nv) == Nx.to_binary(ev)
+      assert Nx.to_binary(ni) == Nx.to_binary(ei)
+    end
+  end
+
   describe "fft family (signal transforms)" do
     test "1-D fft / ifft on the trailing axis match the evaluator" do
       x = et([1.0, 2.0, 3.0, 4.0])

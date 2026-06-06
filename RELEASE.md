@@ -75,6 +75,14 @@
   / `mx::scatter_add` (accumulate) bit-for-bit. Layouts MLX can't scatter
   still route through the evaluator under `native_fallback: :eval`.
 
+- **`Nx.top_k` lowers natively.** The `Nx.Block.TopK` block — a multi-output
+  `{values, indices}` — now compiles instead of raising. `Emily.Backend` has
+  no `top_k` override (`mx::topk` yields values only, not the indices Nx's
+  contract requires), so the evaluator computes it via the block's default
+  expansion (`argsort(desc)` → `take_along_axis` → `slice` the top k); the
+  compiler lowers that same expansion — every op in it already lowers — and
+  projects the two leaves via `:elem`, bit-identical to the evaluator.
+
 - **Window (pooling) ops lower natively — forward and backward.** The
   forward window family (`window_sum`/`window_max`/`window_min`/
   `window_product`, i.e. average and max pooling), the select-and-scatter

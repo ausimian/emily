@@ -1145,6 +1145,36 @@ defmodule Emily.IR do
     emit_coerced(state, :irfftn, [rt], [[length], [axis]], out.type)
   end
 
+  # Nx.top_k (Nx.Block.TopK) — a multi-output block `{values, indices}`.
+  # Emily.Backend has no `top_k` override (mx::topk yields values only, not the
+  # indices Nx's contract requires), so the evaluator computes it via the
+  # block's *default expansion*: argsort(desc) -> take_along_axis -> slice the
+  # top k. Every op in that expansion already lowers, so lower the expansion
+  # itself and hand the two leaf refs back as a projectable tuple for `:elem`
+  # (the `{:multi_refs, …}` machinery the tuple-`cond` path added). Because it
+  # IS the evaluator's expansion, the result is bit-identical.
+  defp lower_block(%Nx.Block.TopK{}, in_args, expr, _t, state) when is_tuple(expr) do
+    # `Nx.Defn.Expr.expr_block` builds the expansion against FRESH per-position
+    # `:parameter` nodes, not the real `in_args` — so lowering `expr` directly
+    # would resolve a block parameter to the OUTER function's `{:input, pos}`
+    # (a different tensor entirely). Bind them first: lower the real args, then
+    # seed the cache so each block parameter resolves to its arg's ref (the
+    # same binding `while` does via `param_seed`). Then lower the expansion's
+    # leaves — bit-identical to the evaluator, which runs the same expansion.
+    args = Enum.take_while(in_args, &(not is_list(&1)))
+    {arg_refs, state} = Enum.map_reduce(args, state, &lower_node/2)
+    leaves = Tuple.to_list(expr)
+
+    seed =
+      leaves
+      |> Enum.reduce(%{}, &collect_block_params/2)
+      |> Map.new(fn {id, pos} -> {id, Enum.at(arg_refs, pos)} end)
+
+    state = %{state | cache: Map.merge(state.cache, seed)}
+    {leaf_refs, state} = Enum.map_reduce(leaves, state, &lower_node/2)
+    {{:multi_refs, leaf_refs}, state}
+  end
+
   # Any other block struct raises. Lowering the block's composed
   # expansion would silently diverge from the Evaluator whenever
   # Emily.Backend.block/4 dispatches that struct through a fused / native
@@ -1207,6 +1237,25 @@ defmodule Emily.IR do
   defp bool_int(false), do: 0
 
   defp tensors?(list), do: Enum.all?(list, &match?(%T{}, &1))
+
+  # Collect `{parameter_id => position}` for every block-local `:parameter`
+  # reachable from `node`. Used to bind a block expansion's fresh parameters
+  # to the real in_args (see the Nx.Block.TopK lowering). Walks only the small
+  # expansion graph — parameters are leaves, so it never descends into the
+  # in_args' own (possibly large) graph.
+  defp collect_block_params(%T{data: %Nx.Defn.Expr{op: :parameter, id: id, args: [pos]}}, acc),
+    do: Map.put_new(acc, id, pos)
+
+  defp collect_block_params(%T{data: %Nx.Defn.Expr{args: args}}, acc),
+    do: Enum.reduce(args, acc, &collect_block_params/2)
+
+  defp collect_block_params(list, acc) when is_list(list),
+    do: Enum.reduce(list, acc, &collect_block_params/2)
+
+  defp collect_block_params(tuple, acc) when is_tuple(tuple),
+    do: Enum.reduce(Tuple.to_list(tuple), acc, &collect_block_params/2)
+
+  defp collect_block_params(_other, acc), do: acc
 
   defp float_like?({kind, _}) when kind in [:f, :bf, :c], do: true
   defp float_like?(_), do: false
