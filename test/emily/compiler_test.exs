@@ -55,6 +55,35 @@ defmodule Emily.CompilerTest do
       end
     end
 
+    test "jit rejects a non-boolean :native_compiled" do
+      # Validated up front (like :native_fallback) so a misconfigured value
+      # raises rather than being silently treated as truthy.
+      fun = fn x -> Nx.add(x, 1.0) end
+
+      assert_raise ArgumentError, ~r/invalid :native_compiled/, fn ->
+        Nx.Defn.jit_apply(fun, [Nx.tensor([1.0, 2.0])],
+          compiler: Emily.Compiler,
+          native: true,
+          native_compiled: :yes
+        )
+      end
+    end
+
+    test "native_compiled is a no-op without native: true" do
+      # Only the native path consults :native_compiled, so with native unset
+      # it is ignored (no fusion, no error) — the defn runs the plain
+      # evaluator walk and a bad value is never reached.
+      fun = fn x -> Nx.add(x, 1.0) end
+
+      result =
+        Nx.Defn.jit_apply(fun, [Nx.tensor([1.0, 2.0])],
+          compiler: Emily.Compiler,
+          native_compiled: true
+        )
+
+      assert_close(result, Nx.tensor([2.0, 3.0]))
+    end
+
     # Higher-level libraries (notably Axon) forward caller-supplied
     # options through Nx.Defn.jit verbatim and document this as a
     # contract. EXLA and Nx.Defn.Evaluator silently ignore options

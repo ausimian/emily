@@ -87,9 +87,10 @@ defmodule Emily.Compiler do
       (the CM6 win); for a `Bumblebee.Text.generation` `defn while` it keeps
       the decode loop host-controlled but fuses each loop **body** under
       `mx::compile`, replaying the cached fused callable every token. Defaults
-      to `false`. Opt-in because the fusion reassociates f32 to within a few
-      ULP — greedy token ids still match the evaluator, but logits are not
-      bit-identical, so it only applies on top of `native: true`.
+      to `false`; a non-boolean raises `ArgumentError`. Opt-in because the
+      fusion reassociates f32 to within a few ULP — greedy token ids still
+      match the evaluator, but logits are not bit-identical. Only the native
+      path consults it, so it is ignored unless `native: true`.
 
   Any other option is silently dropped. This matches how
   `Nx.Defn.Evaluator` and EXLA handle their own option lists, and is
@@ -175,10 +176,12 @@ defmodule Emily.Compiler do
   @spec build_native(term(), [Nx.Tensor.t()], fun(), keyword()) ::
           {:ok, ([term()] -> [Nx.Tensor.t()])} | :fallback
   defp build_native(key, vars, fun, opts) do
-    # Resolve (and validate) the mode up front so a misconfigured
-    # `:native_fallback` raises on every call — including the happy path —
-    # rather than lying dormant until the first lowering failure.
+    # Resolve (and validate) the modes up front so a misconfigured
+    # `:native_fallback` or `:native_compiled` raises on every call —
+    # including the happy path, and the lowering-failure path — rather than
+    # lying dormant until the first lowering failure.
     mode = native_fallback_mode(opts)
+    eval_mode = native_eval_mode(opts)
 
     # The Expr trace runs outside `lower/3`'s guard so a genuine caller
     # error surfaces unchanged.
@@ -195,18 +198,30 @@ defmodule Emily.Compiler do
     n_inputs = length(Composite.flatten_list(vars))
 
     case lower(Enum.reverse(leaves_rev), mode, key) do
-      {:ok, ir} -> {:ok, replay_closure(template, %{ir | n_inputs: n_inputs}, eval_mode(opts))}
+      {:ok, ir} -> {:ok, replay_closure(template, %{ir | n_inputs: n_inputs}, eval_mode)}
       :fallback -> :fallback
     end
   end
 
-  # The program eval mode: `:compiled` wraps the replay in `mx::compile`
-  # (fusing the elementwise runs — and, for a `defn while`, fusing each loop
-  # *body* under a host-controlled decode loop), `:sync` is the plain replay.
-  # `:compiled` is opt-in because the fusion reassociates f32 to within a few
-  # ULP rather than bit-for-bit; the default `:sync` stays bit-identical.
-  defp eval_mode(opts) do
-    if Keyword.get(opts, :native_compiled, false), do: :compiled, else: :sync
+  # Resolve the program eval mode from `:native_compiled`, validating up front
+  # (like `native_fallback_mode/1`) so a non-boolean raises on every native
+  # call rather than being silently treated as truthy. `true` -> `:compiled`
+  # (the `mx::compile` fusion — and, for a `defn while`, fusing each loop
+  # *body* under a host-controlled decode loop; see `Emily.Program.eval`),
+  # `false` -> `:sync` (the plain, bit-identical replay). Only the native path
+  # calls this, so the option is ignored unless `native: true`.
+  defp native_eval_mode(opts) do
+    case Keyword.get(opts, :native_compiled, false) do
+      true ->
+        :compiled
+
+      false ->
+        :sync
+
+      other ->
+        raise ArgumentError,
+              "invalid :native_compiled #{inspect(other)}; expected true | false"
+    end
   end
 
   # Lower the output leaves to a flat IR. `Emily.IR.lower/1` is the *only*
