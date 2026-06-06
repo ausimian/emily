@@ -112,40 +112,47 @@ bool contains_top_level_while(const Program &prog) {
   return false;
 }
 
-// Replay `prog` through a per-stream-cached `mx::compile`'d callable, fusing
-// the elementwise runs the raw replay leaves as separate kernels (rms-norm,
-// softmax, SiLU gating, residual adds). The compiled graph bakes in `prog`'s
-// captured weights and the stream, so the cache is keyed by stream index;
-// `worker` is stored in the entry so `~Program` can post the thread-affine
-// cache erase back to the worker that built it. `prog` must be a pure DAG
-// (no `while` — its host loop can't be traced); callers guard this. Returns
-// the still-lazy roots; the caller evals them.
+// Fetch (building on first use) `prog`'s per-stream-cached `mx::compile`'d
+// replay callable. The compiled graph bakes in `prog`'s captured weights and
+// the stream, so the cache is keyed by stream index; `worker` is stored in
+// the entry so `~Program` can post the thread-affine cache erase back to the
+// worker that built it. `prog` must be a pure DAG (no `while` — its host loop
+// can't be traced); callers guard this. Locks the cache mutex exactly once;
+// the returned callable is invariant for a given (prog, stream), so a loop
+// can hoist this out of its body and invoke the result directly each step.
+Program::CompiledFn
+compiled_callable(const Program &prog, mx::Stream &s,
+                  const std::weak_ptr<emily::State> &worker) {
+  std::lock_guard<std::mutex> lock(prog.compile_mtx);
+  auto it = prog.compiled.find(s.index);
+  if (it == prog.compiled.end()) {
+    // Raw pointer (not ResourcePtr) avoids a Program<->fn cycle; the fn is a
+    // member of the Program, so `p` outlives it. The traced replay runs with
+    // the default ctx (no fusion): a compiled program is while-free, so its
+    // replay is a straight DAG.
+    const Program *p = &prog;
+    mx::Stream captured = s;
+    Program::CompiledFn raw =
+        [p, captured](const std::vector<mx::array> &in) mutable {
+          return replay_program(*p, in, captured);
+        };
+    Program::CompiledEntry entry;
+    entry.worker = worker;
+    entry.fn = mx::compile(std::move(raw));
+    it = prog.compiled.emplace(s.index, std::move(entry)).first;
+  }
+  return it->second.fn;
+}
+
+// One-shot fused replay: fetch the compiled callable and invoke it. Fuses the
+// elementwise runs the raw replay leaves as separate kernels (rms-norm,
+// softmax, SiLU gating, residual adds). Returns the still-lazy roots; the
+// caller evals them. (Loops should call `compiled_callable` once and invoke
+// the result per iteration instead — see the `while` arm.)
 std::vector<mx::array>
 compiled_replay(const Program &prog, const std::vector<mx::array> &inputs,
                 mx::Stream &s, const std::weak_ptr<emily::State> &worker) {
-  Program::CompiledFn fn;
-  {
-    std::lock_guard<std::mutex> lock(prog.compile_mtx);
-    auto it = prog.compiled.find(s.index);
-    if (it == prog.compiled.end()) {
-      // Raw pointer (not ResourcePtr) avoids a Program<->fn cycle; the fn is a
-      // member of the Program, so `p` outlives it. The traced replay runs with
-      // the default ctx (no fusion): a compiled program is while-free, so its
-      // replay is a straight DAG.
-      const Program *p = &prog;
-      mx::Stream captured = s;
-      Program::CompiledFn raw =
-          [p, captured](const std::vector<mx::array> &in) mutable {
-            return replay_program(*p, in, captured);
-          };
-      Program::CompiledEntry entry;
-      entry.worker = worker;
-      entry.fn = mx::compile(std::move(raw));
-      it = prog.compiled.emplace(s.index, std::move(entry)).first;
-    }
-    fn = it->second.fn;
-  }
-  return fn(inputs);
+  return compiled_callable(prog, s, worker)(inputs);
 }
 
 // Build the mx::array DAG from `prog` + the dynamic `inputs` (indexed by
@@ -200,8 +207,15 @@ std::vector<mx::array> replay_program(const Program &prog,
       // host-controlled (its own inner body still fuses). The condition is a
       // trivial scalar we must `mx::eval` every step anyway, so it is left as
       // a raw replay regardless of `ctx.fuse_loops`.
+      // Build the fused body callable ONCE, before the loop: it is invariant
+      // across iterations (same body program + stream), so hoisting it keeps
+      // the per-token loop from re-locking the compile cache and copying the
+      // std::function every step. Empty when not fusing -> raw replay below.
       const bool fuse_body =
           ctx.fuse_loops && !contains_top_level_while(body_p);
+      Program::CompiledFn body_fn =
+          fuse_body ? compiled_callable(body_p, s, ctx.worker)
+                    : Program::CompiledFn{};
 
       // Host-controlled loop, entirely on this worker thread — no BEAM
       // round-trip per iteration. Mirrors Nx.Defn.Evaluator: evaluate the
@@ -215,8 +229,8 @@ std::vector<mx::array> replay_program(const Program &prog,
         if (go.item<uint8_t>() == 0) {
           break;
         }
-        state = fuse_body ? compiled_replay(body_p, state, s, ctx.worker)
-                          : replay_program(body_p, state, s, ctx);
+        state = body_fn ? body_fn(state)
+                        : replay_program(body_p, state, s, ctx);
         // Force the whole next state each iteration so the lazy graph (and
         // memory) stays bounded by the state size, not the trip count.
         mx::eval(state);
