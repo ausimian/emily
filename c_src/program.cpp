@@ -242,6 +242,51 @@ std::vector<mx::array> replay_program(const Program &prog,
       continue;
     }
 
+    // Multi-output linalg decompositions (QR/Eigh/LU/SVD) follow the
+    // same shape as `while` above: one instruction, N values pushed.
+    // mx::linalg::* are CPU-only, mirroring c_src/ops/linalg.cpp's
+    // eager NIFs (the dispatcher's `s` arg is the replay stream, often
+    // GPU — override per call).
+    if (instr.opcode == Opcode::LinalgQR ||
+        instr.opcode == Opcode::LinalgEigh ||
+        instr.opcode == Opcode::LinalgLU ||
+        instr.opcode == Opcode::LinalgSVD) {
+      auto a = resolve(instr.operands.at(0));
+      auto cpu = mx::default_stream(mx::Device(mx::Device::DeviceType::cpu));
+      switch (instr.opcode) {
+      case Opcode::LinalgQR: {
+        auto [q, r] = mx::linalg::qr(a, cpu);
+        values.push_back(std::move(q));
+        values.push_back(std::move(r));
+        break;
+      }
+      case Opcode::LinalgEigh: {
+        auto [vals, vecs] = mx::linalg::eigh(a, "L", cpu);
+        values.push_back(std::move(vals));
+        values.push_back(std::move(vecs));
+        break;
+      }
+      case Opcode::LinalgLU: {
+        auto result = mx::linalg::lu(a, cpu);
+        values.push_back(std::move(result[0]));
+        values.push_back(std::move(result[1]));
+        values.push_back(std::move(result[2]));
+        break;
+      }
+      case Opcode::LinalgSVD: {
+        auto result = mx::linalg::svd(a, /*compute_uv=*/true, cpu);
+        values.push_back(std::move(result[0]));
+        values.push_back(std::move(result[1]));
+        values.push_back(std::move(result[2]));
+        break;
+      }
+      default:
+        // Unreachable — the outer `if` already filtered.
+        throw std::logic_error("unreachable multi-output linalg switch");
+      }
+      continue;
+    }
+
     std::vector<mx::array> operands;
     operands.reserve(instr.operands.size());
     for (auto r : instr.operands) {
@@ -318,8 +363,15 @@ compile_program(ErlNifEnv *, int64_t n_inputs,
     }
 
     Opcode op = static_cast<Opcode>(opcodes[i]);
+    // Multi-output instructions: `while` mirrors its operand count
+    // (one final-state value per loop-carried state element); the
+    // linalg decompositions have fixed arity (Q,R / vals,vecs / P,L,U
+    // / U,S,V). Everything else is single-output.
     int64_t out_count =
-        (op == Opcode::While) ? static_cast<int64_t>(operands[i].size()) : 1;
+        (op == Opcode::While) ? static_cast<int64_t>(operands[i].size())
+        : (op == Opcode::LinalgQR || op == Opcode::LinalgEigh) ? 2
+        : (op == Opcode::LinalgLU || op == Opcode::LinalgSVD)  ? 3
+                                                                : 1;
 
     std::vector<fine::ResourcePtr<Program>> sub;
     if (i < subprograms.size()) {
