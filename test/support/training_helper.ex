@@ -262,12 +262,20 @@ defmodule Emily.TrainingHelper do
   `args` is a list of the remaining non-params tensors passed after
   params on each call — e.g. `[x, y, lr]` for MLP, `[x, y, lr, scale]`
   for the transformer block.
+
+  The final argument is either a bare compiler module (e.g.
+  `Emily.Compiler`, `Nx.Defn.Evaluator`) or a full `Nx.Defn.jit` opts
+  keyword list. The latter is how the native single-NIF lane is driven:
+
+      run_steps(fun, params, args, n,
+        compiler: Emily.Compiler, native: true, native_fallback: :raise)
   """
-  def run_steps(step_fun, params, args, n, compiler) when is_list(args) do
+  def run_steps(step_fun, params, args, n, compiler_or_opts) when is_list(args) do
+    opts = step_opts(compiler_or_opts)
+
     {_final, losses_rev} =
       Enum.reduce(1..n, {params, []}, fn _i, {params, losses} ->
-        {new_params, loss} =
-          Nx.Defn.jit_apply(step_fun, [params | args], compiler: compiler)
+        {new_params, loss} = Nx.Defn.jit_apply(step_fun, [params | args], opts)
 
         loss_f = loss |> Nx.backend_transfer(Nx.BinaryBackend) |> Nx.to_number()
         {new_params, [loss_f | losses]}
@@ -275,6 +283,12 @@ defmodule Emily.TrainingHelper do
 
     Enum.reverse(losses_rev)
   end
+
+  # Accept either a bare compiler module (back-compat with the eval-lane
+  # callers) or a full jit opts list (the native lane passes `native:`/
+  # `native_fallback:` through, which a bare `compiler:` can't carry).
+  defp step_opts(opts) when is_list(opts), do: opts
+  defp step_opts(compiler) when is_atom(compiler), do: [compiler: compiler]
 
   # -------------------- Curve-matching assertions --------------------
 

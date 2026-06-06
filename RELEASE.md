@@ -68,7 +68,15 @@
   the eager NIFs and the compiled replay share one implementation. A
   small-CNN **training step** (conv + maxpool forward and backward, grad,
   SGD) now lowers fully native under `native_fallback: :raise`, producing a
-  loss bit-identical to the evaluator.
+  loss bit-identical to the evaluator. Native training is now
+  **convergence**-tested, not just verified-lowering: handwritten CNN
+  (30 SGD steps) and MLP (50 steps) trajectories match the op-by-op
+  evaluator bit-for-bit and a `BinaryBackend` oracle to f32 tolerance, and
+  full **Axon** training drives native end-to-end — `Axon.Loop.run`
+  forwards `native: true`/`native_fallback:` to the defn jit, so a LeNet
+  CNN and a dense MLP train on real MNIST entirely through the single-NIF
+  path (forward, categorical-cross-entropy, backward, Adam) and reach the
+  same >97% / >96% accuracy as the evaluator (`:training_full`).
 
 - **`Bumblebee.Text.generation` compiles fully native — greedy and sampling.**
   The headline result: an end-to-end Bumblebee generation (the transformer
