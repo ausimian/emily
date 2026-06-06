@@ -105,12 +105,20 @@ public:
   // Drop each compiled callable on the worker thread that built it. MLX's
   // compiler cache is `thread_local` and the callable's deleter calls
   // `compile_erase` wherever it is destroyed; this resource is collected on
-  // a BEAM/GC thread, so destroying the callable here would erase the wrong
-  // thread's cache — leaking the worker's traced graph (and its refs to the
-  // captured weight buffers), and risking a later `fun_id` (a recycled heap
-  // address) colliding with the stale entry. Posting the drop to the worker
-  // makes the erase land on the right cache. If the worker is already gone,
-  // its thread exit destroyed the thread-local cache (and our entry) for us.
+  // a BEAM/GC thread, so destroying the callable here erases the wrong
+  // thread's cache. Posting the drop to the worker makes the erase land on
+  // the right cache, so `post_to_worker` moves the callable into the queued
+  // task only once the worker accepts it.
+  //
+  // If the worker is stopping (or already gone) the post is declined and the
+  // callable is destroyed here on the GC thread instead — which is benign:
+  //   * the wrong-thread `compile_erase` is a no-op (the GC thread's cache
+  //     never held this `fun_id`);
+  //   * the worker's thread exit clears its thread_local compiler cache,
+  //     reclaiming the real traced graph and its captured weight refs; and
+  //   * the recycled-`fun_id` collision the on-worker erase guards against
+  //     can't fire on a stopping worker — it runs no further compiles.
+  // So on the declined path we simply let `drop` destruct below (issue #172).
   ~Program() {
     for (auto &kv : compiled) {
       CompiledEntry &entry = kv.second;
@@ -118,7 +126,10 @@ public:
         continue;
       }
       if (auto st = entry.worker.lock()) {
-        post_to_worker(*st, [fn = std::move(entry.fn)]() mutable { fn = nullptr; });
+        std::function<void()> drop = [fn = std::move(entry.fn)]() mutable {
+          fn = nullptr;
+        };
+        post_to_worker(*st, drop);
       }
     }
   }

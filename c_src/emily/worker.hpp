@@ -72,18 +72,24 @@ inline void signal_stop(State &st) {
 // thread. Used to drop thread-affine resources — e.g. an `mx::compile`
 // cache entry, whose erase must happen on the thread whose thread-local
 // compiler cache holds it — on the thread that created them. Bypasses the
-// queue cap (teardown is tiny and must not be back-pressured). If the
-// worker is already stopping, does nothing: the thread's exit destroys its
-// thread-local state anyway, so the resource is reclaimed regardless.
-inline void post_to_worker(State &st, std::function<void()> fn) {
+// queue cap (teardown is tiny and must not be back-pressured).
+//
+// Takes `fn` by reference and moves it into the queued task only once the
+// worker has accepted it — i.e. *after* the `st.stop` check. Returns true
+// if the task was enqueued; false if the worker is stopping, in which case
+// `fn` is left untouched so the caller can reclaim it on its own thread (a
+// stopping worker's thread exit destroys its thread-local state anyway, so
+// the underlying resource is reclaimed regardless — see Program::~Program).
+inline bool post_to_worker(State &st, std::function<void()> &fn) {
   {
     std::lock_guard<std::mutex> lock(st.mtx);
     if (st.stop) {
-      return;
+      return false;
     }
     st.queue.push([fn = std::move(fn)](mx::Stream &, bool) mutable { fn(); });
   }
   st.cv.notify_one();
+  return true;
 }
 
 // Joins worker threads off the BEAM schedulers. Singleton; its thread is
