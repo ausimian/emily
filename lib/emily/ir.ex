@@ -182,7 +182,13 @@ defmodule Emily.IR do
     isinf: 107,
     conjugate: 108,
     real: 109,
-    imag: 110
+    imag: 110,
+    # Binary arithmetic peers. arctan2 is the direct atan2 lowering;
+    # floor_divide is the integer engine Emily.Backend.quotient/3 calls,
+    # so the IR routes Nx :quotient through it (cast both to out.type,
+    # floor_divide, same bits as the eager Backend).
+    arctan2: 111,
+    floor_divide: 112
   }
 
   # Quant mode string -> code; decoded by qmode_from_code in
@@ -281,6 +287,9 @@ defmodule Emily.IR do
 
   # Nx Expr op -> IR opcode. Arithmetic/bitwise cast both operands to the
   # node's out.type before the op (see backend.ex @renamed_arith_binary).
+  # Nx :quotient routes here too — Emily.Backend.quotient/3 is
+  # `floor_divide(astype(a, out.type), astype(b, out.type))`, which is
+  # exactly this clause with the floor_divide opcode.
   @arith_binary %{
     add: :add,
     subtract: :subtract,
@@ -288,8 +297,10 @@ defmodule Emily.IR do
     divide: :divide,
     pow: :power,
     remainder: :remainder,
+    atan2: :arctan2,
     min: :minimum,
     max: :maximum,
+    quotient: :floor_divide,
     bitwise_and: :bitwise_and,
     bitwise_or: :bitwise_or,
     bitwise_xor: :bitwise_xor,
@@ -432,6 +443,21 @@ defmodule Emily.IR do
     {cb, state} = emit(state, :astype, [rb], [[merged]])
     {r, state} = emit(state, Map.fetch!(@compare_binary, op), [ca, cb])
     emit(state, :astype, [r], [[dtype_code(t.type)]])
+  end
+
+  # logical_xor(a, b) := (a != 0) != (b != 0). MLX has no logical_xor
+  # primitive; mirrors Emily.Backend.logical_xor/3 — three not_equal
+  # calls (each operand vs a per-dtype zero, then the two booleans), with
+  # the final coerce to out.type ({:u, 8}) matching the eager wrap.
+  defp lower_op(%T{data: %Nx.Defn.Expr{op: :logical_xor, args: [a, b]}} = t, state) do
+    {ra, state} = lower_node(a, state)
+    {rb, state} = lower_node(b, state)
+    {za, state} = scalar_const(0, a.type, state)
+    {zb, state} = scalar_const(0, b.type, state)
+    {ma, state} = emit(state, :not_equal, [ra, za])
+    {mb, state} = emit(state, :not_equal, [rb, zb])
+    {r, state} = emit(state, :not_equal, [ma, mb])
+    coerce(r, t.type, state)
   end
 
   defp lower_op(%T{data: %Nx.Defn.Expr{op: op, args: [a]}} = t, state)

@@ -58,6 +58,14 @@
   `Emily.Backend`'s eager composition. Closes the largest cluster on the
   Expr op-coverage checklist (#188).
 
+- **`atan2`, `quotient`, `logical_xor` lower natively** — closes the
+  binary/compare cluster on the Expr op-coverage checklist (#188).
+  `atan2` slots into the @arith_binary mapping (cast both to out.type,
+  then `mx::arctan2`); `quotient` routes through `mx::floor_divide` the
+  same way `Emily.Backend.quotient/3` does; `logical_xor` (no MLX
+  primitive) lowers to `(a != 0) != (b != 0)`, mirroring the eager
+  Backend composition. All three are bit-identical to the Evaluator.
+
 - **`take_along_axis` lowers natively** — `Nx.take_along_axis` (the
   `Nx.Block.TakeAlongAxis` block) now compiles under the native single-NIF
   path, mirroring `Emily.Backend.native_take_along_axis/4` (cast indices to

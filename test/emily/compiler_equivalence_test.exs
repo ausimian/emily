@@ -170,6 +170,35 @@ defmodule Emily.CompilerEquivalenceTest do
       assert_equiv(&Nx.add/2, [a, b])
     end
 
+    # Binary arithmetic peers added with the Expr op-coverage sweep (#188).
+    # atan2 is a direct @arith_binary mapping (atan2: :arctan2); quotient
+    # routes through floor_divide the same way Emily.Backend.quotient/3 does.
+    test "atan2 matches the evaluator across the four quadrants" do
+      # Quadrant-covering pairs (y, x): include the axes so the result
+      # lands on the ±0, ±pi, ±pi/2 boundaries the eager Backend produces.
+      y = et([1.0, 1.0, -1.0, -1.0, 0.0, 0.0, 2.0, -2.0])
+      x = et([1.0, -1.0, -1.0, 1.0, 1.0, -1.0, 0.0, 0.0])
+      assert_equiv(&Nx.atan2/2, [y, x])
+    end
+
+    test "quotient matches the evaluator for signed and unsigned integer dtypes" do
+      # Backend casts both operands to out.type then calls floor_divide.
+      # Quotient is integer-only in Nx, so we exercise the s32/s64/u8/u32
+      # paths; the native lane matches the evaluator bit-for-bit because
+      # both end up at the same mx::floor_divide kernel.
+      for type <- [:s32, :s64] do
+        a = et([7, -7, 10, -10, 4, -4], type: type)
+        b = et([2, 2, 3, 3, 5, 5], type: type)
+        assert_equiv(&Nx.quotient/2, [a, b])
+      end
+
+      for type <- [:u8, :u32] do
+        a = et([7, 10, 4, 255], type: type)
+        b = et([2, 3, 5, 2], type: type)
+        assert_equiv(&Nx.quotient/2, [a, b])
+      end
+    end
+
     test "scalar constant operand (materialized capture)" do
       x = et([1.0, 2.0, 3.0])
       assert_equiv(fn t -> Nx.add(t, 1.5) end, [x])
@@ -191,6 +220,22 @@ defmodule Emily.CompilerEquivalenceTest do
         out = assert_equiv(op, [a, b])
         assert out.type == {:u, 8}
       end
+    end
+
+    # logical_xor: MLX has no primitive, so both paths run
+    # `(a != 0) != (b != 0)` — Emily.Backend.logical_xor/3 eagerly, the
+    # IR via a dedicated composite clause that emits the same three
+    # not_equal ops. Inputs span the four truth-table corners across
+    # float and integer dtypes; the trailing coerce produces {:u, 8}.
+    test "logical_xor matches across float and integer dtypes" do
+      a = et([1.0, 0.0, 1.0, 0.0])
+      b = et([1.0, 1.0, 0.0, 0.0])
+      out = assert_equiv(&Nx.logical_xor/2, [a, b])
+      assert out.type == {:u, 8}
+
+      ai = et([1, 0, 1, 0], type: :s32)
+      bi = et([1, 1, 0, 0], type: :s32)
+      assert_equiv(&Nx.logical_xor/2, [ai, bi])
     end
   end
 

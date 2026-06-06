@@ -201,9 +201,15 @@ enum class Opcode : int64_t {
   Conjugate = 108,
   Real = 109,
   Imag = 110,
+  // Binary arithmetic peers of the @arith_binary cluster. arctan2 is the
+  // direct Backend mapping (atan2: arctan2); floor_divide is the integer
+  // engine behind Nx.quotient (the lowerer routes quotient -> floor_divide
+  // matching Emily.Backend.quotient/3).
+  Arctan2 = 111,
+  FloorDivide = 112,
 };
 
-inline constexpr int64_t kOpcodeCount = 111;
+inline constexpr int64_t kOpcodeCount = 113;
 
 // Quant mode code (Emily.IR @quant_modes) -> MLX mode string.
 inline std::string qmode_from_code(int64_t code) {
@@ -752,6 +758,13 @@ inline mx::array dispatch_op(Opcode op, const std::vector<mx::array> &in,
     return mx::real(arg1(in, "real"), s);
   case Opcode::Imag:
     return mx::imag(arg1(in, "imag"), s);
+  // --- Binary arithmetic peers ---
+  case Opcode::Arctan2:
+    need2(in, "arctan2");
+    return mx::arctan2(in[0], in[1], s);
+  case Opcode::FloorDivide:
+    need2(in, "floor_divide");
+    return mx::floor_divide(in[0], in[1], s);
   // --- Scatter (shares the eager index.cpp entry points) ---
   case Opcode::Scatter:
   case Opcode::ScatterAdd: {
