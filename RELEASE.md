@@ -50,6 +50,14 @@
   selection on the native path. Remaining gaps (`gather`/scatter,
   pooling/`window_*`, cumulative) continue to work via the graceful fallback.
 
+- **`take_along_axis` lowers natively** — `Nx.take_along_axis` (the
+  `Nx.Block.TakeAlongAxis` block) now compiles under the native single-NIF
+  path, mirroring `Emily.Backend.native_take_along_axis/4` (cast indices to
+  s32, then `mlx::core::take_along_axis`) bit-for-bit. This was the last op
+  forcing a fallback in `Bumblebee.Text.question_answering`'s answer-span
+  gather, so a DistilBERT question-answering `Nx.Serving` forward now runs
+  fully native — and fused — under `native_fallback: :raise`.
+
 - **`Bumblebee.Text.generation` compiles fully native — greedy and sampling.**
   The headline result: an end-to-end Bumblebee generation (the transformer
   forward, the `defn while` decode loop, dynamic KV-cache writes, `cumsum`

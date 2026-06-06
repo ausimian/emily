@@ -132,7 +132,10 @@ defmodule Emily.IR do
     cummin: 78,
     # multi-axis gather: operands [input, idx0, ...]; iattrs [[axes],[slice_sizes]]
     gather: 79,
-    stack: 80
+    stack: 80,
+    # take_along_axis: gather along one axis with a same-rank s32 index
+    # tensor. operands [input, indices]; iattrs [[axis]].
+    take_along_axis: 81
   }
 
   # Quant mode string -> code; decoded by qmode_from_code in
@@ -162,6 +165,14 @@ defmodule Emily.IR do
           instrs: [instr()],
           outputs: [ref()]
         }
+
+  @doc """
+  The opcode name -> wire-value map. Exposed for the opcode-parity test,
+  which checks these stay in lockstep with the `Opcode` enum and
+  `kOpcodeCount` in `c_src/emily/opcodes.hpp`.
+  """
+  @spec opcodes() :: %{atom() => non_neg_integer()}
+  def opcodes, do: @opcodes
 
   @doc "Numeric wire value for an opcode name."
   @spec opcode(atom()) :: non_neg_integer()
@@ -913,6 +924,16 @@ defmodule Emily.IR do
     {rx, state} = lower_node(indices, state)
     {rx, state} = emit(state, :astype, [rx], [[dtype_code({:s, 32})]])
     emit_coerced(state, :take, [ri, rx], [[axis]], t.type)
+  end
+
+  # Nx.take_along_axis (Nx.Block.TakeAlongAxis). Mirrors
+  # Emily.Backend.native_take_along_axis/4: cast indices to s32, then
+  # mx::take_along_axis along `axis`.
+  defp lower_block(%Nx.Block.TakeAlongAxis{axis: axis}, [input, indices], _expr, t, state) do
+    {ri, state} = lower_node(input, state)
+    {rx, state} = lower_node(indices, state)
+    {rx, state} = emit(state, :astype, [rx], [[dtype_code({:s, 32})]])
+    emit_coerced(state, :take_along_axis, [ri, rx], [[axis]], t.type)
   end
 
   # Cumulative families. Like Emily.Backend.block/4, the last-axis case uses

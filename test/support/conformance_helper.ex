@@ -96,21 +96,27 @@ defmodule Emily.ConformanceHelper do
       suite's own `:*_full` moduletag; otherwise `--only native` would
       start pulling full-size checkpoints. `--only vit_full` then runs all
       three lanes of that suite.
+
+    * `:tag` — an extra tag stamped on *every* lane. Used by the
+      `Nx.Serving` test, which lives in a `:conformance`-tagged module but
+      must stay gated behind `:distilbert_full` like its eval lane:
+      `tag: :distilbert_full, lane_tags: false`.
   """
   defmacro mode_test(name, opts \\ [], do: body) do
     tag_lanes? = Keyword.get(opts, :lane_tags, true)
+    extra_tag = Keyword.get(opts, :tag)
 
     lanes = [
-      lane(false, name, "", [], body),
+      lane([extra_tag], name, "", [], body),
       lane(
-        tag_lanes? && :native,
+        [extra_tag, tag_lanes? && :native],
         name,
         " [native]",
         [compiler: Emily.Compiler, native: true, native_fallback: :raise],
         body
       ),
       lane(
-        tag_lanes? && :native_compiled,
+        [extra_tag, tag_lanes? && :native_compiled],
         name,
         " [native_compiled]",
         [compiler: Emily.Compiler, native: true, native_fallback: :raise, native_compiled: true],
@@ -124,27 +130,25 @@ defmodule Emily.ConformanceHelper do
   end
 
   # Build one `mode_test` lane: a `test` that binds `predict_opts` for the
-  # body, optionally preceded by `@tag tag`. `tag` is `false` to emit no
-  # lane tag (the `*_full` suites rely on their own `:*_full` moduletag).
-  defp lane(tag, name, suffix, predict_opts, body) do
+  # body, preceded by one `@tag` per entry in `tags` (nil/false entries are
+  # dropped). The `*_full` suites pass `lane_tags: false` to drop the
+  # `:native` / `:native_compiled` tags and rely on their own `:*_full`
+  # moduletag (or an explicit `:tag`) instead.
+  defp lane(tags, name, suffix, predict_opts, body) do
+    tags = Enum.reject(tags, &(&1 in [nil, false]))
+
     name_ast =
       if suffix == "", do: name, else: quote(do: unquote(name) <> unquote(suffix))
 
-    test =
-      quote do
-        test unquote(name_ast) do
-          var!(predict_opts) = unquote(predict_opts)
-          unquote(body)
-        end
-      end
+    tag_attrs = for t <- tags, do: quote(do: @tag(unquote(t)))
 
-    if tag do
-      quote do
-        @tag unquote(tag)
-        unquote(test)
+    quote do
+      (unquote_splicing(tag_attrs))
+
+      test unquote(name_ast) do
+        var!(predict_opts) = unquote(predict_opts)
+        unquote(body)
       end
-    else
-      test
     end
   end
 

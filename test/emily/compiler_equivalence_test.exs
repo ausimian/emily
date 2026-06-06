@@ -368,6 +368,26 @@ defmodule Emily.CompilerEquivalenceTest do
     end
   end
 
+  describe "take_along_axis" do
+    test "along the last axis matches the Evaluator" do
+      x = et([[1.0, 2.0, 3.0, 4.0], [5.0, 6.0, 7.0, 8.0], [9.0, 10.0, 11.0, 12.0]])
+      idx = Nx.tensor([[3, 0], [1, 2], [0, 3]], type: :s64, backend: Emily.Backend)
+      assert_equiv(fn t, i -> Nx.take_along_axis(t, i, axis: 1) end, [x, idx])
+    end
+
+    test "along axis 0 matches" do
+      x = et([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]])
+      idx = Nx.tensor([[0, 1, 0], [1, 0, 1], [0, 0, 1]], type: :s64, backend: Emily.Backend)
+      assert_equiv(fn t, i -> Nx.take_along_axis(t, i, axis: 0) end, [x, idx])
+    end
+
+    test "3-D gather along the last axis (transformer-shaped) matches" do
+      x = Nx.iota({1, 2, 4}, type: :f32, backend: Emily.Backend) |> Nx.divide(8.0)
+      idx = Nx.tensor([[[3, 1], [0, 2]]], type: :s32, backend: Emily.Backend)
+      assert_equiv(fn t, i -> Nx.take_along_axis(t, i, axis: 2) end, [x, idx])
+    end
+  end
+
   describe "dynamic put_slice (KV-cache write)" do
     test "put_slice at a runtime offset matches the Evaluator" do
       # {batch, n_kv_heads, max_len, head_dim} KV buffer; write one token.

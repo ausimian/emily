@@ -33,7 +33,8 @@ defmodule Emily.Conformance.DistilbertTest do
 
   use ExUnit.Case, async: false
 
-  import Emily.ConformanceHelper, only: [assert_all_close: 2, assert_all_close: 3, mode_test: 2]
+  import Emily.ConformanceHelper,
+    only: [assert_all_close: 2, assert_all_close: 3, mode_test: 2, mode_test: 3]
 
   alias Emily.Bumblebee.FastKernels
 
@@ -228,15 +229,22 @@ defmodule Emily.Conformance.DistilbertTest do
     # (vocab 30522) with a tiny-random model (1124-row embedding)
     # feeds out-of-range token ids into gather and relies on backend
     # OOB behaviour, which is how we originally hit a :nan score.
-    @tag :distilbert_full
-    test "batched_run drives DistilBERT-QA through Nx.Serving" do
+    # `tag: :distilbert_full, lane_tags: false` keeps all three lanes gated
+    # behind `:distilbert_full` (not the lightweight `:native`), so they run
+    # under `--only distilbert_full` and never bloat `--only native`. The
+    # forward is driven through `Nx.Serving`'s `:defn_options`, which is
+    # where the compiler lanes plug in.
+    mode_test "batched_run drives DistilBERT-QA through Nx.Serving",
+      tag: :distilbert_full,
+      lane_tags: false do
       {:ok, model_info} =
         Bumblebee.load_model({:hf, "distilbert-base-uncased-distilled-squad"})
 
       {:ok, tokenizer} =
         Bumblebee.load_tokenizer({:hf, "distilbert-base-uncased-distilled-squad"})
 
-      serving = Bumblebee.Text.question_answering(model_info, tokenizer)
+      serving =
+        Bumblebee.Text.question_answering(model_info, tokenizer, defn_options: predict_opts)
 
       start_supervised!({Nx.Serving, serving: serving, name: __MODULE__.Serving})
 

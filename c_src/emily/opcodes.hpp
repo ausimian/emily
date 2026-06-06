@@ -153,9 +153,12 @@ enum class Opcode : int64_t {
   Gather = 79,
   // Stack tensors along a new axis. operands [t0, t1, ...]; iattrs [[axis]]
   Stack = 80,
+  // Gather along one axis with a same-rank s32 index tensor.
+  // operands [input, indices]; iattrs [[axis]]
+  TakeAlongAxis = 81,
 };
 
-inline constexpr int64_t kOpcodeCount = 81;
+inline constexpr int64_t kOpcodeCount = 82;
 
 // Quant mode code (Emily.IR @quant_modes) -> MLX mode string.
 inline std::string qmode_from_code(int64_t code) {
@@ -502,6 +505,15 @@ inline mx::array dispatch_op(Opcode op, const std::vector<mx::array> &in,
     }
     int axis = emily::checked_int(scalar_at(iattrs, 0, "take"), "axis");
     return mx::take(in[0], in[1], axis, s);
+  }
+  case Opcode::TakeAlongAxis: {
+    if (in.size() != 2) {
+      throw std::invalid_argument("take_along_axis expects 2 operands, got " +
+                                  std::to_string(in.size()));
+    }
+    int axis =
+        emily::checked_int(scalar_at(iattrs, 0, "take_along_axis"), "axis");
+    return mx::take_along_axis(in[0], in[1], axis, s);
   }
   case Opcode::Concatenate: {
     if (in.empty()) {
