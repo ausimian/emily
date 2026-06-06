@@ -88,6 +88,16 @@
   seeding (every primitive in the expansion was already on the native
   path), bit-identical to the Evaluator.
 
+- **`Emily.Fast.Block.SDPAWithSinks` and `SDPAWithMaskAndSinks` lower
+  natively** — finishes the Expr op-coverage checklist (#188). Two new
+  opcodes (`fast_sdpa_sinks` / `fast_sdpa_mask_sinks`) call the same
+  `mx::fast::scaled_dot_product_attention` kernel the existing
+  `fast_sdpa{,_mask}` opcodes use, with the extra `sinks` operand
+  wired into the kernel's `sinks` arg — same call shape as
+  `Emily.Backend.fast_scaled_dot_product_attention_with{,_mask_and}_sinks`.
+  gpt-oss attention now compiles fully native (with or without an
+  additive mask), bit-identical to the Evaluator.
+
 - **`Nx.LinAlg.cholesky` / `solve` / `qr` / `eigh` / `lu` / `svd` /
   `determinant` lower natively** — closes the LinAlg-block cluster on
   #188. Two new infrastructure pieces enable this: a small extension to

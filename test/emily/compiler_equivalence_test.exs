@@ -682,6 +682,57 @@ defmodule Emily.CompilerEquivalenceTest do
         [q, k, v, mask]
       )
     end
+
+    # SDPA with attention sinks (gpt-oss). Backend dispatches both the
+    # plain sinks variant and the masked sinks variant through the same
+    # mx::fast::scaled_dot_product_attention kernel (with the `sinks` arg
+    # populated). The native IR routes through new fast_sdpa_sinks /
+    # fast_sdpa_mask_sinks opcodes that call the same kernel — so the two
+    # paths are bit-identical to the evaluator.
+    test "sdpa with sinks (non-causal) matches the fused kernel" do
+      shape = {1, 2, 4, 8}
+      q = Nx.iota(shape, type: :f32, backend: Emily.Backend) |> Nx.divide(64.0)
+      k = Nx.iota(shape, type: :f32, backend: Emily.Backend) |> Nx.divide(48.0)
+      v = Nx.iota(shape, type: :f32, backend: Emily.Backend) |> Nx.divide(32.0)
+      # Sinks is a per-head 1-D tensor (one extra logit per head).
+      sinks = et([0.5, -0.5])
+
+      assert_equiv(
+        fn q, k, v, s -> Emily.Fast.scaled_dot_product_attention(q, k, v, sinks: s) end,
+        [q, k, v, sinks]
+      )
+    end
+
+    test "sdpa with sinks (causal) matches the fused kernel" do
+      shape = {1, 2, 4, 8}
+      q = Nx.iota(shape, type: :f32, backend: Emily.Backend) |> Nx.divide(64.0)
+      k = Nx.iota(shape, type: :f32, backend: Emily.Backend) |> Nx.divide(48.0)
+      v = Nx.iota(shape, type: :f32, backend: Emily.Backend) |> Nx.divide(32.0)
+      sinks = et([0.0, 1.0])
+
+      assert_equiv(
+        fn q, k, v, s ->
+          Emily.Fast.scaled_dot_product_attention(q, k, v, sinks: s, causal: true)
+        end,
+        [q, k, v, sinks]
+      )
+    end
+
+    test "sdpa with an additive mask AND sinks matches the fused kernel" do
+      shape = {1, 2, 4, 8}
+      q = Nx.iota(shape, type: :f32, backend: Emily.Backend) |> Nx.divide(64.0)
+      k = Nx.iota(shape, type: :f32, backend: Emily.Backend) |> Nx.divide(48.0)
+      v = Nx.iota(shape, type: :f32, backend: Emily.Backend) |> Nx.divide(32.0)
+      mask = Nx.broadcast(Nx.tensor(0.0, backend: Emily.Backend), {1, 1, 4, 4})
+      sinks = et([-1.0, 1.0])
+
+      assert_equiv(
+        fn q, k, v, m, s ->
+          Emily.Fast.scaled_dot_product_attention_with_mask(q, k, v, m, sinks: s)
+        end,
+        [q, k, v, mask, sinks]
+      )
+    end
   end
 
   describe "quantized matmul block" do

@@ -241,9 +241,20 @@ enum class Opcode : int64_t {
   // operands [a]; arity 3 (U, S, V); `full_matrices` hard-coded `true` —
   // the IR slices for the thin case, matching Emily.Backend.native_svd/3.
   LinalgSVD = 120,
+  // SDPA with attention sinks (gpt-oss). operands [q, k, v, sinks];
+  // iattrs [[scale_bits], [causal]]. Mirrors
+  // Emily.Backend.fast_scaled_dot_product_attention_with_sinks/6 — same
+  // mx::fast::scaled_dot_product_attention entry point as FastSDPA, with
+  // the sinks operand wired into the kernel's `sinks` arg.
+  FastSDPASinks = 121,
+  // SDPA with both an explicit additive mask and attention sinks
+  // (gpt-oss). operands [q, k, v, mask, sinks]; iattrs [[scale_bits]];
+  // mask_mode = "array". Mirrors
+  // Emily.Backend.fast_scaled_dot_product_attention_with_mask_and_sinks/7.
+  FastSDPAMaskSinks = 122,
 };
 
-inline constexpr int64_t kOpcodeCount = 121;
+inline constexpr int64_t kOpcodeCount = 123;
 
 // Quant mode code (Emily.IR @quant_modes) -> MLX mode string.
 inline std::string qmode_from_code(int64_t code) {
@@ -561,6 +572,31 @@ inline mx::array dispatch_op(Opcode op, const std::vector<mx::array> &in,
     return mx::fast::scaled_dot_product_attention(
         in[0], in[1], in[2], scale, "array", std::optional<mx::array>(in[3]),
         std::nullopt, s);
+  }
+  case Opcode::FastSDPASinks: {
+    if (in.size() != 4) {
+      throw std::invalid_argument("fast_sdpa_sinks expects 4 operands, got " +
+                                  std::to_string(in.size()));
+    }
+    auto scale = static_cast<float>(
+        emily::f64_from_bits(scalar_at(iattrs, 0, "fast_sdpa_sinks")));
+    std::string mask_mode =
+        scalar_at(iattrs, 1, "fast_sdpa_sinks") != 0 ? "causal" : "";
+    return mx::fast::scaled_dot_product_attention(
+        in[0], in[1], in[2], scale, mask_mode, std::nullopt,
+        std::optional<mx::array>(in[3]), s);
+  }
+  case Opcode::FastSDPAMaskSinks: {
+    if (in.size() != 5) {
+      throw std::invalid_argument(
+          "fast_sdpa_mask_sinks expects 5 operands, got " +
+          std::to_string(in.size()));
+    }
+    auto scale = static_cast<float>(
+        emily::f64_from_bits(scalar_at(iattrs, 0, "fast_sdpa_mask_sinks")));
+    return mx::fast::scaled_dot_product_attention(
+        in[0], in[1], in[2], scale, "array", std::optional<mx::array>(in[3]),
+        std::optional<mx::array>(in[4]), s);
   }
   case Opcode::QuantizedMatmul: {
     if (in.size() != 4) {
