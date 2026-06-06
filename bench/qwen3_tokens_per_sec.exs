@@ -8,7 +8,7 @@
 #                    loop, replays as one NIF call per step. Run with
 #                    `native_fallback: :raise`, so the number is a true
 #                    full-native measurement, not a silent fallback.
-#   * native-fused — the native lane plus `native_compiled: true` (CM14): the
+#   * native-fused — the native lane plus `fuse: true` (CM14): the
 #                    decode loop stays host-controlled, but each loop *body*
 #                    (the per-token forward) replays through a per-stream-cached
 #                    `mx::compile`'d callable, fusing the elementwise runs the
@@ -151,7 +151,7 @@ defmodule Emily.Bench.Qwen3 do
           compiler: Emily.Compiler,
           native: true,
           native_fallback: :raise,
-          native_compiled: true
+          fuse: true
         ],
         cfg
       )

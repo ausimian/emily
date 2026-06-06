@@ -34,11 +34,11 @@ defmodule Emily.Conformance.GenerationNativeTest do
   # decode loop's body is fused under `mx::compile`. The fusion reassociates
   # f32, so logits are not bit-identical; greedy argmax over them is, so the
   # acceptance gate is a token-id match rather than a binary-identical one.
-  @native_compiled [
+  @fuse [
     compiler: Emily.Compiler,
     native: true,
     native_fallback: :raise,
-    native_compiled: true
+    fuse: true
   ]
 
   # Run `model`'s generation through `build_generate` on a fixed in-vocab
@@ -89,7 +89,7 @@ defmodule Emily.Conformance.GenerationNativeTest do
     # flip a token on another model/prompt. Sampling strategies would
     # diverge under fusion, so only greedy is gated.
     gc = configure(ctx.gen_config, %{type: :greedy_search})
-    fused = generate_ids(ctx.model_info, gc, @native_compiled)
+    fused = generate_ids(ctx.model_info, gc, @fuse)
     eval = generate_ids(ctx.model_info, gc, @eval)
     assert fused == eval
   end

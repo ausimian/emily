@@ -50,12 +50,12 @@ defmodule Emily.ConformanceHelper do
     * the native lane binds `predict_opts` to
       `[compiler: Emily.Compiler, native: true, native_fallback: :raise]`
       and is additionally tagged `:native`;
-    * the fusion lane adds `native_compiled: true` (wrapping the replay in
-      `mx::compile`) and is additionally tagged `:native_compiled`.
+    * the fusion lane adds `fuse: true` (wrapping the replay in
+      `mx::compile`) and is additionally tagged `:fuse`.
 
   The module is already tagged `:conformance`, so the native and fusion
   lanes carry that tag too: `mix test --only conformance` runs all three,
-  while `mix test --only native` / `mix test --only native_compiled` run
+  while `mix test --only native` / `mix test --only fuse` run
   one lane each. Because every lane resolves the same HuggingFace repos,
   whichever runs first reads from `~/.cache/bumblebee` for the rest — the
   download is paid once.
@@ -91,7 +91,7 @@ defmodule Emily.ConformanceHelper do
 
     * `:lane_tags` (default `true`) — when `false`, the native and fusion
       lanes are emitted *without* the cross-cutting `:native` /
-      `:native_compiled` tags. The heavyweight `*_full` suites pass
+      `:fuse` tags. The heavyweight `*_full` suites pass
       `lane_tags: false` so their compiler lanes stay gated behind the
       suite's own `:*_full` moduletag; otherwise `--only native` would
       start pulling full-size checkpoints. `--only vit_full` then runs all
@@ -116,10 +116,10 @@ defmodule Emily.ConformanceHelper do
         body
       ),
       lane(
-        [extra_tag, tag_lanes? && :native_compiled],
+        [extra_tag, tag_lanes? && :fuse],
         name,
-        " [native_compiled]",
-        [compiler: Emily.Compiler, native: true, native_fallback: :raise, native_compiled: true],
+        " [fuse]",
+        [compiler: Emily.Compiler, native: true, native_fallback: :raise, fuse: true],
         body
       )
     ]
@@ -132,7 +132,7 @@ defmodule Emily.ConformanceHelper do
   # Build one `mode_test` lane: a `test` that binds `predict_opts` for the
   # body, preceded by one `@tag` per entry in `tags` (nil/false entries are
   # dropped). The `*_full` suites pass `lane_tags: false` to drop the
-  # `:native` / `:native_compiled` tags and rely on their own `:*_full`
+  # `:native` / `:fuse` tags and rely on their own `:*_full`
   # moduletag (or an explicit `:tag`) instead.
   defp lane(tags, name, suffix, predict_opts, body) do
     tags = Enum.reject(tags, &(&1 in [nil, false]))

@@ -19,11 +19,11 @@ defmodule Emily.CompilerWhileTest do
   # CM14: the opt-in fused-while lane — the host-controlled decode loop with
   # each loop *body* fused under `mx::compile`. The fusion reassociates f32,
   # so this is all-close, not bit-identical (asserted with a tolerance below).
-  @native_compiled [
+  @fuse [
     compiler: Emily.Compiler,
     native: true,
     native_fallback: :raise,
-    native_compiled: true
+    fuse: true
   ]
 
   defp t(data), do: Nx.tensor(data, backend: Emily.Backend)
@@ -94,11 +94,11 @@ defmodule Emily.CompilerWhileTest do
     acc
   end
 
-  describe "fused-while (native_compiled) == evaluator within f32 tol" do
+  describe "fused-while (fuse) == evaluator within f32 tol" do
     test "loop body with a softmax run fuses and stays all-close" do
       x = t([[1.0, 2.0, 3.0], [0.5, -1.0, 2.0]])
 
-      fused = Nx.Defn.jit(&loop_softmax/1, @native_compiled).(x)
+      fused = Nx.Defn.jit(&loop_softmax/1, @fuse).(x)
       eval = Nx.Defn.jit(&loop_softmax/1, @eval).(x)
 
       assert %Emily.Backend{} = fused.data
@@ -118,7 +118,7 @@ defmodule Emily.CompilerWhileTest do
       # the condition is still evaluated each step, so a varying trip count
       # still tracks the input (same property as the plain native lane).
       for data <- [[1.0, 1.0], [5.0, 5.0], [20.0, 20.0]] do
-        fused = Nx.Defn.jit(&count_until/1, @native_compiled).(t(data))
+        fused = Nx.Defn.jit(&count_until/1, @fuse).(t(data))
         eval = Nx.Defn.jit(&count_until/1, @eval).(t(data))
 
         drift =
@@ -131,7 +131,7 @@ defmodule Emily.CompilerWhileTest do
 
     test "zero iterations returns the initial state unchanged (fused lane)" do
       x = t([3.0, 4.0])
-      out = Nx.Defn.jit(&zero_iter/1, @native_compiled).(x)
+      out = Nx.Defn.jit(&zero_iter/1, @fuse).(x)
       # No body ran, so nothing was fused — bit-identical to the input.
       assert Nx.to_binary(out) == Nx.to_binary(x)
     end
@@ -144,7 +144,7 @@ defmodule Emily.CompilerWhileTest do
       # result is bit-identical to both the evaluator and the plain native
       # lane here, which pins the dynamic-slice-under-fusion path.
       buf0 = Nx.broadcast(t(0.0), {4})
-      fused = Nx.Defn.jit(&fill_buffer/1, @native_compiled).(buf0)
+      fused = Nx.Defn.jit(&fill_buffer/1, @fuse).(buf0)
       eval = Nx.Defn.jit(&fill_buffer/1, @eval).(buf0)
 
       assert %Emily.Backend{} = fused.data

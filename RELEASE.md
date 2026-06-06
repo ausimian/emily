@@ -117,7 +117,7 @@
   per-op BEAM↔worker round-trips to roughly one per token. Reproduce with
   `bench/qwen3_tokens_per_sec.exs` (baseline vs native lanes).
 
-- **Fused-while decode — `native_compiled: true`.** An opt-in lane that fuses
+- **Fused-while decode — `fuse: true`.** An opt-in lane that fuses
   the `defn while` decode loop's body under `mlx::core::compile`. The outer
   loop is data-dependent and host-controlled, so `mx::compile` can't trace it
   as a whole — but the per-token forward (the loop *body*) is shape-stable
@@ -128,7 +128,7 @@
   Enable it on top of the native generation path:
 
       Nx.Defn.jit(&forward/1,
-        compiler: Emily.Compiler, native: true, native_compiled: true)
+        compiler: Emily.Compiler, native: true, fuse: true)
 
   On Qwen3-0.6B this lifts greedy decode to **~5.4× the evaluator (~1.1× over
   the plain native lane**, ~68 vs ~62 tok/s on an M-series Mac). The trade-off:

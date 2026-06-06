@@ -42,28 +42,28 @@
 #
 #     mix test --only fast_kernels_full
 #
-# `:native` and `:native_compiled` are the expression-compiler lanes of
+# `:native` and `:fuse` are the expression-compiler lanes of
 # the tiny-random conformance suites: every `mode_test` (see
 # `Emily.ConformanceHelper`) re-runs the forward pass under
 # `compiler: Emily.Compiler, native: true, native_fallback: :raise`
-# (`:native`) and again with `native_compiled: true` wrapping the replay
-# in `mx::compile` (`:native_compiled`), so the same PyTorch reference
+# (`:native`) and again with `fuse: true` wrapping the replay
+# in `mx::compile` (`:fuse`), so the same PyTorch reference
 # slice validates the evaluator, the native-compiled, and the fused
 # paths. Those tests carry `:conformance` too, so `--only conformance`
 # runs all three lanes; select one lane alone with:
 #
 #     mix test --only native
-#     mix test --only native_compiled
+#     mix test --only fuse
 #
 # Listed in the default exclude defensively — every such test is already
 # `:conformance`-tagged, but this keeps a future `:native`-only or
-# `:native_compiled`-only test out of the default suite.
+# `:fuse`-only test out of the default suite.
 ExUnit.start(
   max_cases: System.schedulers_online(),
   exclude: [
     :conformance,
     :native,
-    :native_compiled,
+    :fuse,
     :vit_full,
     :whisper_full,
     :distilbert_full,

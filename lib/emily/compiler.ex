@@ -81,7 +81,7 @@ defmodule Emily.Compiler do
       safe on any model. `:raise` re-raises the lowering error instead —
       use it in CI to prove a model lowers fully native. The per-call
       option wins over `config :emily, :native_fallback, :eval | :raise`.
-    * `:native_compiled` — `true` evals the compiled program in the
+    * `:fuse` — `true` evals the compiled program in the
       `mx::compile`'d mode instead of the plain replay. For a while-free
       forward this fuses the elementwise runs the replay leaves separate
       (the CM6 win); for a `Bumblebee.Text.generation` `defn while` it keeps
@@ -136,7 +136,7 @@ defmodule Emily.Compiler do
     :cache,
     :native,
     :native_fallback,
-    :native_compiled
+    :fuse
   ]
 
   @impl true
@@ -182,7 +182,7 @@ defmodule Emily.Compiler do
           {:ok, ([term()] -> [Nx.Tensor.t()])} | :fallback
   defp build_native(key, vars, fun, opts) do
     # Resolve (and validate) the modes up front so a misconfigured
-    # `:native_fallback` or `:native_compiled` raises on every call —
+    # `:native_fallback` or `:fuse` raises on every call —
     # including the happy path, and the lowering-failure path — rather than
     # lying dormant until the first lowering failure.
     mode = native_fallback_mode(opts)
@@ -208,7 +208,7 @@ defmodule Emily.Compiler do
     end
   end
 
-  # Resolve the program eval mode from `:native_compiled`, validating up front
+  # Resolve the program eval mode from `:fuse`, validating up front
   # (like `native_fallback_mode/1`) so a non-boolean raises on every native
   # call rather than being silently treated as truthy. `true` -> `:compiled`
   # (the `mx::compile` fusion — and, for a `defn while`, fusing each loop
@@ -216,7 +216,7 @@ defmodule Emily.Compiler do
   # `false` -> `:sync` (the plain, bit-identical replay). Only the native path
   # calls this, so the option is ignored unless `native: true`.
   defp native_eval_mode(opts) do
-    case Keyword.get(opts, :native_compiled, false) do
+    case Keyword.get(opts, :fuse, false) do
       true ->
         :compiled
 
@@ -225,7 +225,7 @@ defmodule Emily.Compiler do
 
       other ->
         raise ArgumentError,
-              "invalid :native_compiled #{inspect(other)}; expected true | false"
+              "invalid :fuse #{inspect(other)}; expected true | false"
     end
   end
 
@@ -292,7 +292,7 @@ defmodule Emily.Compiler do
   # — it ignores keys it doesn't consume, but handing it `native: true`
   # when we've decided *not* to compile natively would be misleading.
   defp drop_native_opts(opts),
-    do: Keyword.drop(opts, [:native, :native_fallback, :native_compiled])
+    do: Keyword.drop(opts, [:native, :native_fallback, :fuse])
 
   defp native_ref(%T{data: %B{ref: r}}), do: r
   defp native_ref(%T{} = t), do: Nx.backend_transfer(t, B).data.ref
