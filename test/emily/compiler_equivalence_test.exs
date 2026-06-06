@@ -350,6 +350,101 @@ defmodule Emily.CompilerEquivalenceTest do
       assert_equiv(fn t -> Nx.add(t, Nx.iota({4})) end, [x])
       assert_equiv(fn t -> Nx.add(t, Nx.iota({4}, type: :f32)) end, [x])
     end
+
+    # eye is a pure creation op like iota — the IR materialises the
+    # identity matrix as a captured constant via Nx.eye on the host
+    # backend (which handles the rank > 2 batch broadcast itself, matching
+    # Emily.Backend.eye/2). The native and evaluator paths both end up
+    # comparing against the same materialised bits.
+    test "eye lowers to a constant and matches (2-D and batched)" do
+      x = et([[0.0, 0.0], [0.0, 0.0]])
+      assert_equiv(fn t -> Nx.add(t, Nx.eye(2)) end, [x])
+      assert_equiv(fn t -> Nx.add(t, Nx.eye({2, 2}, type: :f32)) end, [x])
+
+      y = Nx.broadcast(Nx.tensor(0.0, backend: Emily.Backend), {2, 3, 3})
+      assert_equiv(fn t -> Nx.add(t, Nx.eye({2, 3, 3}, type: :f32)) end, [y])
+    end
+  end
+
+  describe "pad / triangular_solve" do
+    # pad with constant value matches Emily.Backend.pad/4 (mx::pad with
+    # mode "constant", no interior dilation). Cover symmetric and
+    # asymmetric padding on both 1-D and 2-D inputs.
+    test "constant-pad on 1-D and 2-D inputs matches the evaluator" do
+      x = et([1.0, 2.0, 3.0])
+      assert_equiv(fn t -> Nx.pad(t, 0.0, [{1, 1, 0}]) end, [x])
+      assert_equiv(fn t -> Nx.pad(t, -1.0, [{2, 0, 0}]) end, [x])
+
+      y = et([[1.0, 2.0], [3.0, 4.0]])
+      assert_equiv(fn t -> Nx.pad(t, 0.0, [{1, 1, 0}, {2, 2, 0}]) end, [y])
+      assert_equiv(fn t -> Nx.pad(t, 99.0, [{0, 1, 0}, {1, 0, 0}]) end, [y])
+    end
+
+    # Interior padding (interior > 0) has no MLX primitive — both the
+    # eager Backend and the IR raise on it. The IR's raise must surface
+    # cleanly (the graceful `:eval` fallback path is what catches it in
+    # production; here we assert the underlying behaviour).
+    test "pad with interior > 0 raises in the IR (no fallback)" do
+      x = et([1.0, 2.0, 3.0])
+
+      assert_raise ArgumentError, ~r/interior > 0/, fn ->
+        run(fn t -> Nx.pad(t, 0.0, [{0, 0, 1}]) end, [x],
+          compiler: Emily.Compiler,
+          native: true,
+          native_fallback: :raise
+        )
+      end
+    end
+
+    # triangular_solve over the four `transform_a` × `left_side`
+    # combinations. The IR composes each case with transposes around the
+    # bare `linalg_solve_triangular` opcode (operands [a, b]; iattrs
+    # [[upper]]) — exactly the sequence Emily.Backend.triangular_solve/4
+    # uses. mx::linalg::solve_triangular is CPU-only; the C++ dispatcher
+    # overrides the stream per call, mirroring c_src/ops/linalg.cpp.
+    test "lower-triangular A x = b (default opts) matches the evaluator" do
+      a = et([[2.0, 0.0], [3.0, 1.0]])
+      b = et([4.0, 9.0])
+      assert_equiv(&Nx.LinAlg.triangular_solve/2, [a, b])
+    end
+
+    test "upper-triangular A x = b matches" do
+      a = et([[2.0, 1.0], [0.0, 3.0]])
+      b = et([5.0, 6.0])
+      assert_equiv(fn a, b -> Nx.LinAlg.triangular_solve(a, b, lower: false) end, [a, b])
+    end
+
+    test "transposed A (transform_a: :transpose, left_side: true) matches" do
+      a = et([[2.0, 0.0], [3.0, 1.0]])
+      b = et([4.0, 9.0])
+
+      assert_equiv(
+        fn a, b -> Nx.LinAlg.triangular_solve(a, b, transform_a: :transpose) end,
+        [a, b]
+      )
+    end
+
+    test "right-side solve x A = b (left_side: false) matches" do
+      a = et([[2.0, 0.0], [3.0, 1.0]])
+      b = et([[4.0, 9.0], [1.0, 2.0]])
+
+      assert_equiv(
+        fn a, b -> Nx.LinAlg.triangular_solve(a, b, left_side: false) end,
+        [a, b]
+      )
+    end
+
+    test "transposed right-side solve (transform_a: :transpose, left_side: false) matches" do
+      a = et([[2.0, 0.0], [3.0, 1.0]])
+      b = et([[4.0, 9.0], [1.0, 2.0]])
+
+      assert_equiv(
+        fn a, b ->
+          Nx.LinAlg.triangular_solve(a, b, transform_a: :transpose, left_side: false)
+        end,
+        [a, b]
+      )
+    end
   end
 
   describe "fused kernels (Emily.Fast blocks)" do

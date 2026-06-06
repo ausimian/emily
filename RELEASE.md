@@ -66,6 +66,17 @@
   primitive) lowers to `(a != 0) != (b != 0)`, mirroring the eager
   Backend composition. All three are bit-identical to the Evaluator.
 
+- **`pad`, `eye`, `triangular_solve` lower natively** — closes the
+  top-level-Expr-op cluster on #188. `pad` is the constant-pad path
+  (interior dilation raises, same as `Emily.Backend.pad/4`); `eye`
+  materialises as a captured constant (identity matrix at lower time,
+  same trick `iota` uses); `triangular_solve` decomposes all four
+  `transform_a` × `left_side` combinations into transposes around a
+  bare `linalg_solve_triangular` opcode, mirroring
+  `Emily.Backend.triangular_solve/4`. The C++ dispatcher routes
+  `mx::linalg::solve_triangular` to the CPU stream per call (it's
+  CPU-only), matching the eager NIF.
+
 - **`take_along_axis` lowers natively** — `Nx.take_along_axis` (the
   `Nx.Block.TakeAlongAxis` block) now compiles under the native single-NIF
   path, mirroring `Emily.Backend.native_take_along_axis/4` (cast indices to

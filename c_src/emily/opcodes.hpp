@@ -207,9 +207,20 @@ enum class Opcode : int64_t {
   // matching Emily.Backend.quotient/3).
   Arctan2 = 111,
   FloorDivide = 112,
+  // Constant-aware pad: pads `input` with the `pad_value` scalar by `low_pad`
+  // and `high_pad` on each `axis`. operands [input, pad_value]; iattrs
+  // [[axes...], [lows...], [highs...]]. MLX has no interior dilation, so
+  // the lowerer rejects interior > 0 (matches Emily.Backend.pad/4).
+  Pad = 113,
+  // Solve A x = b (or x A = b) where A is triangular. The Backend handles
+  // `transform_a`/`left_side` in the lowerer (via transpose ops on a/b);
+  // this opcode is the bare kernel call. operands [a, b]; iattrs [[upper]].
+  // Routed to MLX's CPU stream (`mx::linalg::solve_triangular` is CPU-only),
+  // mirroring c_src/ops/linalg.cpp's eager NIF.
+  LinalgSolveTriangular = 114,
 };
 
-inline constexpr int64_t kOpcodeCount = 113;
+inline constexpr int64_t kOpcodeCount = 115;
 
 // Quant mode code (Emily.IR @quant_modes) -> MLX mode string.
 inline std::string qmode_from_code(int64_t code) {
@@ -765,6 +776,31 @@ inline mx::array dispatch_op(Opcode op, const std::vector<mx::array> &in,
   case Opcode::FloorDivide:
     need2(in, "floor_divide");
     return mx::floor_divide(in[0], in[1], s);
+  // --- Shape / linalg peers ---
+  case Opcode::Pad:
+    // operands [input, pad_value]; iattrs [[axes...], [lows...], [highs...]].
+    // Mirrors c_src/ops/shape.cpp's pad_nif: `mx::pad` with "constant" mode
+    // (interior is rejected up-stack by the Elixir lowerer; same constraint
+    // as the eager NIF).
+    if (in.size() != 2) {
+      throw std::invalid_argument("pad expects 2 operands, got " +
+                                  std::to_string(in.size()));
+    }
+    return mx::pad(in[0], emily::to_int_vec(attr_at(iattrs, 0, "pad")),
+                   emily::to_mlx_shape(attr_at(iattrs, 1, "pad")),
+                   emily::to_mlx_shape(attr_at(iattrs, 2, "pad")), in[1],
+                   "constant", s);
+  case Opcode::LinalgSolveTriangular: {
+    // mx::linalg::solve_triangular is CPU-only — eager NIF in
+    // c_src/ops/linalg.cpp routes to mx::default_stream(cpu) too. The
+    // dispatcher's `s` arg is the replay stream (typically GPU); override
+    // here so the solver runs on CPU like the eager path.
+    need2(in, "linalg_solve_triangular");
+    bool upper =
+        scalar_at(iattrs, 0, "linalg_solve_triangular") != 0;
+    auto cpu = mx::default_stream(mx::Device(mx::Device::DeviceType::cpu));
+    return mx::linalg::solve_triangular(in[0], in[1], upper, cpu);
+  }
   // --- Scatter (shares the eager index.cpp entry points) ---
   case Opcode::Scatter:
   case Opcode::ScatterAdd: {

@@ -188,7 +188,15 @@ defmodule Emily.IR do
     # so the IR routes Nx :quotient through it (cast both to out.type,
     # floor_divide, same bits as the eager Backend).
     arctan2: 111,
-    floor_divide: 112
+    floor_divide: 112,
+    # Constant-aware pad (operands [input, pad_value]; iattrs [axes, lows,
+    # highs]); MLX has no interior dilation so the lowerer rejects
+    # interior > 0, same as Emily.Backend.pad/4.
+    pad: 113,
+    # CPU-only triangular solve (operands [a, b]; iattrs [[upper]]); the
+    # lowerer handles transform_a/left_side by transposing a/b/output
+    # around this bare kernel call, mirroring Emily.Backend.triangular_solve/4.
+    linalg_solve_triangular: 114
   }
 
   # Quant mode string -> code; decoded by qmode_from_code in
@@ -829,6 +837,16 @@ defmodule Emily.IR do
     |> materialize_const(t.shape, t.type, state)
   end
 
+  # eye: same shape as iota — a pure creation op with all-static shape /
+  # type. Materialize as a captured constant via Nx.eye on the host
+  # backend (which already handles the rank > 2 batch case, identity on
+  # the trailing two axes — matching Emily.Backend.eye/2's broadcast).
+  defp lower_op(%T{data: %Nx.Defn.Expr{op: :eye, args: []}} = t, state) do
+    t.shape
+    |> Nx.eye(type: t.type, backend: Nx.BinaryBackend)
+    |> materialize_const(t.shape, t.type, state)
+  end
+
   # Nx.block node: args [struct, in_args, expr, callback]. Known fused
   # structs lower to their fused opcode (matching Emily.Backend.block/4,
   # which the Evaluator dispatches through); unknown structs lower by
@@ -943,6 +961,72 @@ defmodule Emily.IR do
     {pad_lo, pad_hi} = window_padding(opts[:padding], rank)
 
     emit_coerced(state, op, [rt, rs, ri], [window, strides, pad_lo, pad_hi], t.type)
+  end
+
+  # pad(input, pad_value, padding_config): constant-pad each axis by
+  # `padding_config = [{lo, hi, interior}, ...]`. Mirrors
+  # Emily.Backend.pad/4 — MLX has no interior dilation, so interior > 0
+  # raises (no fallback to interior expansion). The pad_value is an Expr
+  # scalar tensor and lowers as an operand (input scalars baked at lower
+  # time end up as a const ref; runtime scalars as inputs — both routes
+  # work because the pad opcode takes the value as operand[1]).
+  defp lower_op(
+         %T{data: %Nx.Defn.Expr{op: :pad, args: [a, pad_value, padding_config]}} = t,
+         state
+       ) do
+    lows = Enum.map(padding_config, fn {lo, _, _} -> lo end)
+    highs = Enum.map(padding_config, fn {_, hi, _} -> hi end)
+    interiors = Enum.map(padding_config, fn {_, _, interior} -> interior end)
+
+    if Enum.any?(interiors, &(&1 > 0)) do
+      raise ArgumentError,
+            "Emily Expr compiler does not lower :pad with interior > 0 " <>
+              "(MLX has no primitive; Emily.Backend.pad/4 also raises)."
+    end
+
+    axes = Enum.to_list(0..(length(lows) - 1)//1)
+    {ra, state} = lower_node(a, state)
+    {rp, state} = lower_node(pad_value, state)
+    emit_coerced(state, :pad, [ra, rp], [axes, lows, highs], t.type)
+  end
+
+  # triangular_solve(a, b, opts): solve A x = b (or x A = b) with A
+  # triangular. Mirrors Emily.Backend.triangular_solve/4 — the bare kernel
+  # is operands [a, b] + [[upper]], and the four `transform_a` /
+  # `left_side` combinations are decomposed here into transposes around
+  # the kernel call (same Native.transpose sequence the eager Backend
+  # uses). MLX's mx::linalg::solve_triangular runs on the CPU stream,
+  # which the C++ dispatcher overrides per call.
+  defp lower_op(%T{data: %Nx.Defn.Expr{op: :triangular_solve, args: [a, b, opts]}} = t, state) do
+    {ra, state} = lower_node(a, state)
+    {rb, state} = lower_node(b, state)
+    lower = opts[:lower]
+
+    {r, state} =
+      case {opts[:transform_a], opts[:left_side]} do
+        {:none, true} ->
+          emit(state, :linalg_solve_triangular, [ra, rb], [[bool_int(not lower)]])
+
+        {:transpose, true} ->
+          {ra_t, state} = emit(state, :transpose, [ra], [mat_transpose_axes(a.shape)])
+          emit(state, :linalg_solve_triangular, [ra_t, rb], [[bool_int(lower)]])
+
+        {:none, false} ->
+          {ra_t, state} = emit(state, :transpose, [ra], [mat_transpose_axes(a.shape)])
+          {rb_t, state} = emit(state, :transpose, [rb], [mat_transpose_axes(b.shape)])
+          {xt, state} = emit(state, :linalg_solve_triangular, [ra_t, rb_t], [[bool_int(lower)]])
+          emit(state, :transpose, [xt], [mat_transpose_axes(t.shape)])
+
+        {:transpose, false} ->
+          {rb_t, state} = emit(state, :transpose, [rb], [mat_transpose_axes(b.shape)])
+
+          {xt, state} =
+            emit(state, :linalg_solve_triangular, [ra, rb_t], [[bool_int(not lower)]])
+
+          emit(state, :transpose, [xt], [mat_transpose_axes(t.shape)])
+      end
+
+    coerce(r, t.type, state)
   end
 
   # Nx.reverse along one or more axes (the conv backward flips the kernel).
@@ -1363,6 +1447,13 @@ defmodule Emily.IR do
   end
 
   defp dim_product(axes, shape), do: Enum.reduce(axes, 1, &(elem(shape, &1) * &2))
+
+  # The "matrix transpose" axes permutation: keep leading batch axes, swap
+  # the trailing two. Mirrors Emily.Backend.mat_transpose_axes/1.
+  defp mat_transpose_axes(shape) do
+    rank = tuple_size(shape)
+    Enum.to_list(0..(rank - 3)//1) ++ [rank - 1, rank - 2]
+  end
 
   # Coerce a ref to `type` (emit an astype). MLX astype to the same dtype
   # is a no-op, so this is safe to apply unconditionally — it mirrors
