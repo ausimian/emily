@@ -58,7 +58,11 @@
   bit-identical to the Evaluator. Wiring this required `cumsum`/`cumprod`/
   `cummax`/`cummin` (last-axis fast path), single- and multi-axis `gather`,
   and `stack`. Greedy and multinomial sampling are gated in
-  `generation_native_test.exs`.
+  `generation_native_test.exs`. On Qwen3-0.6B this measures **~5× the
+  evaluator's decode throughput** (~61 vs ~12 tok/s on an M-series Mac),
+  with byte-identical completions — the single-NIF replay collapses the
+  per-op BEAM↔worker round-trips to roughly one per token. Reproduce with
+  `bench/qwen3_tokens_per_sec.exs` (baseline vs native lanes).
 
 - **`defn while` compiles native.** Data-dependent loops — including
   `Bumblebee.Text.generation`'s decode loop — now lower to the single-NIF
