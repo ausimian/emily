@@ -208,7 +208,15 @@ defmodule Emily.IR do
     linalg_qr: 117,
     linalg_eigh: 118,
     linalg_lu: 119,
-    linalg_svd: 120
+    linalg_svd: 120,
+    # SDPA with attention sinks (gpt-oss). The mask-only and sinks-only
+    # variants of the existing `fast_sdpa{,_mask}` family — same
+    # mx::fast::scaled_dot_product_attention entry point, with the
+    # extra `sinks` operand wired through.
+    # operands [q, k, v, sinks]; iattrs [[scale_bits], [causal]]
+    fast_sdpa_sinks: 121,
+    # operands [q, k, v, mask, sinks]; iattrs [[scale_bits]]
+    fast_sdpa_mask_sinks: 122
   }
 
   # Quant mode string -> code; decoded by qmode_from_code in
@@ -1259,6 +1267,59 @@ defmodule Emily.IR do
     {rv, state} = lower_node(v, state)
     {rm, state} = lower_node(mask, state)
     emit_coerced(state, :fast_sdpa_mask, [rq, rk, rv, rm], [[float_bits(scale)]], t.type)
+  end
+
+  # SDPA with attention sinks (gpt-oss). Mirrors
+  # Emily.Backend.fast_scaled_dot_product_attention_with_sinks/6 —
+  # routes through the same mx::fast::scaled_dot_product_attention
+  # entry point as SDPA, with the sinks tensor as the kernel's `sinks`
+  # arg and the causal flag as the mask_mode discriminator
+  # ("causal" / "").
+  defp lower_block(
+         %FB.SDPAWithSinks{scale: scale, causal: causal},
+         [q, k, v, sinks],
+         _expr,
+         t,
+         state
+       ) do
+    {rq, state} = lower_node(q, state)
+    {rk, state} = lower_node(k, state)
+    {rv, state} = lower_node(v, state)
+    {rs, state} = lower_node(sinks, state)
+
+    emit_coerced(
+      state,
+      :fast_sdpa_sinks,
+      [rq, rk, rv, rs],
+      [[float_bits(scale)], [bool_int(causal)]],
+      t.type
+    )
+  end
+
+  # SDPA with an additive mask *and* attention sinks (gpt-oss). Mirrors
+  # Emily.Backend.fast_scaled_dot_product_attention_with_mask_and_sinks/7 —
+  # mask_mode is fixed "array" (the dispatcher hard-codes it), so only the
+  # scale crosses as an iattr.
+  defp lower_block(
+         %FB.SDPAWithMaskAndSinks{scale: scale},
+         [q, k, v, mask, sinks],
+         _expr,
+         t,
+         state
+       ) do
+    {rq, state} = lower_node(q, state)
+    {rk, state} = lower_node(k, state)
+    {rv, state} = lower_node(v, state)
+    {rm, state} = lower_node(mask, state)
+    {rs, state} = lower_node(sinks, state)
+
+    emit_coerced(
+      state,
+      :fast_sdpa_mask_sinks,
+      [rq, rk, rv, rm, rs],
+      [[float_bits(scale)]],
+      t.type
+    )
   end
 
   defp lower_block(%QB.QuantizedMatmul{} = qb, [x, q, s, b], _expr, t, state) do
