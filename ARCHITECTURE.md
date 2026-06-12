@@ -9,10 +9,11 @@ without sifting milestone history. For per-milestone rationale see
 ```
 Emily.Compiler    (Nx.Defn.Compiler) — validates opts, pins the result backend,
                                         selects one of two lowering lanes:
-                                          • default (native: false): op-by-op
-                                            via Nx.Defn.Evaluator + Emily.Backend
-                                          • native (native: true): lower once to
-                                            Emily.IR/Program, single-NIF replay
+                                          • native (default, native: true):
+                                            lower once to Emily.IR/Program,
+                                            single-NIF replay
+                                          • eval (native: false): op-by-op via
+                                            Nx.Defn.Evaluator + Emily.Backend
 Emily.IR + Program (native lane)     — flat IR compiled once; whole-graph replay,
                                         optionally mx::compile-fused (:fuse)
 Emily.Backend     (Nx.Backend)       — op-by-op translation to Native
@@ -33,12 +34,13 @@ see [Testing philosophy](#testing-philosophy).
 ## Core design decisions
 
 1. **Backend-first; compiler layered on top.** The `Nx.Backend` is
-   enough to run Bumblebee; the `Nx.Defn` compiler is additive. By
-   default `Emily.Compiler` delegates the expression walk to
-   `Nx.Defn.Evaluator` and adds two adjustments: pin the result
-   backend to `Emily.Backend` via `__to_backend__/1`, and cap
-   `:max_concurrency` at 1. `native: true` switches to the single-NIF
-   lane (decision 10), and `:fuse` wraps `mx::compile` on top of it.
+   enough to run Bumblebee; the `Nx.Defn` compiler is additive. In
+   both lanes `Emily.Compiler` pins the result backend to
+   `Emily.Backend` via `__to_backend__/1` and caps `:max_concurrency`
+   at 1. By default (`native: true`) it lowers to the single-NIF lane
+   (decision 10); `native: false` delegates the expression walk to
+   `Nx.Defn.Evaluator` op-by-op instead, and `:fuse` wraps
+   `mx::compile` on top of the native lane.
    The original PLAN M6 measurement found whole-graph `mx::compile`
    below the 1.20× gate; the single-NIF replay changed that economics
    (fuse the elementwise runs the replay leaves separate, and cache a
@@ -46,11 +48,11 @@ see [Testing philosophy](#testing-philosophy).
    opt-in `:fuse` mode.
 
 2. **Trace in Elixir, not in C++.** `Nx.Defn.Expr` is already a
-   fully traced tree. The default lane walks it from Elixir and emits
-   one Native NIF call per node (`lib/emily/native.ex`); the native
-   lane lowers the same tree to `Emily.IR` and emits a single NIF call
-   for the whole graph. Either way the trace is consumed in Elixir,
-   never re-traced in C++.
+   fully traced tree. The default native lane lowers it to `Emily.IR`
+   and emits a single NIF call for the whole graph; the op-by-op lane
+   (`native: false`) walks it from Elixir and emits one Native NIF
+   call per node (`lib/emily/native.ex`). Either way the trace is
+   consumed in Elixir, never re-traced in C++.
 
 3. **One resource type: `Tensor`** wrapping `mlx::array`. MLX's
    refcount does the heavy lifting; `fine`'s `ResourcePtr` adds one
@@ -112,12 +114,12 @@ see [Testing philosophy](#testing-philosophy).
     the NIF boundary once, captured by the compiled program. Anything
     the IR can't lower routes the *whole* defn back through
     `Nx.Defn.Evaluator` under the default `native_fallback: :eval`
-    (firing `[:emily, :compiler, :fallback]`), so a global
-    `native: true` install is safe on any model. Use
-    `native_fallback: :raise` to fail instead — the conformance gates
-    use it to prove full native lowering. The default comes from
-    `config :emily, :native` (itself `false`); a per-call `native:`
-    wins. `:fuse` wraps the replay in `mx::compile`, cached per stream
+    (firing `[:emily, :compiler, :fallback]`), so native is safe as
+    the default on any model. Use `native_fallback: :raise` to fail
+    instead — the conformance gates use it to prove full native
+    lowering. The default comes from `config :emily, :native` (itself
+    `true`); set `config :emily, native: false` (or pass
+    `native: false`) to opt a memory-constrained host back to op-by-op. `:fuse` wraps the replay in `mx::compile`, cached per stream
     and fusing `defn while` bodies for decode loops — not
     bit-identical, hence opt-in.
 

@@ -204,24 +204,26 @@ and direct MLX round-trips, but most users should go through Nx.
 
 ## Native compilation
 
-`Emily.Compiler` has three modes. Opt into a mode per-call, or globally
-via `Nx.Defn.global_default_options/1`; the `native` lane can also be
-switched on application-wide with `config :emily, native: true` (a
-per-call `native:` option always overrides the app-env default):
+`Emily.Compiler` has three modes. `native` is **on by default**; opt
+into a different mode per-call, globally via
+`Nx.Defn.global_default_options/1`, or app-wide with
+`config :emily, native: false | true` (a per-call `native:` option
+always overrides the app-env default):
 
 ```elixir
-# Default: op-by-op dispatch through Emily.Backend. Bit-identical to
-# the Nx evaluator.
+# Default: native single-NIF replay. Lowers the traced Nx.Defn.Expr to
+# a flat IR and replays the whole forward graph in one NIF call per
+# invocation — ~5× decode throughput on Qwen3-0.6B, bit-identical to
+# the evaluator. Anything the IR can't lower routes through
+# Nx.Defn.Evaluator under the default `native_fallback: :eval` (with a
+# `[:emily, :compiler, :fallback]` telemetry event).
 Nx.Defn.jit(&forward/1, compiler: Emily.Compiler).(input)
 
-# Native single-NIF replay. Lowers the traced Nx.Defn.Expr to a flat
-# IR and replays the whole forward graph in one NIF call per
-# invocation — ~5× decode throughput on Qwen3-0.6B, bit-identical to
-# the evaluator. Safe to install globally: anything the IR can't lower
-# routes through Nx.Defn.Evaluator under the default
-# `native_fallback: :eval` (with a `[:emily, :compiler, :fallback]`
-# telemetry event).
-Nx.Defn.jit(&forward/1, compiler: Emily.Compiler, native: true).(input)
+# Op-by-op dispatch through Emily.Backend — opt out of native with
+# `native: false`. Bit-identical to the Nx evaluator, with no
+# whole-graph compile step, so no one-shot compile-time memory spike;
+# use it as a numerics reference or on memory-constrained hosts.
+Nx.Defn.jit(&forward/1, compiler: Emily.Compiler, native: false).(input)
 
 # Native + mx::compile kernel fusion. Fuses elementwise runs the plain
 # replay leaves as separate kernels (RMSNorm / softmax / SiLU gating /
@@ -239,11 +241,14 @@ ids matched the evaluator's exactly in our benchmarks), but
 **sampling strategies will diverge** from the evaluator even with a
 fixed seed.
 
-**Choosing a mode.** `native: true` is the right default for model
-inference: it's bit-identical to the evaluator, safe to install
-globally (un-lowerable ops route through the evaluator), and is the
-single biggest win — eager → native is the largest jump in every
-[benchmark](#performance) tier. `fuse: true` is **not** a universal
+**Choosing a mode.** `native` is the default and the right one for
+model inference: it's bit-identical to the evaluator, safe globally
+(un-lowerable ops route through the evaluator), and the single biggest
+win — eager → native is the largest jump in every
+[benchmark](#performance) tier. Opt out with `native: false` only when
+you need the op-by-op evaluator — a numerics reference, or a
+memory-constrained host where the one-shot compile peak is too large.
+`fuse: true` is **not** a universal
 add-on. It pays off only when the fused callable is *reused*, which in
 practice means autoregressive decode: the `defn while` body is
 `mx::compile`d once and cache-hits every step (the best lane on

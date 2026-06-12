@@ -17,3 +17,10 @@ config :emily,
 # fallback); tests that exercise the fallback pass `native_fallback: :eval`
 # per call.
 config :emily, native_fallback: :raise
+
+# The runtime default for `:native` is `true`; a bare
+# `compiler: Emily.Compiler` compiles native. The suite pins it to
+# `false` so a bare `compiler: Emily.Compiler` stays the *eval* oracle
+# the equivalence tests compare the native lane against — tests that
+# exercise the native path pass `native: true` explicitly.
+config :emily, native: false

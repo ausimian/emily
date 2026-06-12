@@ -1,14 +1,15 @@
 ### Added
 
-- **Native Expr compiler — `Nx.Defn.jit` / `compile` with
-  `compiler: Emily.Compiler, native: true`.** Lowers a traced
-  `Nx.Defn.Expr` to a flat IR once and replays the whole forward graph
-  in a **single NIF call per invocation**, collapsing the per-op
-  BEAM↔worker round-trips a step-evaluated decode loop would otherwise
-  pay. Weights cross the NIF boundary once (captured by the compiled
-  program) and are never re-serialised per call. Opt in per call:
+- **Native Expr compiler — on by default under
+  `compiler: Emily.Compiler`.** Lowers a traced `Nx.Defn.Expr` to a
+  flat IR once and replays the whole forward graph in a **single NIF
+  call per invocation**, collapsing the per-op BEAM↔worker round-trips
+  a step-evaluated decode loop would otherwise pay. Weights cross the
+  NIF boundary once (captured by the compiled program) and are never
+  re-serialised per call. It is the default, so a bare
+  `compiler: Emily.Compiler` compiles native:
 
-      Nx.Defn.jit(&forward/1, compiler: Emily.Compiler, native: true).(input)
+      Nx.Defn.jit(&forward/1, compiler: Emily.Compiler).(input)
 
   Coverage is the full Nx primitive set (with `Emily.Backend`'s
   dtype-coercion and op-composition semantics ported into the
@@ -20,15 +21,13 @@
   `defn while` (with the host loop driven entirely from the worker
   thread). Anything the IR can't lower yet routes through
   `Nx.Defn.Evaluator` under the default `native_fallback: :eval` (with
-  a one-shot `[:emily, :compiler, :fallback]` telemetry event), so
-  installing the compiler globally is safe on any model:
-
-      Nx.Defn.global_default_options(compiler: Emily.Compiler, native: true)
-
-  The `native` default is also read from `config :emily, :native`
-  (defaulting to `false`), so `config :emily, native: true` opts every
-  defn into the native lane application-wide without a per-call option;
-  a per-call `native:` option always wins over the app-env default.
+  a one-shot `[:emily, :compiler, :fallback]` telemetry event), so the
+  native lane is safe as the default on any model. The default is read
+  from `config :emily, :native` (defaulting to `true`), so
+  `config :emily, native: false` opts every defn out of the native lane
+  application-wide — e.g. on a memory-constrained host where the
+  one-shot compile peak is too large; a per-call `native:` option
+  always wins over the app-env default.
 
   `native_fallback: :raise` fails instead — the conformance suites use
   this to prove a model lowers fully native.
