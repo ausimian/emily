@@ -237,6 +237,21 @@ ids matched the evaluator's exactly in our benchmarks), but
 **sampling strategies will diverge** from the evaluator even with a
 fixed seed.
 
+**Choosing a mode.** `native: true` is the right default for model
+inference: it's bit-identical to the evaluator, safe to install
+globally (un-lowerable ops route through the evaluator), and is the
+single biggest win — eager → native is the largest jump in every
+[benchmark](#performance) tier. `fuse: true` is **not** a universal
+add-on. It pays off only when the fused callable is *reused*, which in
+practice means autoregressive decode: the `defn while` body is
+`mx::compile`d once and cache-hits every step (the best lane on
+Qwen3-0.6B decode, 1.67× EXLA). On a one-shot forward pass — a single
+encoder/classifier/vision call — there's nothing to amortize the
+`mx::compile` build cost against, so `fuse` is neutral-to-slightly
+negative (cf. ViT-base and Whisper-tiny in §5–6 of the benchmark).
+Rule of thumb: **`fuse` for decode loops, plain `native` for one-shot
+forwards.**
+
 Pass `native_fallback: :raise` to fail rather than silently degrade to
 the Evaluator — the conformance suites use this to prove a model
 lowers fully native. See the `Emily.Compiler` moduledoc for the full
@@ -247,6 +262,50 @@ For autoregressive decode specifically, `Emily.Generation` is a
 model-agnostic loop driver that JIT-compiles a caller-supplied
 shape-stable per-token forward and runs the loop from Elixir with
 KV-cache threading, stop conditions, and per-token streaming.
+
+## Performance
+
+Emily targets **GPU-friendly model inference on Apple Silicon**. The
+[Emily-vs-EXLA benchmark][bench-report] compares Emily (MLX, Metal GPU)
+against EXLA — which on macOS arm64 ships no GPU client and runs on the
+**CPU**. So the practical choice most Elixir-on-Apple-Silicon users
+face is GPU-via-Emily vs CPU-via-EXLA, and the two have opposite cost
+structures: the GPU has a higher fixed per-op latency floor
+(~160–280 µs — a BEAM↔worker hop, a Metal command-buffer commit, and a
+GPU sync) but far more throughput at scale; the CPU has a low
+(~80–110 µs) floor but caps out sooner. The crossover is **per-op
+tensor size**, not model kind:
+
+| Workload (M4 Pro, f32)                   | Best Emily lane vs EXLA-CPU |
+| ---------------------------------------- | --------------------------- |
+| Large matmul (2048²)                     | **5.0× faster**             |
+| ViT-base image classification            | **2.2× faster**             |
+| Qwen3-0.6B greedy decode                 | **1.67× faster** (`fuse`)   |
+| DistilBERT QA (one encoder forward)      | ~parity (1.06×)             |
+| Whisper-tiny transcription               | **11× slower**              |
+| Elementwise / matmul ≤ ~512 per dim      | up to ~2.3× slower          |
+
+**Rule of thumb: reach for Emily when the per-op tensors are large** —
+hidden dim ≥ 768 and matmuls ≥ 1024 per dimension, which covers Qwen3,
+ViT, and most modern transformers at real sizes. Small models built
+from many tiny kernels (Whisper-tiny, hidden dim 384) or workloads
+dominated by small tensors can be *slower* than EXLA-CPU, because the
+GPU's per-kernel launch latency dominates and its parallelism goes
+unused. Notably, every model in the benchmark lowered **fully native
+with zero fallbacks**, so these gaps are kernel/dispatch efficiency,
+not coverage holes.
+
+For decode, use the native compiler rather than the eager backend:
+eager Qwen3 decode is 3.5× *slower* than EXLA where native is 1.67×
+faster — a 5.8× swing that is purely the per-op dispatch floor, paid
+once per tiny op across thousands of decode steps.
+
+Re-run the benchmark with `elixir bench/emily_vs_exla.exs`; the full
+write-up is in [`bench/emily_vs_exla_report.md`][bench-report] and the
+raw numbers in [`bench/emily_vs_exla_results.md`][bench-results].
+
+[bench-report]: https://github.com/ausimian/emily/blob/main/bench/emily_vs_exla_report.md
+[bench-results]: https://github.com/ausimian/emily/blob/main/bench/emily_vs_exla_results.md
 
 ## Livebooks
 
