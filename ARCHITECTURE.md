@@ -7,7 +7,14 @@ without sifting milestone history. For per-milestone rationale see
 ## Layers
 
 ```
-Emily.Compiler    (Nx.Defn.Compiler) — validates opts, pins the result backend
+Emily.Compiler    (Nx.Defn.Compiler) — validates opts, pins the result backend,
+                                        selects one of two lowering lanes:
+                                          • default (native: false): op-by-op
+                                            via Nx.Defn.Evaluator + Emily.Backend
+                                          • native (native: true): lower once to
+                                            Emily.IR/Program, single-NIF replay
+Emily.IR + Program (native lane)     — flat IR compiled once; whole-graph replay,
+                                        optionally mx::compile-fused (:fuse)
 Emily.Backend     (Nx.Backend)       — op-by-op translation to Native
 Emily.Native      (NIF shim)         — one function per MLX op, no policy
 Worker threads    (one OS thread per stream)
@@ -26,16 +33,24 @@ see [Testing philosophy](#testing-philosophy).
 ## Core design decisions
 
 1. **Backend-first; compiler layered on top.** The `Nx.Backend` is
-   enough to run Bumblebee. `Emily.Compiler` delegates the expression
-   walk to `Nx.Defn.Evaluator` and adds two adjustments: pin the
-   result backend to `Emily.Backend` via `__to_backend__/1`, and cap
-   `:max_concurrency` at 1. `mlx::core::compile` is deliberately
-   **not** wrapped — the fusion win on transformer-shaped workloads
-   was measured below the 1.20× gate (see PLAN M6).
+   enough to run Bumblebee; the `Nx.Defn` compiler is additive. By
+   default `Emily.Compiler` delegates the expression walk to
+   `Nx.Defn.Evaluator` and adds two adjustments: pin the result
+   backend to `Emily.Backend` via `__to_backend__/1`, and cap
+   `:max_concurrency` at 1. `native: true` switches to the single-NIF
+   lane (decision 10), and `:fuse` wraps `mx::compile` on top of it.
+   The original PLAN M6 measurement found whole-graph `mx::compile`
+   below the 1.20× gate; the single-NIF replay changed that economics
+   (fuse the elementwise runs the replay leaves separate, and cache a
+   fused `defn while` body per stream), so fusion now ships as the
+   opt-in `:fuse` mode.
 
 2. **Trace in Elixir, not in C++.** `Nx.Defn.Expr` is already a
-   fully traced tree; the compiler walks it from Elixir and emits one
-   Native NIF call per node (`lib/emily/native.ex`).
+   fully traced tree. The default lane walks it from Elixir and emits
+   one Native NIF call per node (`lib/emily/native.ex`); the native
+   lane lowers the same tree to `Emily.IR` and emits a single NIF call
+   for the whole graph. Either way the trace is consumed in Elixir,
+   never re-traced in C++.
 
 3. **One resource type: `Tensor`** wrapping `mlx::array`. MLX's
    refcount does the heavy lifting; `fine`'s `ResourcePtr` adds one
@@ -88,6 +103,24 @@ see [Testing philosophy](#testing-philosophy).
    requires page-aligned, page-sized memory that real-world inputs
    (safetensors, `:file.pread`) never provide.
 
+10. **Native single-NIF compiler (`native: true`).** Lowers the
+    traced `Nx.Defn.Expr` to a flat `Emily.IR` (`lib/emily/ir.ex`),
+    compiles it once to an `Emily.Program` (`lib/emily/program.ex` +
+    `c_src/program.cpp`), and replays the whole forward graph in a
+    single NIF call per invocation — collapsing the per-op BEAM↔worker
+    round-trips the default lane pays on a decode loop. Weights cross
+    the NIF boundary once, captured by the compiled program. Anything
+    the IR can't lower routes the *whole* defn back through
+    `Nx.Defn.Evaluator` under the default `native_fallback: :eval`
+    (firing `[:emily, :compiler, :fallback]`), so a global
+    `native: true` install is safe on any model. Use
+    `native_fallback: :raise` to fail instead — the conformance gates
+    use it to prove full native lowering. The default comes from
+    `config :emily, :native` (itself `false`); a per-call `native:`
+    wins. `:fuse` wraps the replay in `mx::compile`, cached per stream
+    and fusing `defn while` bodies for decode loops — not
+    bit-identical, hence opt-in.
+
 ## Concurrency model
 
 MLX dispatches GPU work through Metal command queues. Emily owns one
@@ -124,7 +157,8 @@ code should call `Emily.Memory` directly.
 
 ## Observability
 
-Span events at the evaluation boundary:
+Telemetry events — spans at the evaluation boundary, plus a few
+discrete (non-span) events:
 
   * `[:emily, :eval, *]` — every `Emily.eval/1` and the implicit
     evaluation inside `to_binary`.
@@ -136,6 +170,10 @@ Span events at the evaluation boundary:
   * `[:emily, :block, :fallback]` — discrete event each time the
     backend's `block` callback (Nx 0.12+ `Nx.Block.*` dispatch) falls
     through to the supplied default `fun`.
+  * `[:emily, :compiler, :fallback]` — discrete event when a
+    `native: true` defn can't be lowered and routes the whole defn
+    through `Nx.Defn.Evaluator` instead. Metadata: `:key`, `:reason`
+    (the lowering error, naming the unsupported op/construct).
   * `[:emily, :memory, :stats]` — discrete event from
     `Emily.Memory.stats/0`.
 

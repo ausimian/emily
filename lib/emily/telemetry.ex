@@ -46,6 +46,16 @@ defmodule Emily.Telemetry do
   `:fallback` is unset (`true` → `:warn`, `false` → `:silent`).
   Prefer `:fallback` in new code; if both are set, `:fallback` wins.
 
+  ### Block-dispatch fallback
+
+  `[:emily, :block, :fallback]` — a discrete event (not a span) fired
+  each time the backend's `block` callback (`Nx.Block.*` dispatch,
+  Nx 0.12+) falls through to Nx's supplied default `fun` rather than a
+  wired native handler. Measurements: none (`%{}`). Metadata:
+  `:struct` (the `Nx.Block.*` struct module) and `:args_count`. Use it
+  in soak runs to flag a block op that used to lower natively but now
+  lands on the composed-defn slow path.
+
   ### Native-compiler fallback
 
   `[:emily, :compiler, :fallback]` — a discrete event (not a span) that

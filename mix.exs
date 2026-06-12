@@ -220,6 +220,9 @@ defmodule Emily.MixProject do
         "Emily.Native.from_binary/3",
         "Emily.Native.conv_general/8",
         "Emily.Native.worker_queue_depth/1",
+        # Native Expr-compiler internals are `@moduledoc false`.
+        "Emily.IR",
+        "Emily.Program",
         # Hidden Nx callback + private/external Nx internals.
         "Emily.Backend.block/4",
         "Nx.Backend.block/4",
