@@ -25,6 +25,11 @@
 
       Nx.Defn.global_default_options(compiler: Emily.Compiler, native: true)
 
+  The `native` default is also read from `config :emily, :native`
+  (defaulting to `false`), so `config :emily, native: true` opts every
+  defn into the native lane application-wide without a per-call option;
+  a per-call `native:` option always wins over the app-env default.
+
   `native_fallback: :raise` fails instead — the conformance suites use
   this to prove a model lowers fully native.
 

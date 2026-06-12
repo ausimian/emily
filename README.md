@@ -204,8 +204,10 @@ and direct MLX round-trips, but most users should go through Nx.
 
 ## Native compilation
 
-`Emily.Compiler` has three modes; opt in per-call or globally via
-`Nx.Defn.global_default_options/1`:
+`Emily.Compiler` has three modes. Opt into a mode per-call, or globally
+via `Nx.Defn.global_default_options/1`; the `native` lane can also be
+switched on application-wide with `config :emily, native: true` (a
+per-call `native:` option always overrides the app-env default):
 
 ```elixir
 # Default: op-by-op dispatch through Emily.Backend. Bit-identical to

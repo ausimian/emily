@@ -70,7 +70,13 @@ defmodule Emily.Compiler do
       rejecting them would break those servings.
     * `:native` — `true` compiles the traced `Nx.Defn.Expr` to a flat
       IR and replays the whole graph in a single NIF call per invocation.
-      Defaults to `false`, which runs the op-by-op Evaluator walk.
+      Defaults to `false`, which runs the op-by-op Evaluator walk. The
+      default is read from `config :emily, :native` (itself defaulting to
+      `false`), so `config :emily, native: true` opts every defn into the
+      native lane application-wide without a per-call option. The per-call
+      option wins over the app env, so an explicit `native: false`
+      overrides a global `config :emily, native: true`. A non-boolean
+      raises `ArgumentError`.
     * `:native_fallback` — `:eval` (default) or `:raise`. Controls what
       happens when `native: true` but the expression contains an op or
       construct the IR can't lower yet. `:eval` routes the *whole* defn
@@ -143,7 +149,7 @@ defmodule Emily.Compiler do
   def __jit__(key, vars, fun, args_list, opts) do
     opts = take_known_opts(opts)
 
-    if Keyword.get(opts, :native, false) do
+    if native?(opts) do
       case build_native(key, vars, fun, opts) do
         {:ok, run} -> run.(args_list)
         :fallback -> Evaluator.__jit__(key, vars, fun, args_list, drop_native_opts(opts))
@@ -157,13 +163,35 @@ defmodule Emily.Compiler do
   def __compile__(key, vars, fun, opts) do
     opts = take_known_opts(opts)
 
-    if Keyword.get(opts, :native, false) do
+    if native?(opts) do
       case build_native(key, vars, fun, opts) do
         {:ok, run} -> run
         :fallback -> Evaluator.__compile__(key, vars, fun, drop_native_opts(opts))
       end
     else
       Evaluator.__compile__(key, vars, fun, opts)
+    end
+  end
+
+  # Per-call `:native` opt wins over `config :emily, :native`, defaulting
+  # to `false` (the op-by-op Evaluator walk). `Keyword.fetch/2` (not
+  # `Keyword.get/3`) so an explicit per-call `native: false` overrides a
+  # global `config :emily, native: true`, rather than being treated as
+  # "unset" and falling through to the app env.
+  defp native?(opts) do
+    enabled =
+      case Keyword.fetch(opts, :native) do
+        {:ok, native} -> native
+        :error -> Application.get_env(:emily, :native, false)
+      end
+
+    case enabled do
+      bool when is_boolean(bool) ->
+        bool
+
+      other ->
+        raise ArgumentError,
+              "invalid :native #{inspect(other)}; expected true | false"
     end
   end
 
