@@ -30,13 +30,13 @@ comparison is therefore Qwen3-0.6B in the main suite.
 
 ## Environment
 
-Fresh run: 2026-06-13 12:24, Apple M4 Pro MacBook Pro with 24 GB RAM.
+Run on an Apple M4 Pro MacBook Pro with 24 GB RAM.
 
 | Component | Version / backend |
 | --- | --- |
 | Elixir / OTP | 1.19.5 / 28 |
 | Nx | 0.12.1 |
-| Emily | 0.6.1 local checkout |
+| Emily | 0.7.0 local checkout |
 | EMLX | 0.3.1, Metal GPU |
 | EXLA | 0.12.0, host CPU client |
 
