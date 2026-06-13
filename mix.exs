@@ -222,6 +222,8 @@ defmodule Emily.MixProject do
         "Emily.Native.from_binary/3",
         "Emily.Native.conv_general/8",
         "Emily.Native.worker_queue_depth/1",
+        "Emily.Native.async_eval/2",
+        "Emily.Native.fast_rope_int/8",
         # Native Expr-compiler internals are `@moduledoc false`.
         "Emily.IR",
         "Emily.Program",
