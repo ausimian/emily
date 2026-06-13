@@ -273,9 +273,15 @@ KV-cache threading, stop conditions, and per-token streaming.
 ## Performance
 
 Emily targets **GPU-friendly model inference on Apple Silicon**. The
-[Emily-vs-EXLA benchmark][bench-report] compares Emily (MLX, Metal GPU)
-against EXLA — which on macOS arm64 ships no GPU client and runs on the
-**CPU**. So the practical choice most Elixir-on-Apple-Silicon users
+[benchmark][bench-report] compares Emily (MLX, Metal GPU) against two
+baselines: **EXLA** — which on macOS arm64 ships no GPU client and runs
+on the **CPU** — and **EMLX**, the older MLX-backed Nx backend, which
+like Emily runs on the **Metal GPU**. EXLA answers the cross-hardware
+question (is the GPU faster than XLA on the CPU here?); EMLX answers the
+same-hardware one (is Emily's compiler/runtime faster than the older
+MLX-backed Nx stack?).
+
+Against EXLA, the practical choice most Elixir-on-Apple-Silicon users
 face is GPU-via-Emily vs CPU-via-EXLA, and the two have opposite cost
 structures: the GPU has a higher fixed per-op latency floor
 (~160–280 µs — a BEAM↔worker hop, a Metal command-buffer commit, and a
@@ -286,9 +292,9 @@ tensor size**, not model kind:
 | Workload (M4 Pro, f32)                   | Best Emily lane vs EXLA-CPU |
 | ---------------------------------------- | --------------------------- |
 | Large matmul (2048²)                     | **5.0× faster**             |
-| ViT-base image classification            | **2.2× faster**             |
+| ViT-base image classification            | **2.35× faster**            |
 | Qwen3-0.6B greedy decode                 | **1.67× faster** (`fuse`)   |
-| DistilBERT QA (one encoder forward)      | ~parity (1.06×)             |
+| DistilBERT QA (one encoder forward)      | **1.27× faster**            |
 | Whisper-tiny transcription               | **11× slower**              |
 | Elementwise / matmul ≤ ~512 per dim      | up to ~2.3× slower          |
 
@@ -302,9 +308,18 @@ unused. Notably, every model in the benchmark lowered **fully native
 with zero fallbacks**, so these gaps are kernel/dispatch efficiency,
 not coverage holes.
 
+**Versus EMLX (GPU-vs-GPU).** The same benchmark runs an `emlx` lane —
+the older MLX-backed Nx backend, also on the Metal GPU — so the
+comparison isn't only against the CPU. Here Emily's *compiler* is the
+differentiator: eager Emily is roughly EMLX-like, but native/fuse pull
+far ahead — **2.72× faster on DistilBERT QA**, **5.82× faster on
+Qwen3-0.6B decode**, and ~3.2× faster on the Qwen3-4B addendum. (EMLX
+did not complete the ViT-base or Whisper-tiny tiers in this harness.)
+
 For decode, use the native compiler rather than the eager backend:
-eager Qwen3 decode is 3.5× *slower* than EXLA where native is 1.67×
-faster — a 5.8× swing that is purely the per-op dispatch floor, paid
+eager Qwen3 decode is 3.2× *slower* than EXLA, while native is 1.5×
+faster and fuse 1.67× — a 5.3× throughput swing from eager to fuse
+(12.51 → 66.42 tok/s) that is purely the per-op dispatch floor, paid
 once per tiny op across thousands of decode steps.
 
 Re-run the benchmark with `elixir bench/emily_vs_exla.exs`; the full
