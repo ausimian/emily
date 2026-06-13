@@ -50,11 +50,11 @@ default `aot`) through `config/config.exs` and stash the atom as
 ## Cutting a release
 
 Consumers verify each NIF tarball against the checksum pinned in
-`native_checksums.txt`, which ships in the hex package. Publishing is two
-commands (step 4): `mix emily.publish` regenerates that file from the
-freshly-built release artifacts, then `mix hex.publish` publishes — so
-there is nothing to update or commit by hand (the file is git-ignored and
-can't go stale).
+`native_checksums.txt`, which ships in the hex package. The publish step
+itself is two commands (steps 4–5): `mix emily.publish` regenerates that
+file from the built release artifacts, then `mix hex.publish` publishes —
+so there is nothing to update or commit by hand (the file is git-ignored
+and can't go stale).
 
 ### 1. Land changes on `main`
 
@@ -68,8 +68,16 @@ mix publisho patch   # or minor / major
 ```
 
 Bumps `@version`, rolls `RELEASE.md` into `CHANGELOG.md` under a
-dated `## <v>` heading, commits `Version <v>`, tags bare semver (no
-`v` prefix), and pushes both the commit and the tag.
+dated `## <v>` heading, commits `Version <v>`, and creates an annotated
+bare-semver tag (no `v` prefix). It does **not** push — that's the next
+step.
+
+### 3. Push the commit and the tag
+
+```sh
+git push              # the `Version <v>` commit
+git push origin <v>   # the tag — this is what fires the release workflow
+```
 
 The tag push fires `.github/workflows/release-nif.yml`, which fans
 out `{variant × target}`:
@@ -89,9 +97,46 @@ sidecar (informational — consumers verify against the pinned
 `https://github.com/ausimian/emily/releases/tag/<v>` — the URL the
 consumer's `compile.emily_nif` step fetches from.
 
-### 3. Verify end-to-end
+Once both cells finish, the workflow's `publish-release` job flips the
+release out of draft **automatically** (`gh release edit <v> --draft=false`),
+so its assets become public with no manual step. That job is gated to the
+tag-push path, so a manual `workflow_dispatch` rebuild leaves the release
+untouched — see *Rebuilding without retagging*.
 
-In a throwaway project:
+### 4. Pin the checksums
+
+Once the workflow has finished and the release is public:
+
+```sh
+mix emily.publish   # alias for `mix emily.checksums`
+```
+
+Downloads each tarball from the now-public release and records its SHA256
+into `native_checksums.txt`. It does **not** trust the `.sha256` sidecars —
+it hashes the bytes itself. If the release isn't public yet, the download
+404s and the task aborts before writing anything.
+
+### 5. Publish to Hex
+
+```sh
+mix hex.publish   # publishes the package (incl. native_checksums.txt) + docs
+```
+
+Packages `native_checksums.txt` — so it's covered by Hex's package hash in
+the consumer's `mix.lock`, a trust root independent of the mutable GitHub
+release — and publishes the package + docs.
+
+Steps 4 and 5 are two separate commands on purpose — they can't be folded
+into one alias. Mix only loads the Hex archive for the task *named on the
+command line*, so a `hex.publish` step chained inside an alias (whose CLI
+name is `emily.publish`) fails with `** (Mix) The task "hex.publish" could
+not be found`. Running `mix hex.publish` directly is what loads Hex.
+`hex.publish` keeps its `:docs` `preferred_env`, so it publishes docs as
+well as the package.
+
+### 6. Verify end-to-end (recommended)
+
+After publishing, in a throwaway project:
 
 ```sh
 mix new /tmp/emily-verify && cd /tmp/emily-verify
@@ -106,39 +151,9 @@ iex -S mix
 downloads the tarball, verifies, validates entries, extracts. A
 variant-mismatched consumer (`config :emily, variant: :jit`) should
 download the JIT tarball instead — worth spot-checking both lanes on
-the first release of a bump. (The pin only ever exists in the
-*published* package — `native_checksums.txt` is git-ignored and
-generated during `mix hex.publish` — so run this end-to-end verify
-against the published package, i.e. after step 4.)
-
-### 4. Promote the draft and publish
-
-Promote the release so its assets are public, then publish:
-
-```sh
-gh release edit <v> --repo ausimian/emily --draft=false   # assets go public
-mix emily.publish                                          # regenerate native_checksums.txt
-mix hex.publish                                            # publish package + docs
-```
-
-`mix emily.publish` runs `mix emily.checksums`: it downloads each tarball
-from the (now-public) release and records its SHA256 into
-`native_checksums.txt`. Then `mix hex.publish` packages that file and
-publishes the package + docs.
-
-These are two separate commands on purpose — they can't be folded into one
-alias. Mix only loads the Hex archive for the task *named on the command
-line*, so a `hex.publish` step chained inside an alias (whose CLI name is
-`emily.publish`) fails with `** (Mix) The task "hex.publish" could not be
-found`. Running `mix hex.publish` directly is what loads Hex. `hex.publish`
-keeps its `:docs` `preferred_env`, so it publishes docs as well as the
-package.
-
-So the consumer verifies downloads against a trust root that lives in the
-immutable Hex package, not the mutable GitHub release — with no file to
-maintain and nothing to commit. The file is git-ignored and regenerated on
-every publish, so it can't go stale. If the draft isn't public yet,
-`mix emily.checksums` 404s and aborts before you publish.
+the first release of a bump. The checksum pin only exists in the
+*published* package, so this must run against the published package,
+i.e. after step 5.
 
 ### Rebuilding without retagging
 

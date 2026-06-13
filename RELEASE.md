@@ -8,3 +8,7 @@
 - The benchmark report's environment block now records the Emily
   version the numbers were produced on (0.7.0) and drops a misleading
   run timestamp.
+- The `MAINTAINING.md` release runbook is corrected: `mix publisho` is
+  no longer described as pushing (it only commits and tags), and the
+  obsolete manual draft-promotion step is dropped — `release-nif.yml`
+  now publishes the release automatically once the NIFs are built.
