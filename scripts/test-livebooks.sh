@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Smoke-test the example livebooks against the LOCAL emily checkout.
 #
-# For each notebook in notebooks/, this extracts its Elixir cells,
+# For each notebook in livebooks/, this extracts its Elixir cells,
 # repoints the `{:emily, "~> x"}` Mix.install dependency at this repo (as
 # a `path:` dep, so the notebook exercises the working tree — including a
 # from-source NIF build), and runs the result headlessly with `elixir`.
@@ -28,7 +28,7 @@
 set -uo pipefail
 
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
-NB_DIR="$REPO/notebooks"
+NB_DIR="$REPO/livebooks"
 TIMEOUT="${LIVEBOOK_TIMEOUT:-1200}"
 SKIP=" ${LIVEBOOK_SKIP:-} "
 

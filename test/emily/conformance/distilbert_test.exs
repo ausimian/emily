@@ -33,7 +33,8 @@ defmodule Emily.Conformance.DistilbertTest do
 
   use ExUnit.Case, async: false
 
-  import Emily.ConformanceHelper, only: [assert_all_close: 2, assert_all_close: 3]
+  import Emily.ConformanceHelper,
+    only: [assert_all_close: 2, assert_all_close: 3, mode_test: 2, mode_test: 3]
 
   alias Emily.Bumblebee.FastKernels
 
@@ -52,7 +53,7 @@ defmodule Emily.Conformance.DistilbertTest do
     :ok
   end
 
-  test ":base" do
+  mode_test ":base" do
     assert {:ok, %{model: model, params: params, spec: spec}} =
              Bumblebee.load_model({:hf, "hf-internal-testing/tiny-random-DistilBertModel"})
 
@@ -63,7 +64,7 @@ defmodule Emily.Conformance.DistilbertTest do
       "attention_mask" => Nx.tensor([[1, 1, 1, 1, 1, 1, 1, 1, 0, 0]])
     }
 
-    outputs = Axon.predict(model, params, inputs)
+    outputs = Axon.predict(model, params, inputs, predict_opts)
 
     assert Nx.shape(outputs.hidden_state) == {1, 10, 32}
 
@@ -75,7 +76,7 @@ defmodule Emily.Conformance.DistilbertTest do
     )
   end
 
-  test ":for_masked_language_modeling" do
+  mode_test ":for_masked_language_modeling" do
     assert {:ok, %{model: model, params: params, spec: spec}} =
              Bumblebee.load_model({:hf, "hf-internal-testing/tiny-random-DistilBertForMaskedLM"})
 
@@ -86,7 +87,7 @@ defmodule Emily.Conformance.DistilbertTest do
       "attention_mask" => Nx.tensor([[1, 1, 1, 1, 1, 1, 1, 1, 0, 0]])
     }
 
-    outputs = Axon.predict(model, params, inputs)
+    outputs = Axon.predict(model, params, inputs, predict_opts)
 
     assert Nx.shape(outputs.logits) == {1, 10, 1124}
 
@@ -98,7 +99,7 @@ defmodule Emily.Conformance.DistilbertTest do
     )
   end
 
-  test ":for_sequence_classification" do
+  mode_test ":for_sequence_classification" do
     assert {:ok, %{model: model, params: params, spec: spec}} =
              Bumblebee.load_model(
                {:hf, "hf-internal-testing/tiny-random-DistilBertForSequenceClassification"}
@@ -111,14 +112,14 @@ defmodule Emily.Conformance.DistilbertTest do
       "attention_mask" => Nx.tensor([[1, 1, 1, 1, 1, 1, 1, 1, 0, 0]])
     }
 
-    outputs = Axon.predict(model, params, inputs)
+    outputs = Axon.predict(model, params, inputs, predict_opts)
 
     assert Nx.shape(outputs.logits) == {1, 2}
 
     assert_all_close(outputs.logits, Nx.tensor([[-0.0047, -0.0103]]))
   end
 
-  test ":for_token_classification" do
+  mode_test ":for_token_classification" do
     assert {:ok, %{model: model, params: params, spec: spec}} =
              Bumblebee.load_model(
                {:hf, "hf-internal-testing/tiny-random-DistilBertForTokenClassification"}
@@ -131,7 +132,7 @@ defmodule Emily.Conformance.DistilbertTest do
       "attention_mask" => Nx.tensor([[1, 1, 1, 1, 1, 1, 1, 1, 0, 0]])
     }
 
-    outputs = Axon.predict(model, params, inputs)
+    outputs = Axon.predict(model, params, inputs, predict_opts)
 
     assert Nx.shape(outputs.logits) == {1, 10, 2}
 
@@ -141,7 +142,7 @@ defmodule Emily.Conformance.DistilbertTest do
     )
   end
 
-  test ":for_question_answering" do
+  mode_test ":for_question_answering" do
     assert {:ok, %{model: model, params: params, spec: spec}} =
              Bumblebee.load_model(
                {:hf, "hf-internal-testing/tiny-random-DistilBertForQuestionAnswering"}
@@ -154,7 +155,7 @@ defmodule Emily.Conformance.DistilbertTest do
       "attention_mask" => Nx.tensor([[1, 1, 1, 1, 1, 1, 1, 1, 0, 0]])
     }
 
-    outputs = Axon.predict(model, params, inputs)
+    outputs = Axon.predict(model, params, inputs, predict_opts)
 
     assert Nx.shape(outputs.start_logits) == {1, 10}
     assert Nx.shape(outputs.end_logits) == {1, 10}
@@ -170,7 +171,7 @@ defmodule Emily.Conformance.DistilbertTest do
     )
   end
 
-  test ":for_multiple_choice" do
+  mode_test ":for_multiple_choice" do
     assert {:ok, %{model: model, params: params, spec: spec}} =
              Bumblebee.load_model(
                {:hf, "hf-internal-testing/tiny-random-DistilBertForMultipleChoice"}
@@ -183,7 +184,7 @@ defmodule Emily.Conformance.DistilbertTest do
       "attention_mask" => Nx.tensor([[[1, 1, 1, 1, 1, 1, 1, 1, 0, 0]]])
     }
 
-    outputs = Axon.predict(model, params, inputs)
+    outputs = Axon.predict(model, params, inputs, predict_opts)
 
     assert Nx.shape(outputs.logits) == {1, 1}
 
@@ -228,15 +229,22 @@ defmodule Emily.Conformance.DistilbertTest do
     # (vocab 30522) with a tiny-random model (1124-row embedding)
     # feeds out-of-range token ids into gather and relies on backend
     # OOB behaviour, which is how we originally hit a :nan score.
-    @tag :distilbert_full
-    test "batched_run drives DistilBERT-QA through Nx.Serving" do
+    # `tag: :distilbert_full, lane_tags: false` keeps all three lanes gated
+    # behind `:distilbert_full` (not the lightweight `:native`), so they run
+    # under `--only distilbert_full` and never bloat `--only native`. The
+    # forward is driven through `Nx.Serving`'s `:defn_options`, which is
+    # where the compiler lanes plug in.
+    mode_test "batched_run drives DistilBERT-QA through Nx.Serving",
+      tag: :distilbert_full,
+      lane_tags: false do
       {:ok, model_info} =
         Bumblebee.load_model({:hf, "distilbert-base-uncased-distilled-squad"})
 
       {:ok, tokenizer} =
         Bumblebee.load_tokenizer({:hf, "distilbert-base-uncased-distilled-squad"})
 
-      serving = Bumblebee.Text.question_answering(model_info, tokenizer)
+      serving =
+        Bumblebee.Text.question_answering(model_info, tokenizer, defn_options: predict_opts)
 
       start_supervised!({Nx.Serving, serving: serving, name: __MODULE__.Serving})
 

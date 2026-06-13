@@ -33,7 +33,7 @@ defmodule Emily.Conformance.ModernBertTest do
   @moduletag :conformance
   @moduletag capture_log: true
 
-  test "ModernBert :base forward on Emily.Backend" do
+  mode_test "ModernBert :base forward on Emily.Backend" do
     spec =
       Bumblebee.configure(ModernBert,
         architecture: :base,
@@ -47,7 +47,10 @@ defmodule Emily.Conformance.ModernBertTest do
       )
 
     model = ModernBert.model(spec)
-    {init_fn, predict_fn} = Axon.build(model)
+    # Init on the evaluator (params are random-init, mode-irrelevant);
+    # gate only the forward pass under `predict_opts`.
+    {init_fn, _} = Axon.build(model)
+    {_, predict_fn} = Axon.build(model, predict_opts)
 
     input_template = %{
       "input_ids" => Nx.template({1, 8}, :s64),

@@ -24,9 +24,13 @@ defmodule Emily.MnistHelper do
     {train_batches, test_images, test_labels}
   end
 
-  def evaluate(model, state, test_images, test_labels) do
+  # `predict_opts` are forwarded to `Axon.predict` (which forwards them to
+  # the defn jit). Defaults to the op-by-op eval lane; the native-lane
+  # tests pass `[compiler: Emily.Compiler, native: true, native_fallback:
+  # :raise]` so the gating accuracy is itself produced by the single NIF.
+  def evaluate(model, state, test_images, test_labels, predict_opts \\ [compiler: Emily.Compiler]) do
     logits =
-      Axon.predict(model, state, test_images, compiler: Emily.Compiler)
+      Axon.predict(model, state, test_images, predict_opts)
 
     predicted = Nx.argmax(logits, axis: -1)
     actual = Nx.argmax(test_labels, axis: -1)

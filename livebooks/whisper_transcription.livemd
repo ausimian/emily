@@ -3,7 +3,7 @@
 ```elixir
 Mix.install(
   [
-    {:emily, "~> 0.6"},
+    {:emily, "~> 0.7"},
     {:bumblebee, "~> 0.7"},
     {:tokenizers, "~> 0.5"},
     {:nx, "~> 0.12"},
@@ -57,15 +57,18 @@ repo = {:hf, "openai/whisper-tiny"}
 ```elixir
 serving =
   Bumblebee.Audio.speech_to_text_whisper(whisper, featurizer, tokenizer, generation_config,
-    defn_options: [compiler: Emily.Compiler]
+    defn_options: [compiler: Emily.Compiler, native: true, native_fallback: :raise]
   )
 ```
 
 `Bumblebee.Audio.speech_to_text_whisper/5` builds an `Nx.Serving`
 that composes the featurizer, the encoder forward pass, the
 autoregressive decoder loop (with a cached encoder state), and the
-tokenizer detokenize step. The `compiler: Emily.Compiler` attachment
-on `:defn_options` routes every compiled computation through Emily.
+tokenizer detokenize step. The `:defn_options` attachment routes
+every compiled computation through Emily; `native: true` lowers each
+one through the native Expr compiler and `native_fallback: :raise`
+fails loudly rather than silently degrading to the evaluator. The
+encoder and decoder both lower fully native.
 
 ## A canned transcription
 

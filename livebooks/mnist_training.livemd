@@ -3,7 +3,7 @@
 ```elixir
 Mix.install(
   [
-    {:emily, "~> 0.6"},
+    {:emily, "~> 0.7"},
     {:axon, "~> 0.8"},
     {:scidata, "~> 0.1"},
     {:nx, "~> 0.12"},
@@ -17,7 +17,7 @@ Mix.install(
 
 ## Overview
 
-The other notebooks in this repo run pretrained models forward. This
+The other livebooks in this repo run pretrained models forward. This
 one trains from scratch — a small Axon MLP on MNIST, lowered through
 `Emily.Compiler` so every step of the backward pass dispatches to
 MLX. It's the end-to-end exercise of the `Nx.Defn.grad` chain that
@@ -93,20 +93,30 @@ trained_state =
   |> Axon.Loop.trainer(:categorical_cross_entropy, :adam)
   |> Axon.Loop.run(train_batches, %{},
     epochs: 5,
-    compiler: Emily.Compiler
+    compiler: Emily.Compiler,
+    native: true,
+    native_fallback: :raise
   )
 ```
 
 `Axon.Loop.run` accepts `compiler: Emily.Compiler` the same way
 `Nx.Serving.run` does. Each step's forward pass, loss, gradient, and
-Adam update all become MLX ops. Five epochs over 60k examples runs
-in tens of seconds on Apple Silicon.
+Adam update all become MLX ops. `native: true` lowers each step
+through Emily's native Expr compiler and `native_fallback: :raise`
+fails loudly if anything in the training graph can't lower — the full
+forward-and-backward pass lowers fully native here. Five epochs over
+60k examples runs in tens of seconds on Apple Silicon.
 
 ## Evaluating
 
 ```elixir
 evaluate = fn state ->
-  logits = Axon.predict(model, state, test_images, compiler: Emily.Compiler)
+  logits =
+    Axon.predict(model, state, test_images,
+      compiler: Emily.Compiler,
+      native: true,
+      native_fallback: :raise
+    )
   predicted = Nx.argmax(logits, axis: -1)
   actual = Nx.argmax(test_labels, axis: -1)
 
@@ -149,7 +159,9 @@ bf16_state =
   |> Axon.Loop.trainer(:categorical_cross_entropy, :adam)
   |> Axon.Loop.run(train_batches, %{},
     epochs: 5,
-    compiler: Emily.Compiler
+    compiler: Emily.Compiler,
+    native: true,
+    native_fallback: :raise
   )
 
 bf16_accuracy = evaluate.(bf16_state)

@@ -31,7 +31,7 @@ defmodule Emily.Conformance.WhisperFullTest do
   @moduletag capture_log: true
   @moduletag timeout: 600_000
 
-  test "openai/whisper-tiny forward pass matches pinned logits slice" do
+  mode_test "openai/whisper-tiny forward pass matches pinned logits slice", lane_tags: false do
     {:ok, %{model: model, params: params, spec: spec}} =
       Bumblebee.load_model({:hf, "openai/whisper-tiny"})
 
@@ -58,7 +58,7 @@ defmodule Emily.Conformance.WhisperFullTest do
       "decoder_attention_mask" => decoder_attention_mask
     }
 
-    outputs = Axon.predict(model, params, inputs)
+    outputs = Axon.predict(model, params, inputs, predict_opts)
 
     assert Nx.shape(outputs.logits) == {1, 6, 51_865}
 
@@ -82,6 +82,44 @@ defmodule Emily.Conformance.WhisperFullTest do
         [[2.9246, 0.2663, 3.8530], [-4.5523, -8.4833, -4.4232], [17.7350, 16.3070, 13.2149]]
       ])
     )
+  end
+
+  test "speech_to_text serving lowers fully native — featurizer + decode loop, no fallback" do
+    repo = {:hf, "openai/whisper-tiny"}
+    {:ok, whisper} = Bumblebee.load_model(repo)
+    {:ok, featurizer} = Bumblebee.load_featurizer(repo)
+    {:ok, tokenizer} = Bumblebee.load_tokenizer(repo)
+    {:ok, generation_config} = Bumblebee.load_generation_config(repo)
+
+    # The gate is "does the whole graph lower", not transcription quality —
+    # cap the decode loop so it stays fast.
+    generation_config = Bumblebee.configure(generation_config, max_new_tokens: 4)
+
+    # `native_fallback: :raise` makes this a no-fallback gate over the ENTIRE
+    # serving graph — the mel featurizer's STFT (`fft`), the encoder/decoder
+    # forward, and the autoregressive decode loop (the multi-output `cond` in
+    # the encoder attention, `indexed_put` cache writes, dynamic slices). Any
+    # op the Expr compiler can't lower raises here rather than silently
+    # degrading. The `mode_test` forward pass above never reaches these: it
+    # feeds pre-computed mel features through a single `Axon.predict`, so it
+    # exercises neither the featurizer nor the generation loop.
+    serving =
+      Bumblebee.Audio.speech_to_text_whisper(whisper, featurizer, tokenizer, generation_config,
+        defn_options: [compiler: Emily.Compiler, native: true, native_fallback: :raise]
+      )
+
+    # ~1 s of deterministic synthetic audio. The featurizer pads it to
+    # Whisper's 30 s window, so the encoder still runs the full 1500-position
+    # path (the shape that surfaced the multi-output cond).
+    audio = Nx.sin(Nx.iota({16_000}, type: :f32) |> Nx.multiply(0.02))
+
+    %{chunks: chunks} = Nx.Serving.run(serving, audio)
+
+    # Reaching here is the gate: the full path lowered native with zero
+    # fallback. The output is only sanity-checked (synthetic audio decodes to
+    # arbitrary tokens; the transcription itself is not pinned).
+    assert is_list(chunks) and chunks != []
+    assert Enum.all?(chunks, &is_binary(&1.text))
   end
 
   @tag :fast_kernels_full

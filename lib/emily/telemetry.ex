@@ -46,6 +46,28 @@ defmodule Emily.Telemetry do
   `:fallback` is unset (`true` → `:warn`, `false` → `:silent`).
   Prefer `:fallback` in new code; if both are set, `:fallback` wins.
 
+  ### Block-dispatch fallback
+
+  `[:emily, :block, :fallback]` — a discrete event (not a span) fired
+  each time the backend's `block` callback (`Nx.Block.*` dispatch,
+  Nx 0.12+) falls through to Nx's supplied default `fun` rather than a
+  wired native handler. Measurements: none (`%{}`). Metadata:
+  `:struct` (the `Nx.Block.*` struct module) and `:args_count`. Use it
+  in soak runs to flag a block op that used to lower natively but now
+  lands on the composed-defn slow path.
+
+  ### Native-compiler fallback
+
+  `[:emily, :compiler, :fallback]` — a discrete event (not a span) that
+  fires when a `native: true` defn can't be lowered by the Expr compiler
+  and routes through `Nx.Defn.Evaluator` instead (see
+  `Emily.Compiler`'s `:native_fallback` option). Measurements:
+  `:count` (always `1`). Metadata: `:key` (the JIT key) and `:reason`
+  (the lowering error message, which names the unsupported op or
+  construct). A one-shot `Logger.warning` per distinct `:reason` is also
+  emitted — set `config :emily, :native_fallback, :raise` to fail
+  instead of falling back.
+
   ### Memory stats (poll-driven)
 
   `[:emily, :memory, :stats]` — discrete event, not a span. Call
@@ -137,13 +159,21 @@ defmodule Emily.Telemetry do
   end
 
   defp warn_fallback(op, input_shapes) do
-    key = {op, input_shapes}
+    warn_once(
+      {op, input_shapes},
+      "Emily: #{op} on shapes #{inspect(input_shapes)} fell back to " <>
+        "Nx.BinaryBackend; this path is ~100× slower than native MLX."
+    )
+  end
 
+  # One-shot `Logger.warning` per distinct `key`, deduped via the shared
+  # ETS table so a hot path that repeatedly falls back logs once, not per
+  # call. Keys are namespaced by caller (`{op, shapes}` for the backend
+  # fallback, `{:compiler, reason}` for the native-compiler fallback) so
+  # the two never collide.
+  defp warn_once(key, message) do
     if :ets.insert_new(@dedup_table, {key}) do
-      Logger.warning(
-        "Emily: #{op} on shapes #{inspect(input_shapes)} fell back to " <>
-          "Nx.BinaryBackend; this path is ~100× slower than native MLX."
-      )
+      Logger.warning(message)
     end
 
     :ok
@@ -153,6 +183,32 @@ defmodule Emily.Telemetry do
     raise "Emily: #{op} fell back to Nx.BinaryBackend " <>
             "(shapes=#{inspect(input_shapes)}, dtypes=#{inspect(input_dtypes)}). " <>
             "Set `config :emily, fallback: :warn` to log instead, or `:silent` to ignore."
+  end
+
+  @doc false
+  # Called from `Emily.Compiler` when a `native: true` defn cannot be
+  # lowered by the Expr compiler and routes through `Nx.Defn.Evaluator`
+  # instead. Fires the discrete `[:emily, :compiler, :fallback]` event
+  # (always) and a one-shot `Logger.warning` per distinct reason, deduped
+  # via the shared ETS table. `reason` is the lowering error message — it
+  # names the unsupported op/construct.
+  @spec compiler_fallback(term(), Exception.t()) :: :ok
+  def compiler_fallback(key, exception) do
+    reason = Exception.message(exception)
+
+    :telemetry.execute(
+      [:emily, :compiler, :fallback],
+      %{count: 1},
+      %{key: key, reason: reason}
+    )
+
+    warn_once(
+      {:compiler, reason},
+      "Emily: native compilation fell back to Nx.Defn.Evaluator — #{reason} " <>
+        "The defn ran op-by-op via the evaluator. Set " <>
+        "`config :emily, native_fallback: :raise` (or pass " <>
+        "`native_fallback: :raise`) to fail instead."
+    )
   end
 
   @doc false

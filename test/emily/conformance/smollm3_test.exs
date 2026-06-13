@@ -30,7 +30,7 @@ defmodule Emily.Conformance.SmolLm3Test do
   @moduletag :conformance
   @moduletag capture_log: true
 
-  test "SmolLm3 :for_causal_language_modeling forward on Emily.Backend" do
+  mode_test "SmolLm3 :for_causal_language_modeling forward on Emily.Backend" do
     spec =
       Bumblebee.configure(SmolLm3,
         architecture: :for_causal_language_modeling,
@@ -44,7 +44,10 @@ defmodule Emily.Conformance.SmolLm3Test do
       )
 
     model = SmolLm3.model(spec)
-    {init_fn, predict_fn} = Axon.build(model)
+    # Init on the evaluator (params are random-init, mode-irrelevant);
+    # gate only the forward pass under `predict_opts`.
+    {init_fn, _} = Axon.build(model)
+    {_, predict_fn} = Axon.build(model, predict_opts)
 
     input_template = %{"input_ids" => Nx.template({1, 8}, :s64)}
     params = init_fn.(input_template, Axon.ModelState.empty())

@@ -418,9 +418,33 @@ defmodule Emily.Fast do
     end
   end
 
+  # Expand grouped KV heads to the query head count (GQA), so the
+  # composed-defn SDPA fallback — which Nx.block traces to build the block
+  # node even when the fused kernel actually runs — works for n_q != n_kv.
+  # No-op when the head counts already match. Mirrors MLX's GQA grouping
+  # (consecutive query heads share a KV head).
+  defp repeat_kv_to(q, kv) do
+    n_q = Nx.axis_size(q, 1)
+    n_kv = Nx.axis_size(kv, 1)
+
+    if n_q == n_kv do
+      kv
+    else
+      {b, ^n_kv, s, d} = Nx.shape(kv)
+      g = div(n_q, n_kv)
+
+      kv
+      |> Nx.new_axis(2)
+      |> Nx.broadcast({b, n_kv, g, s, d})
+      |> Nx.reshape({b, n_q, s, d})
+    end
+  end
+
   defp sdpa_fallback(q, k, v, opts) do
     scale = opts[:scale]
     causal = opts[:causal]
+    k = repeat_kv_to(q, k)
+    v = repeat_kv_to(q, v)
 
     # QKᵀ: contract q's last axis with k's last axis, batch-dot on the
     # (batch, heads) leading dims.
@@ -451,6 +475,8 @@ defmodule Emily.Fast do
   defp sdpa_sinks_fallback(q, k, v, sinks, opts) do
     scale = opts[:scale]
     causal = opts[:causal]
+    k = repeat_kv_to(q, k)
+    v = repeat_kv_to(q, v)
 
     weights = Nx.dot(q, [-1], [0, 1], k, [-1], [0, 1]) |> Nx.multiply(scale)
 
@@ -537,6 +563,8 @@ defmodule Emily.Fast do
 
   defp sdpa_masked_fallback(q, k, v, mask, opts) do
     scale = opts[:scale]
+    k = repeat_kv_to(q, k)
+    v = repeat_kv_to(q, v)
 
     weights =
       q
@@ -550,6 +578,8 @@ defmodule Emily.Fast do
 
   defp sdpa_masked_sinks_fallback(q, k, v, mask, sinks, opts) do
     scale = opts[:scale]
+    k = repeat_kv_to(q, k)
+    v = repeat_kv_to(q, v)
 
     weights =
       q

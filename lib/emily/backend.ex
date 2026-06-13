@@ -1781,6 +1781,25 @@ defmodule Emily.Backend do
         scale: scale
       )
 
+  # ---- quantized matmul block ----
+  def block(%Emily.Quantization.Block.QuantizedMatmul{} = qb, out, [x, q, s, b], _fun) do
+    w = worker()
+    b_ref = Emily.QuantizedWeight.biases_ref(qb.mode, b)
+
+    Native.quantized_matmul(
+      w,
+      ref(x),
+      ref(q),
+      ref(s),
+      b_ref,
+      qb.transpose,
+      qb.group_size,
+      qb.bits,
+      qb.mode
+    )
+    |> wrap(out, w)
+  end
+
   # ---- generic fallthrough: run Nx's composed-defn fallback ----
   def block(struct, _out, args, fun) do
     :telemetry.execute(

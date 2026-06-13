@@ -27,7 +27,7 @@ defmodule Emily.Conformance.NomicEmbeddingsTest do
   @moduletag :conformance
   @moduletag capture_log: true
 
-  test "NomicBert :base forward runs end-to-end on Emily.Backend" do
+  mode_test "NomicBert :base forward runs end-to-end on Emily.Backend" do
     spec =
       Bumblebee.configure(NomicBert,
         architecture: :base,
@@ -41,7 +41,10 @@ defmodule Emily.Conformance.NomicEmbeddingsTest do
       )
 
     model = NomicBert.model(spec)
-    {init_fn, predict_fn} = Axon.build(model)
+    # Init on the evaluator (params are random-init, mode-irrelevant);
+    # gate only the forward pass under `predict_opts`.
+    {init_fn, _} = Axon.build(model)
+    {_, predict_fn} = Axon.build(model, predict_opts)
 
     input_template = %{
       "input_ids" => Nx.template({1, 8}, :s64),

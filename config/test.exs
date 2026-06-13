@@ -9,3 +9,18 @@ config :emily,
   debug_detect_nan_inf: false,
   test_fixture_debug_bounds_check: true,
   test_fixture_debug_detect_nan_inf: true
+
+# Keep the native compiler strict in the test suite: an op the Expr
+# compiler can't lower raises rather than silently falling back to the
+# Evaluator. This preserves the no-fallback conformance gates (CM5) and
+# the unsupported-op assertions. The runtime default is `:eval` (graceful
+# fallback); tests that exercise the fallback pass `native_fallback: :eval`
+# per call.
+config :emily, native_fallback: :raise
+
+# The runtime default for `:native` is `true`; a bare
+# `compiler: Emily.Compiler` compiles native. The suite pins it to
+# `false` so a bare `compiler: Emily.Compiler` stays the *eval* oracle
+# the equivalence tests compare the native lane against — tests that
+# exercise the native path pass `native: true` explicitly.
+config :emily, native: false

@@ -2,10 +2,15 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    # `feat/expr-compiler` is the long-lived integration branch for the
+    # Nx.Defn.Expr -> MLX compiler effort; milestone branches merge into
+    # it via PR and it merges to main once. Run CI on pushes to it (post
+    # -merge validation) and on PRs into it (every milestone). Remove
+    # both entries when that branch merges to main and is deleted.
+    branches: [main, feat/expr-compiler]
     tags: ['[0-9]+.[0-9]+.[0-9]+*']
   pull_request:
-    branches: [main]
+    branches: [main, feat/expr-compiler]
   workflow_dispatch:
     inputs:
       run_full_tests:

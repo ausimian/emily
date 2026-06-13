@@ -3,7 +3,7 @@
 ```elixir
 Mix.install(
   [
-    {:emily, "~> 0.6"},
+    {:emily, "~> 0.7"},
     {:bumblebee, "~> 0.7"},
     {:tokenizers, "~> 0.5"},
     {:axon, "~> 0.8"},
@@ -41,7 +41,10 @@ Each kernel's composed version is the textbook formula written with
 Nx primitives. Both versions are wrapped with `Nx.Defn.jit/2` +
 `Emily.Compiler` so the graph is traced, JIT-compiled, and dispatched
 to MLX — the only difference is how many kernels the graph decomposes
-into on the way down.
+into on the way down. They run with `native: true` and
+`native_fallback: :raise`, so each graph lowers fully through Emily's
+native Expr compiler (an op it couldn't lower would raise rather than
+fall back to the evaluator).
 
 ```elixir
 # RMSNorm: normalise to unit RMS over the last axis, scale by `weight`.
@@ -75,7 +78,7 @@ fused_sdpa = fn q, k, v ->
   Emily.Fast.scaled_dot_product_attention(q, k, v)
 end
 
-jit = &Nx.Defn.jit(&1, compiler: Emily.Compiler)
+jit = &Nx.Defn.jit(&1, compiler: Emily.Compiler, native: true, native_fallback: :raise)
 
 composed_rms_norm_c = jit.(composed_rms_norm)
 fused_rms_norm_c = jit.(fused_rms_norm)
@@ -236,7 +239,7 @@ build_serving = fn model_info ->
     featurizer,
     tokenizer,
     generation_config,
-    defn_options: [compiler: Emily.Compiler]
+    defn_options: [compiler: Emily.Compiler, native: true, native_fallback: :raise]
   )
 end
 

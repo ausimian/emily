@@ -3,7 +3,7 @@
 ```elixir
 Mix.install(
   [
-    {:emily, "~> 0.6"},
+    {:emily, "~> 0.7"},
     {:bumblebee, "~> 0.7"},
     {:tokenizers, "~> 0.5"},
     {:nx, "~> 0.12"},
@@ -45,7 +45,7 @@ config =
 
 serving =
   Bumblebee.Text.generation(model_info, tokenizer, config,
-    defn_options: [compiler: Emily.Compiler]
+    defn_options: [compiler: Emily.Compiler, native: true, native_fallback: :raise]
   )
 
 %{results: [%{text: dense_text}]} =
@@ -53,6 +53,11 @@ serving =
 
 dense_text
 ```
+
+`native: true, native_fallback: :raise` on `:defn_options` lowers the
+per-token decode through Emily's native Expr compiler and asserts it
+stays fully native — the quantized serving below passes the same
+options, so the int4 dequantize path lowers native too.
 
 ## Quantization transform
 
@@ -180,7 +185,7 @@ qmodel_info = %{model: qmodel, params: qparams, spec: spec}
 
 qserving =
   Bumblebee.Text.generation(qmodel_info, tokenizer, config,
-    defn_options: [compiler: Emily.Compiler]
+    defn_options: [compiler: Emily.Compiler, native: true, native_fallback: :raise]
   )
 
 %{results: [%{text: quant_text}]} =

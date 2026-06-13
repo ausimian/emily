@@ -30,7 +30,8 @@ defmodule Emily.Conformance.VitFullTest do
   @moduletag capture_log: true
   @moduletag timeout: 600_000
 
-  test "google/vit-base-patch16-224 forward pass matches pinned logits slice" do
+  mode_test "google/vit-base-patch16-224 forward pass matches pinned logits slice",
+    lane_tags: false do
     {:ok, %{model: model, params: params, spec: spec}} =
       Bumblebee.load_model({:hf, "google/vit-base-patch16-224"})
 
@@ -42,7 +43,7 @@ defmodule Emily.Conformance.VitFullTest do
       "pixel_values" => Nx.broadcast(Nx.tensor(0.5, type: :f32), {1, 224, 224, 3})
     }
 
-    outputs = Axon.predict(model, params, inputs)
+    outputs = Axon.predict(model, params, inputs, predict_opts)
 
     assert Nx.shape(outputs.logits) == {1, 1000}
 

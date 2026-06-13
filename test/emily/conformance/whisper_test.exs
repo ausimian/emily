@@ -31,7 +31,7 @@ defmodule Emily.Conformance.WhisperTest do
   @moduletag capture_log: true
   @moduletag timeout: 300_000
 
-  test ":base" do
+  mode_test ":base" do
     assert {:ok, %{model: model, params: params, spec: spec}} =
              Bumblebee.load_model({:hf, "hf-internal-testing/tiny-random-WhisperModel"})
 
@@ -43,7 +43,7 @@ defmodule Emily.Conformance.WhisperTest do
       "decoder_attention_mask" => Nx.tensor([[1, 1, 1, 1, 1, 1, 0, 0]])
     }
 
-    outputs = Axon.predict(model, params, inputs)
+    outputs = Axon.predict(model, params, inputs, predict_opts)
 
     assert Nx.shape(outputs.hidden_state) == {1, 8, 16}
 
@@ -55,7 +55,7 @@ defmodule Emily.Conformance.WhisperTest do
     )
   end
 
-  test ":for_conditional_generation" do
+  mode_test ":for_conditional_generation" do
     assert {:ok, %{model: model, params: params, spec: spec}} =
              Bumblebee.load_model(
                {:hf, "hf-internal-testing/tiny-random-WhisperForConditionalGeneration"}
@@ -69,7 +69,7 @@ defmodule Emily.Conformance.WhisperTest do
       "decoder_attention_mask" => Nx.tensor([[1, 1, 1, 1, 1, 1, 0, 0]])
     }
 
-    outputs = Axon.predict(model, params, inputs)
+    outputs = Axon.predict(model, params, inputs, predict_opts)
 
     assert Nx.shape(outputs.logits) == {1, 8, 50_257}
 

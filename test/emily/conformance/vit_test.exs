@@ -31,7 +31,7 @@ defmodule Emily.Conformance.VitTest do
   @moduletag capture_log: true
   @moduletag timeout: 120_000
 
-  test ":base" do
+  mode_test ":base" do
     assert {:ok, %{model: model, params: params, spec: spec}} =
              Bumblebee.load_model({:hf, "hf-internal-testing/tiny-random-ViTModel"})
 
@@ -41,7 +41,7 @@ defmodule Emily.Conformance.VitTest do
       "pixel_values" => Nx.broadcast(0.5, {1, 30, 30, 3})
     }
 
-    outputs = Axon.predict(model, params, inputs)
+    outputs = Axon.predict(model, params, inputs, predict_opts)
 
     assert Nx.shape(outputs.hidden_state) == {1, 226, 32}
     assert Nx.shape(outputs.pooled_state) == {1, 32}
@@ -59,7 +59,7 @@ defmodule Emily.Conformance.VitTest do
     )
   end
 
-  test ":for_image_classification" do
+  mode_test ":for_image_classification" do
     assert {:ok, %{model: model, params: params, spec: spec}} =
              Bumblebee.load_model(
                {:hf, "hf-internal-testing/tiny-random-ViTForImageClassification"}
@@ -71,7 +71,7 @@ defmodule Emily.Conformance.VitTest do
       "pixel_values" => Nx.broadcast(0.5, {1, 30, 30, 3})
     }
 
-    outputs = Axon.predict(model, params, inputs)
+    outputs = Axon.predict(model, params, inputs, predict_opts)
 
     assert Nx.shape(outputs.logits) == {1, 2}
 
@@ -81,7 +81,7 @@ defmodule Emily.Conformance.VitTest do
     )
   end
 
-  test ":for_masked_image_modeling" do
+  mode_test ":for_masked_image_modeling" do
     assert {:ok, %{model: model, params: params, spec: spec}} =
              Bumblebee.load_model(
                {:hf, "hf-internal-testing/tiny-random-ViTForMaskedImageModeling"}
@@ -93,7 +93,7 @@ defmodule Emily.Conformance.VitTest do
       "pixel_values" => Nx.broadcast(0.5, {1, 30, 30, 3})
     }
 
-    outputs = Axon.predict(model, params, inputs)
+    outputs = Axon.predict(model, params, inputs, predict_opts)
 
     assert Nx.shape(outputs.pixel_values) == {1, 30, 30, 3}
 

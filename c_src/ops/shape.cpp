@@ -2,6 +2,7 @@
 // broadcast_to, concatenate, stack, flatten, pad, tile, swapaxes, flip.
 
 #include "../emily/async.hpp"
+#include "../emily/op_cores.hpp"
 #include "../emily/tensor.hpp"
 #include "../emily/worker.hpp"
 
@@ -191,28 +192,7 @@ fine::Term flip_nif(
     fine::ResourcePtr<Tensor> a,
     int64_t axis) {
   return async_encoded(env, w, [a = std::move(a), axis](mx::Stream &s) {
-    const auto &shape = a->array.shape();
-    const auto ndim = static_cast<int>(shape.size());
-    if (ndim == 0) {
-      return wrap(a->array);
-    }
-    int ax = emily::checked_int(axis, "axis");
-    if (ax < 0) {
-      ax += ndim;
-    }
-    if (ax < 0 || ax >= ndim) {
-      throw std::invalid_argument(
-          "[flip] axis " + std::to_string(axis) + " out of range for ndim " +
-          std::to_string(ndim));
-    }
-    mx::Shape starts(ndim, 0);
-    mx::Shape stops(shape.begin(), shape.end());
-    mx::Shape strides(ndim, 1);
-    starts[ax] = shape[ax] - 1;
-    stops[ax] = -shape[ax] - 1;
-    strides[ax] = -1;
-    return wrap(mx::slice(a->array, std::move(starts), std::move(stops),
-                          std::move(strides), s));
+    return wrap(emily::ops::flip_core(a->array, axis, s));
   });
 }
 FINE_NIF(flip_nif, 0);

@@ -74,5 +74,5 @@ Tracking checklist:
   * `CHANGELOG.md` accumulated across releases (it is, since 0.3.0).
   * `MAINTAINING.md` reflects the precompiled-NIF release flow (it
     does, since 0.3.0).
-  * Worked Bumblebee + quantized-Qwen3 examples in `notebooks/`
-    (present and grouped in the HexDocs Notebooks section).
+  * Worked Bumblebee + quantized-Qwen3 examples in `livebooks/`
+    (present and grouped in the HexDocs Livebooks section).

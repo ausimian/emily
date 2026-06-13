@@ -2,7 +2,7 @@ defmodule Emily.MixProject do
   use Mix.Project
 
   @app :emily
-  @version "0.6.1"
+  @version "0.7.1"
   @source_url "https://github.com/ausimian/emily"
 
   # MLX pin. Drives the git tag the `:mlx_src` dep is cloned at (see
@@ -208,6 +208,8 @@ defmodule Emily.MixProject do
     [
       main: "readme",
       source_url_pattern: "#{@source_url}/blob/#{@version}/%{path}#L%{line}",
+      before_closing_head_tag: &before_closing_head_tag/1,
+      before_closing_body_tag: &before_closing_body_tag/1,
       # Symbols ExDoc can't link, so it warns on every reference to them.
       # Listed explicitly on purpose: the `mix precommit` docs gate fails
       # with the exact unlinkable symbol when a new one appears, making each
@@ -220,6 +222,11 @@ defmodule Emily.MixProject do
         "Emily.Native.from_binary/3",
         "Emily.Native.conv_general/8",
         "Emily.Native.worker_queue_depth/1",
+        "Emily.Native.async_eval/2",
+        "Emily.Native.fast_rope_int/8",
+        # Native Expr-compiler internals are `@moduledoc false`.
+        "Emily.IR",
+        "Emily.Program",
         # Hidden Nx callback + private/external Nx internals.
         "Emily.Backend.block/4",
         "Nx.Backend.block/4",
@@ -230,14 +237,16 @@ defmodule Emily.MixProject do
         "ARCHITECTURE.md",
         "ROADMAP.md",
         "CHANGELOG.md",
-        "notebooks/distilbert_qa.livemd",
-        "notebooks/qwen3_quantized.livemd",
-        "notebooks/nomic_embeddings.livemd",
-        "notebooks/smollm3_chat.livemd",
-        "notebooks/modernbert_classification.livemd",
-        "notebooks/mnist_training.livemd",
-        "notebooks/whisper_transcription.livemd",
-        "notebooks/fast_kernels.livemd"
+        "bench/emily_vs_exla_report.md",
+        "bench/emily_vs_exla_results.md",
+        "livebooks/distilbert_qa.livemd",
+        "livebooks/qwen3_quantized.livemd",
+        "livebooks/nomic_embeddings.livemd",
+        "livebooks/smollm3_chat.livemd",
+        "livebooks/modernbert_classification.livemd",
+        "livebooks/mnist_training.livemd",
+        "livebooks/whisper_transcription.livemd",
+        "livebooks/fast_kernels.livemd"
       ],
       groups_for_extras: [
         README: ~r{README.md},
@@ -246,7 +255,11 @@ defmodule Emily.MixProject do
           "ROADMAP.md",
           "CHANGELOG.md"
         ],
-        Notebooks: ~r{^notebooks/}
+        Performance: [
+          "bench/emily_vs_exla_report.md",
+          "bench/emily_vs_exla_results.md"
+        ],
+        Livebooks: ~r{^livebooks/}
       ],
       groups_for_modules: [
         Core: [Emily, Emily.Backend, Emily.Compiler],
@@ -262,6 +275,60 @@ defmodule Emily.MixProject do
       ]
     ]
   end
+
+  # ex_doc renders a "Run in Livebook" badge on every `.livemd` extra
+  # (extra_template.eex) with no option to suppress it. Emily's NIF is
+  # macOS / Apple-Silicon only, and the badge's `livebook.dev/run` target
+  # fails to open on the hosted (Linux) Livebooks most visitors reach, so
+  # we hide it — each livebook links to its GitHub source/download instead.
+  # `!important` is required to beat ex_doc's more specific
+  # `.content-inner .livebook-badge-container { display: flex }` rule.
+  defp before_closing_head_tag(:html),
+    do: ~s(<style>.livebook-badge-container{display:none!important}</style>)
+
+  defp before_closing_head_tag(_), do: ""
+
+  defp before_closing_body_tag(:html) do
+    """
+    <script>
+      let mermaidInitialized = false;
+      let mermaidGraphId = 0;
+
+      window.__emilyRenderMermaid = () => {
+        if (!window.mermaid) {
+          return;
+        }
+
+        if (!mermaidInitialized) {
+          mermaid.initialize({
+            startOnLoad: false,
+            theme: document.body.className.includes("dark") ? "dark" : "default"
+          });
+          mermaidInitialized = true;
+        }
+
+        for (const codeEl of document.querySelectorAll("pre code.mermaid")) {
+          const preEl = codeEl.parentElement;
+          const graphDefinition = codeEl.textContent;
+          const graphEl = document.createElement("div");
+          const graphId = "mermaid-graph-" + mermaidGraphId++;
+
+          mermaid.render(graphId, graphDefinition).then(({svg, bindFunctions}) => {
+            graphEl.innerHTML = svg;
+            bindFunctions?.(graphEl);
+            preEl.insertAdjacentElement("afterend", graphEl);
+            preEl.remove();
+          });
+        }
+      };
+
+      window.addEventListener("exdoc:loaded", window.__emilyRenderMermaid);
+    </script>
+    <script defer src="https://cdn.jsdelivr.net/npm/mermaid@11.4.1/dist/mermaid.min.js" onload="window.__emilyRenderMermaid && window.__emilyRenderMermaid()"></script>
+    """
+  end
+
+  defp before_closing_body_tag(_), do: ""
 
   defp package do
     [

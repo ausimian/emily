@@ -160,4 +160,36 @@ defmodule Emily.BackendWindowTest do
       assert_close(result, bin(t), tol: 1.0e-5)
     end
   end
+
+  # Regression for issue #175. A dilated kernel axis gets an `as_strided`
+  # stride > 1, so the sliding-window view aliases fewer physical elements
+  # than its logical size (overlapping strides). On small inputs MLX's
+  # strided-reduce fast path read past the aliased buffer and returned
+  # garbage for windows past the first stride positions. These shapes are
+  # deliberately tiny so the over-read crosses the allocation — the larger
+  # dilated cases above happened to land on valid data and masked the bug.
+  describe "dilated windows over small tensors (issue #175 regression)" do
+    test "1-D kernel, dilation 2" do
+      t = fixt({8})
+      run(:window_sum, t, {3}, window_dilations: [2])
+      run(:window_max, t, {3}, window_dilations: [2])
+      run(:window_min, t, {3}, window_dilations: [2])
+    end
+
+    test "2-D row vector, dilation on the inner axis" do
+      t = fixt({1, 8})
+      run(:window_sum, t, {1, 3}, window_dilations: [1, 2])
+      run(:window_max, t, {1, 3}, window_dilations: [1, 2])
+      run(:window_min, t, {1, 3}, window_dilations: [1, 2])
+    end
+
+    test "window_product, dilation 2" do
+      t =
+        Nx.iota({6}, type: {:f, 32}, backend: Nx.BinaryBackend)
+        |> Nx.multiply(0.2)
+        |> Nx.add(1.0)
+
+      run(:window_product, t, {3}, window_dilations: [2])
+    end
+  end
 end

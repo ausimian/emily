@@ -3,7 +3,7 @@
 ```elixir
 Mix.install(
   [
-    {:emily, "~> 0.6"},
+    {:emily, "~> 0.7"},
     {:bumblebee, "~> 0.7"},
     {:tokenizers, "~> 0.5"},
     {:nx, "~> 0.12"},
@@ -55,13 +55,17 @@ config =
 
 serving =
   Bumblebee.Text.generation(model_info, tokenizer, config,
-    defn_options: [compiler: Emily.Compiler]
+    defn_options: [compiler: Emily.Compiler, native: true, native_fallback: :raise]
   )
 ```
 
 `Emily.Compiler` pins the result backend to `Emily.Backend` and
 caps partition concurrency at 1. Per-process parallelism is the
-job of `Emily.Stream` (see further down).
+job of `Emily.Stream` (see further down). `native: true` lowers the
+whole decode forward through Emily's native Expr compiler (one NIF
+replay per call rather than op-by-op dispatch), and
+`native_fallback: :raise` fails loudly instead of silently degrading
+to the evaluator. This decoder lowers fully native.
 
 ## Running a chat-style completion
 
@@ -134,21 +138,34 @@ model. Create streams once at worker init, not per-request.
 
 ## Telemetry
 
-Emily emits `:telemetry` events at the evaluation boundary. Attach
-a handler to sample timing for each forward pass:
+Under `native: true` the forward is a single NIF replay, so the
+op-by-op `[:emily, :eval, :stop]` span never fires — there's no
+per-op boundary to time. The native-compiler event to watch instead
+is `[:emily, :compiler, :fallback]`: a tripwire that fires only if an
+op can't lower and routes through the evaluator. Attach it, run the
+forward, then read `Emily.Memory.stats/0` (which itself emits
+`[:emily, :memory, :stats]`):
 
 ```elixir
 :telemetry.attach(
-  "smollm3-eval",
-  [:emily, :eval, :stop],
-  fn _event, %{duration: duration}, _meta, _config ->
-    ms = System.convert_time_unit(duration, :native, :millisecond)
-    IO.puts("eval #{ms} ms")
+  "smollm3-fallback",
+  [:emily, :compiler, :fallback],
+  fn _event, %{count: count}, %{reason: reason}, _config ->
+    IO.puts("native fallback (#{count}): #{reason}")
   end,
   nil
 )
 
+Emily.Memory.reset_peak()
 Nx.Serving.run(serving, prompt)
+%{active: active, peak: peak} = Emily.Memory.stats()
+
+IO.puts("no fallback above => forward lowered fully native")
+
+IO.puts(
+  "MLX memory — active #{div(active, 1024 * 1024)} MiB, " <>
+    "peak #{div(peak, 1024 * 1024)} MiB"
+)
 ```
 
 See `Emily.Telemetry` for the full event catalogue.
