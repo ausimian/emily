@@ -28,6 +28,12 @@ defmodule Emily.CompilerWhileTest do
 
   defp t(data), do: Nx.tensor(data, backend: Emily.Backend)
 
+  # Compute the maximum absolute difference between two flat lists of numbers.
+  defp drift(a, b) do
+    Enum.zip(a, b)
+    |> Enum.reduce(0.0, fn {x, y}, acc -> max(acc, abs(x - y)) end)
+  end
+
   defp equiv(fun, args) do
     native = apply(Nx.Defn.jit(fun, @native), args)
     eval = apply(Nx.Defn.jit(fun, @eval), args)
@@ -106,9 +112,7 @@ defmodule Emily.CompilerWhileTest do
 
       # mx::compile reassociates the fused elementwise run, so the result
       # matches the evaluator to within a few ULP rather than bit-for-bit.
-      drift =
-        Enum.zip(Nx.to_flat_list(fused), Nx.to_flat_list(eval))
-        |> Enum.reduce(0.0, fn {a, b}, acc -> max(acc, abs(a - b)) end)
+      drift = drift(Nx.to_flat_list(fused), Nx.to_flat_list(eval))
 
       assert drift <= 1.0e-5, "fused-while vs evaluator drift #{drift} exceeds 1.0e-5"
     end
@@ -121,9 +125,7 @@ defmodule Emily.CompilerWhileTest do
         fused = Nx.Defn.jit(&count_until/1, @fuse).(t(data))
         eval = Nx.Defn.jit(&count_until/1, @eval).(t(data))
 
-        drift =
-          Enum.zip(Nx.to_flat_list(fused), Nx.to_flat_list(eval))
-          |> Enum.reduce(0.0, fn {a, b}, acc -> max(acc, abs(a - b)) end)
+        drift = drift(Nx.to_flat_list(fused), Nx.to_flat_list(eval))
 
         assert drift <= 1.0e-4, "fused-while drift #{drift} exceeds tol for #{inspect(data)}"
       end
