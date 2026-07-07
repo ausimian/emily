@@ -137,4 +137,56 @@ defmodule Emily.Quantization.LayersTest do
       assert_close(actual, expected, tol: 1.0e-3)
     end
   end
+
+  describe "quantized_dense/4 — native lane lowers to the fused kernel" do
+    # #197: under the native single-NIF compiler (the decode-loop path),
+    # the layer must lower to the fused `mx::quantized_matmul` opcode, not
+    # fall back to op-by-op eval. `native_fallback: :raise` fails the test
+    # if any node can't be lowered natively; the eager `quantized_matmul/2`
+    # (same C++ kernel) is the numeric oracle.
+    @native_raise [compiler: Emily.Compiler, native: true, native_fallback: :raise]
+
+    test "transpose=true: fused native lowering matches eager quantized_matmul" do
+      w =
+        Nx.iota({4, 128}, backend: Emily.Backend, type: :f32)
+        |> Nx.divide(4 * 128 / 2)
+        |> Nx.subtract(1.0)
+
+      x =
+        Nx.iota({3, 128}, backend: Emily.Backend, type: :f32)
+        |> Nx.divide(128.0)
+        |> Nx.subtract(0.5)
+
+      qw = QuantizedWeight.from_dense(w, group_size: 64, bits: 4, transpose: true)
+
+      fun = fn x, qw -> Layers.quantized_dense(x, qw) end
+      actual = Nx.Defn.jit(fun, @native_raise).(x, qw)
+      expected = Quantization.quantized_matmul(x, qw)
+
+      assert Nx.shape(actual) == {3, 4}
+      assert_close(actual, expected, tol: 1.0e-3)
+    end
+
+    test "transpose=false + bias: fused native lowering matches eager" do
+      w =
+        Nx.iota({2, 128}, backend: Emily.Backend, type: :f32)
+        |> Nx.divide(2 * 128 / 2)
+        |> Nx.subtract(1.0)
+
+      x =
+        Nx.iota({3, 2}, backend: Emily.Backend, type: :f32)
+        |> Nx.divide(2.0)
+        |> Nx.subtract(0.5)
+
+      qw = QuantizedWeight.from_dense(w, group_size: 64, bits: 4, transpose: false)
+      b = Nx.iota({128}, backend: Emily.Backend, type: :f32) |> Nx.divide(128.0)
+
+      fun = fn x, qw, b -> Layers.quantized_dense(x, qw, b) end
+      actual = Nx.Defn.jit(fun, @native_raise).(x, qw, b)
+      expected = Quantization.quantized_matmul(x, qw) |> Nx.add(b)
+
+      assert Nx.shape(actual) == {3, 128}
+      assert_close(actual, expected, tol: 1.0e-3)
+    end
+  end
 end
