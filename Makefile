@@ -64,7 +64,7 @@ BENCH_NATIVE_SRC := bench/native/compile_microbench.cpp
 BENCH_NATIVE_BIN := $(BUILD_DIR)/compile_microbench
 BENCH_NATIVE_METALLIB := $(BUILD_DIR)/mlx.metallib
 
-$(BENCH_NATIVE_BIN): $(BENCH_NATIVE_SRC) | $(BUILD_DIR)
+$(BENCH_NATIVE_BIN): $(BENCH_NATIVE_SRC) $(MLX_LIB_DIR)/libmlx.a Makefile | $(BUILD_DIR)
 	$(CXX) -std=c++20 -O3 -Wall -Wextra \
 	    -isystem $(MLX_INCLUDE_DIR) \
 	    $(BENCH_NATIVE_SRC) \
@@ -88,11 +88,18 @@ $(BUILD_DIR):
 $(PRIV_DIR):
 	@mkdir -p $(PRIV_DIR)
 
-$(BUILD_DIR)/%.o: c_src/%.cpp $(HEADERS) | $(BUILD_DIR)
+# Objects and the linked NIF also depend on libmlx.a and this Makefile so an
+# existing checkout rebuilds when the MLX build changes (a version bump
+# repoints MLX_LIB_DIR at a freshly built, newer libmlx.a whose headers these
+# objects include) or when a compile/link flag here changes (e.g. the C++
+# standard). Without these, `make` can copy the new mlx.metallib while leaving
+# a stale NIF statically linked against the old MLX in place — a mismatched
+# binary until a manual clean.
+$(BUILD_DIR)/%.o: c_src/%.cpp $(HEADERS) $(MLX_LIB_DIR)/libmlx.a Makefile | $(BUILD_DIR)
 	@mkdir -p $(dir $@)
 	$(CXX) $(CXXFLAGS) -c $< -o $@
 
-$(NIF_SO): $(OBJECTS) | $(PRIV_DIR)
+$(NIF_SO): $(OBJECTS) $(MLX_LIB_DIR)/libmlx.a Makefile | $(PRIV_DIR)
 	$(CXX) $(OBJECTS) -o $(NIF_SO) $(LDFLAGS)
 
 # MLX searches for mlx.metallib colocated with the loaded binary
