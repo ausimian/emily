@@ -24,8 +24,8 @@ if Code.ensure_loaded?(Axon) and Code.ensure_loaded?(Bumblebee.Layers) do
     entirely when either dep is missing. To use the shim, add both to
     your own `deps/0`:
 
-        {:bumblebee, "~> 0.6"},
-        {:axon, "~> 0.7"}
+        {:bumblebee, "~> 0.7"},
+        {:axon, "~> 0.8"}
 
     ## Usage
 
