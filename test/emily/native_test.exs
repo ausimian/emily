@@ -232,7 +232,10 @@ defmodule Emily.NativeTest do
     test "power" do
       a = f32([2.0, 3.0], [2])
       b = f32([3.0, 2.0], [2])
-      assert to_f32_list(Native.power(worker(), a, b)) == [8.0, 9.0]
+      # `power` is computed via exp/log, so integer-valued results aren't
+      # bit-exact (e.g. MLX's JIT Metal kernel yields 3**2 = 8.99999809);
+      # compare within tolerance like the other transcendental ops here.
+      assert_close(to_f32_list(Native.power(worker(), a, b)), [8.0, 9.0])
     end
 
     test "maximum / minimum" do
