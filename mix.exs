@@ -348,7 +348,14 @@ defmodule Emily.MixProject do
       "MLX_DIR" => dir,
       "MLX_INCLUDE_DIR" => Path.join(dir, "include"),
       "MLX_LIB_DIR" => Path.join(dir, "lib"),
-      "FINE_INCLUDE_DIR" => Fine.include_dir()
+      "FINE_INCLUDE_DIR" => Fine.include_dir(),
+      # Compile + link the NIF at the same macOS floor the vendored libmlx.a
+      # was built for (see `macos_deployment_target/0`). clang honours this
+      # env var for both the object compiles and the final link, so the NIF
+      # and the static MLX objects agree on `LC_BUILD_VERSION` — no `ld`
+      # version-mismatch warnings — and the shipped .so declares a
+      # deterministic minimum rather than inheriting the build host's OS.
+      "MACOSX_DEPLOYMENT_TARGET" => macos_deployment_target()
     }
   end
 
@@ -426,7 +433,31 @@ defmodule Emily.MixProject do
   end
 
   defp mlx_install_dir,
-    do: Path.join(cache_dir(), "mlx-#{@mlx_version}-#{mlx_variant()}")
+    do:
+      Path.join(
+        cache_dir(),
+        "mlx-#{@mlx_version}-#{mlx_variant()}-min#{macos_deployment_target()}"
+      )
+
+  # Minimum macOS each MLX variant targets, pinned explicitly rather than
+  # inheriting the build host's OS version. Threaded into both halves of the
+  # build — the MLX source build via `CMAKE_OSX_DEPLOYMENT_TARGET`
+  # (see scripts/build-mlx.sh) and the NIF compile/link via
+  # `MACOSX_DEPLOYMENT_TARGET` (see make_env/0) — and folded into the cache
+  # dir name above so changing a floor can't silently reuse a stale MLX build.
+  #
+  #   * aot — the older-macOS-compatible path (built on macOS 14 in CI).
+  #     MLX's own hard floor is 14.0.
+  #   * jit — 26.2: its NAX kernels and the JACCL backend are gated on macOS
+  #     SDK >= 26.2 (deps/mlx_src/CMakeLists.txt), and the macOS-26 libSystem
+  #     `_Float16` helpers (`__fmaxf16`/`__fminf16`) it links aren't present on
+  #     earlier releases, so it isn't portable below 26.2.
+  defp macos_deployment_target do
+    case mlx_variant() do
+      "jit" -> "26.2"
+      _ -> "14.0"
+    end
+  end
 
   defp arch_tag do
     case {:os.type(), :erlang.system_info(:system_architecture) |> to_string()} do
@@ -495,7 +526,7 @@ defmodule Emily.MixProject do
       :binary,
       :exit_status,
       :stderr_to_stdout,
-      {:args, [mlx_src, @mlx_version, jit_flag, install_dir]}
+      {:args, [mlx_src, @mlx_version, jit_flag, install_dir, macos_deployment_target()]}
     ]
 
     port = Port.open({:spawn_executable, String.to_charlist(script)}, port_opts)

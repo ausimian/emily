@@ -38,8 +38,10 @@ jobs:
         include:
           - os: macos-14
             variant: aot
+            min: "14.0"
           - os: macos-26
             variant: jit
+            min: "26.2"
     env:
       MIX_ENV: test
       EMILY_MLX_VARIANT: ${{ matrix.variant }}
@@ -79,7 +81,7 @@ jobs:
         uses: actions/cache@v5
         with:
           path: ~/Library/Caches/emily
-          key: mlx-${{ runner.os }}-${{ matrix.variant }}-${{ hashFiles('c_src/**', 'Makefile', 'mix.exs') }}
+          key: mlx-${{ runner.os }}-${{ matrix.variant }}-${{ hashFiles('c_src/**', 'Makefile', 'mix.exs', 'scripts/build-mlx.sh') }}
           restore-keys: mlx-${{ runner.os }}-${{ matrix.variant }}-
 
       # The Bumblebee cache holds tiny-random HuggingFace fixtures
@@ -96,6 +98,12 @@ jobs:
       - run: mix deps.get
 
       - run: mix precommit
+
+      # Assert the built NIF declares the pinned macOS floor for this variant
+      # and imports no above-floor libSystem symbols (see the script). Catches
+      # a variant that silently requires a newer macOS than it targets.
+      - name: Verify NIF macOS floor
+        run: bash scripts/verify-nif-floor.sh _build/test/lib/emily/priv/libemily.so "${{ matrix.min }}"
 
       # Conformance tests are excluded from the default suite because
       # they require network access on a cold cache (see
@@ -120,8 +128,10 @@ jobs:
         include:
           - os: macos-14
             variant: aot
+            min: "14.0"
           - os: macos-26
             variant: jit
+            min: "26.2"
     env:
       MIX_ENV: test
       EMILY_MLX_VARIANT: ${{ matrix.variant }}
@@ -158,7 +168,7 @@ jobs:
         uses: actions/cache@v5
         with:
           path: ~/Library/Caches/emily
-          key: mlx-${{ runner.os }}-${{ matrix.variant }}-${{ hashFiles('c_src/**', 'Makefile', 'mix.exs') }}
+          key: mlx-${{ runner.os }}-${{ matrix.variant }}-${{ hashFiles('c_src/**', 'Makefile', 'mix.exs', 'scripts/build-mlx.sh') }}
           restore-keys: mlx-${{ runner.os }}-${{ matrix.variant }}-
 
       # Full checkpoints land here (Bumblebee + scidata MNIST).
