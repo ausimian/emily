@@ -57,7 +57,7 @@ dense_text
 `native: true, native_fallback: :raise` on `:defn_options` lowers the
 per-token decode through Emily's native Expr compiler and asserts it
 stays fully native — the quantized serving below passes the same
-options, so the int4 dequantize path lowers native too.
+options, so the int4 quantized matmul lowers native too.
 
 ## Quantization transform
 
@@ -168,8 +168,8 @@ end
 > recursive rewriter. The `transpose: true` default stores weights as
 > `[out, in]` (MLX / AWQ convention, groups along the reduction axis);
 > set `false` if you're feeding a checkpoint that's already laid out
-> the other way. Bits must be one of `[2, 3, 4, 6, 8]` for the
-> defn-native `dequantize_defn/1` path.
+> the other way. Bits must be one of `[2, 3, 4, 6, 8]` for MLX affine
+> quantization.
 
 ## Quantized inference
 
