@@ -13,9 +13,13 @@ name: Release NIF
 #   tag. Artefacts go to workflow run storage (retention 90 days);
 #   no GitHub release is touched.
 #
-# Consumers verify each tarball against the sidecar fetched from
-# the same release, so there is no checksum list to bake into
-# mix.exs on the maintainer side.
+# Consumers verify each tarball against the SHA256 pinned in
+# `native_checksums.txt`, which ships inside the hex package (and is
+# thus covered by Hex's package hash in the consumer's mix.lock — a
+# trust root independent of the mutable GitHub release). The maintainer
+# regenerates that file with `mix emily.publish` once the release is
+# public; the `.sha256` sidecars uploaded here are informational only.
+# See MAINTAINING.md.
 
 on:
   push:
