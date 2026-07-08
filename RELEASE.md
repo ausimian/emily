@@ -1,3 +1,13 @@
+First stable release. Emily runs `Nx` computations on Apple Silicon
+through MLX — set it as the default Nx backend and Bumblebee models run
+on the Metal GPU with no further integration. With 1.0 the public API is
+stable and follows semantic versioning from here; there are no breaking
+changes from 0.7.x, so existing code keeps working. The headline this
+cycle is quantized inference — 4-bit layers now stream through the fused
+`mx::quantized_matmul` kernel, making native quantized generation ~13×
+faster end-to-end and, for the first time, faster than dense (details
+below).
+
 ### Changed
 
 - The precompiled NIF now declares an explicit minimum macOS per variant —
