@@ -10,7 +10,14 @@ HEADERS := $(shell find c_src \( -name '*.h' -o -name '*.hpp' \))
 OBJECTS := $(patsubst c_src/%.cpp,$(BUILD_DIR)/%.o,$(SOURCES))
 
 # Flags
-CXXFLAGS := -std=c++17 -O3 -fPIC -fvisibility=hidden -Wall -Wextra
+#
+# C++20 to match MLX itself: as of 0.32.0 MLX sets `CMAKE_CXX_STANDARD 20`
+# (REQUIRED), so libmlx.a is compiled as C++20 and its public headers use
+# C++20 features (e.g. a defaulted `operator==` on `CompileOptions` in
+# mlx/backend/common/metal_kernel.h, reachable via <mlx/fast.h>). We include
+# those headers and statically link those objects, so we build the NIF at the
+# same language level to stay ABI/ODR-consistent with the library.
+CXXFLAGS := -std=c++20 -O3 -fPIC -fvisibility=hidden -Wall -Wextra
 CXXFLAGS += -I$(ERTS_INCLUDE_DIR) -Ic_src
 # Third-party headers: use -isystem so warnings inside them (e.g. MLX's
 # -Wdeprecated-copy on _MLX_BFloat16) don't clutter our builds or trip
@@ -58,7 +65,7 @@ BENCH_NATIVE_BIN := $(BUILD_DIR)/compile_microbench
 BENCH_NATIVE_METALLIB := $(BUILD_DIR)/mlx.metallib
 
 $(BENCH_NATIVE_BIN): $(BENCH_NATIVE_SRC) | $(BUILD_DIR)
-	$(CXX) -std=c++17 -O3 -Wall -Wextra \
+	$(CXX) -std=c++20 -O3 -Wall -Wextra \
 	    -isystem $(MLX_INCLUDE_DIR) \
 	    $(BENCH_NATIVE_SRC) \
 	    $(MLX_LIB_DIR)/libmlx.a \
