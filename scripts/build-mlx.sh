@@ -4,7 +4,7 @@
 # `compile.emily_mlx` compiler step; not intended for direct use.
 #
 # Usage:
-#   scripts/build-mlx.sh <mlx-src-dir> <mlx-version> <jit 0|1> <install-prefix>
+#   scripts/build-mlx.sh <mlx-src-dir> <mlx-version> <jit 0|1> <install-prefix> <macos-min>
 #
 # <install-prefix> ends up with an {include,lib} layout that mix.exs
 # exports to the NIF build via `MLX_INCLUDE_DIR` / `MLX_LIB_DIR`.
@@ -17,8 +17,8 @@ set -euo pipefail
 # ninja) still resolve.
 export PATH="/usr/bin:/bin:/usr/sbin:/sbin:${PATH}"
 
-if [[ $# -ne 4 ]]; then
-  echo "usage: $0 <mlx-src-dir> <mlx-version> <jit 0|1> <install-prefix>" >&2
+if [[ $# -ne 5 ]]; then
+  echo "usage: $0 <mlx-src-dir> <mlx-version> <jit 0|1> <install-prefix> <macos-min>" >&2
   exit 2
 fi
 
@@ -26,6 +26,11 @@ MLX_SRC_DIR="$1"
 VERSION="$2"
 JIT="$3"
 PREFIX="$4"
+# Explicit macOS deployment target (e.g. 14.0 for aot, 26.2 for jit). Pins the
+# floor for MLX's objects instead of MLX's default "build for the host" (its
+# CMakeLists sets CMAKE_OSX_DEPLOYMENT_TARGET to the builder's OS otherwise),
+# so the artifacts don't drift with the runner and match the NIF link target.
+MACOS_MIN="$5"
 
 case "$JIT" in
   0) VARIANT="aot"; METAL_JIT="OFF" ;;
@@ -178,6 +183,7 @@ CMAKE_BUILD_PARALLEL_LEVEL=1 cmake \
   -S "$MLX_SRC_DIR" \
   -B "$BUILD_DIR" \
   -DCMAKE_BUILD_TYPE=Release \
+  -DCMAKE_OSX_DEPLOYMENT_TARGET="$MACOS_MIN" \
   -DCMAKE_INSTALL_PREFIX="$STAGING" \
   -DBUILD_SHARED_LIBS=OFF \
   -DMLX_BUILD_TESTS=OFF \
