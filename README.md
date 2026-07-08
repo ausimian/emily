@@ -29,7 +29,7 @@ Add `:emily` to your `mix.exs` deps:
 ```elixir
 def deps do
   [
-    {:emily, "~> 0.7"}
+    {:emily, "~> 1.0"}
   ]
 end
 ```
@@ -65,9 +65,11 @@ Emily backend smoke test.
   other backends.
 - **Affine group-wise quantization.** `Emily.QuantizedWeight` +
   `Emily.Quantization` wrap MLX `quantize` / `dequantize` /
-  `quantized_matmul` for int2 / int4 / int8 inference. Includes a
-  defn-native `dequantize_defn/1` for quantized layers inside Axon
-  forward passes.
+  `quantized_matmul` for int2 / int4 / int8 inference. Quantized dense
+  layers lower to the fused `quantized_matmul` kernel — streaming the
+  packed low-bit weights instead of dequantizing the whole weight per
+  token — with a `dequantize_defn/1` + `Nx.dot` fallback on non-MLX
+  backends.
 - **Mixed-precision training.** `Emily.MixedPrecision` provides the
   bf16 recipe (cast params for the forward, keep f32 master, dynamic
   loss scaling with overflow detection).
@@ -99,7 +101,7 @@ Releases on first `mix compile`.
 
 ### As a hex consumer
 
-Add `{:emily, "~> 0.7"}` to `mix.exs`, then:
+Add `{:emily, "~> 1.0"}` to `mix.exs`, then:
 
 ```sh
 mix deps.get
