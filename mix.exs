@@ -9,7 +9,7 @@ defmodule Emily.MixProject do
   # `deps/0`) and the per-variant cache dir layout. Bump in lockstep with
   # the submodule ref; CI's `release-nif.yml` rebuilds the NIF against
   # whatever this resolves to.
-  @mlx_version "0.31.2"
+  @mlx_version "0.32.0"
 
   # Precompiled NIF targets this `@version` ships. Used as an
   # early fail-fast guard in the hex-consumer fetch step (an
