@@ -469,7 +469,14 @@ defmodule Emily.Fast do
       if causal do
         q_len = Nx.axis_size(q, -2)
         k_len = Nx.axis_size(k, -2)
-        mask = Nx.less_equal(Nx.iota({q_len, 1}), Nx.iota({1, k_len}))
+        # Bottom-right-aligned causal mask, matching mx::fast::sdpa's
+        # mask_mode "causal": query row i (at absolute position
+        # i + k_len - q_len) attends keys j <= i + (k_len - q_len).
+        mask =
+          Nx.greater_equal(
+            Nx.add(Nx.iota({q_len, 1}), k_len - q_len),
+            Nx.iota({1, k_len})
+          )
 
         bias =
           Nx.select(
@@ -499,7 +506,14 @@ defmodule Emily.Fast do
       if causal do
         q_len = Nx.axis_size(q, -2)
         k_len = Nx.axis_size(k, -2)
-        mask = Nx.less_equal(Nx.iota({q_len, 1}), Nx.iota({1, k_len}))
+        # Bottom-right-aligned causal mask, matching mx::fast::sdpa's
+        # mask_mode "causal": query row i (at absolute position
+        # i + k_len - q_len) attends keys j <= i + (k_len - q_len).
+        mask =
+          Nx.greater_equal(
+            Nx.add(Nx.iota({q_len, 1}), k_len - q_len),
+            Nx.iota({1, k_len})
+          )
 
         bias =
           Nx.select(
