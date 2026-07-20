@@ -280,7 +280,7 @@ inline double f64_from_bits(int64_t bits) {
   return d;
 }
 
-namespace __op {
+namespace op_detail {
 
 inline const mx::array &arg1(const std::vector<mx::array> &in,
                              const char *name) {
@@ -338,13 +338,13 @@ inline bool keepdims_attr(const std::vector<std::vector<int64_t>> &a,
   return v[0] != 0;
 }
 
-} // namespace __op
+} // namespace op_detail
 
 // Replay one instruction: apply `op` to its resolved operands + attrs.
 inline mx::array dispatch_op(Opcode op, const std::vector<mx::array> &in,
                              const std::vector<std::vector<int64_t>> &iattrs,
                              mx::Stream &s) {
-  using namespace emily::__op;
+  using namespace emily::op_detail;
   switch (op) {
   // --- Binary arithmetic / bitwise ---
   case Opcode::Add:

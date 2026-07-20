@@ -205,6 +205,23 @@ the `cppcheck` job). See the `cppcheck` target in the `Makefile` for the
 enabled checks and suppressions; use inline `// cppcheck-suppress <id>`
 for one-off false positives.
 
+### Static analysis of the NIF (clang-tidy)
+
+```sh
+brew install llvm   # one-time; clang-tidy isn't in stock Xcode
+mix clang.tidy
+```
+
+Runs clang-tidy (including the clang static analyzer, via its
+`clang-analyzer-*` checks) over `c_src/` and exits non-zero on any finding
+— the same tool the `clang-tidy` CI job runs. Unlike cppcheck it compiles
+each translation unit, so it needs the MLX/Fine/ERTS headers and build
+flags; `mix clang.tidy` supplies that env (reusing the cached MLX) and
+drives the `clang-tidy` Makefile target, so `make clang-tidy` on its own
+will refuse to run. Enabled checks and the header filter live in the
+repo-root `.clang-tidy`; use inline `// NOLINT(<check>)` for one-off false
+positives. Point at a specific binary with `CLANG_TIDY=/path/to/clang-tidy`.
+
 ### Build MLX in isolation
 
 ```sh

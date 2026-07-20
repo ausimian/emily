@@ -220,6 +220,57 @@ jobs:
       - name: Run cppcheck
         run: make cppcheck
 
+  # C++ static analysis of the NIF sources with clang-tidy (which also runs
+  # the clang static analyzer via its clang-analyzer-* checks). Unlike
+  # cppcheck, clang-tidy compiles each TU, so it needs the MLX/Fine/ERTS
+  # headers — hence the Beam setup and the MLX cache. It reuses the MLX
+  # install the precommit lane builds: the restore-keys pick up main's
+  # cache even when this branch's Makefile hash differs, since only the
+  # headers are needed and the MLX version is unchanged. clang-tidy ships
+  # with LLVM (brew), not stock Xcode. Runs on macOS to match the platform
+  # the NIF ships on, via the same `mix clang.tidy` a developer runs.
+  clang-tidy:
+    name: clang-tidy (NIF static analysis)
+    if: github.event_name != 'push' || github.ref_type == 'branch'
+    runs-on: macos-14
+    env:
+      MIX_ENV: test
+      EMILY_MLX_VARIANT: aot
+      EMILY_CACHE: ~/Library/Caches/emily
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Setup Beam
+        uses: erlef/setup-beam@v1
+        with:
+          version-file: .tool-versions
+          version-type: strict
+
+      - name: Install LLVM (clang-tidy)
+        run: brew install llvm
+
+      - name: Cache deps
+        uses: actions/cache@v5
+        with:
+          path: deps
+          key: deps-${{ runner.os }}-${{ hashFiles('mix.lock') }}
+          restore-keys: deps-${{ runner.os }}-
+
+      - name: Cache MLX and NIF objects
+        uses: actions/cache@v5
+        with:
+          path: ~/Library/Caches/emily
+          key: mlx-${{ runner.os }}-aot-${{ hashFiles('c_src/**', 'Makefile', 'mix.exs', 'scripts/build-mlx.sh') }}
+          restore-keys: mlx-${{ runner.os }}-aot-
+
+      - run: mix deps.get
+
+      - name: Run clang-tidy
+        run: |
+          export CLANG_TIDY="$(brew --prefix llvm)/bin/clang-tidy"
+          export SDKROOT="$(xcrun --show-sdk-path)"
+          mix clang.tidy
+
   # ASan CI deferred: requires OTP built with --enable-sanitizers=address
   # (macOS SIP blocks DYLD_INSERT_LIBRARIES, and late-loaded libasan
   # fails). See Makefile and RELEASE.md for details.

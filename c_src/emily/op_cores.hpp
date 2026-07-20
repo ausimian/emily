@@ -154,8 +154,8 @@ inline mx::array sliding_windows_view(
   out_dims.assign(rank, 0);
   mx::Shape new_shape;
   mx::Strides new_strides;
-  new_shape.reserve(2 * rank);
-  new_strides.reserve(2 * rank);
+  new_shape.reserve(2 * static_cast<std::size_t>(rank));
+  new_strides.reserve(2 * static_cast<std::size_t>(rank));
 
   for (int i = 0; i < rank; ++i) {
     int64_t eff = (window_shape[i] - 1) * dilations[i] + 1;
@@ -251,11 +251,11 @@ inline mx::array window_scatter_core(
     bool is_max,
     mx::Stream &s) {
   int rank = static_cast<int>(window_shape.size());
-  auto original_shape = tensor.shape();
+  const auto &original_shape = tensor.shape();
 
   // 1. Pad input with init_value.
   auto padded = do_pad(tensor, pad_lo, pad_hi, init_value, s);
-  auto padded_shape = padded.shape();
+  const auto &padded_shape = padded.shape();
 
   // 2. Sliding-window view (dilation is implicitly 1 per axis for scatter).
   std::vector<int64_t> dilations(rank, 1);
@@ -329,7 +329,7 @@ inline mx::array window_scatter_core(
 
   // 7. Reshape source so each index tuple is a single-point write.
   mx::Shape source_reshape;
-  source_reshape.reserve(2 * rank);
+  source_reshape.reserve(2 * static_cast<std::size_t>(rank));
   for (int i = 0; i < rank; ++i)
     source_reshape.push_back(static_cast<mx::ShapeElem>(out_dims[i]));
   for (int i = 0; i < rank; ++i)

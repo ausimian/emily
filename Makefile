@@ -47,7 +47,7 @@ ifeq ($(EMILY_ASAN),1)
     LDFLAGS  += -fsanitize=address
 endif
 
-.PHONY: all clean bench-native cppcheck
+.PHONY: all clean bench-native cppcheck clang-tidy
 
 all: $(NIF_SO) $(METALLIB)
 
@@ -88,6 +88,33 @@ CPPCHECK_FLAGS := --enable=warning,performance,portability \
 
 cppcheck:
 	$(CPPCHECK) $(CPPCHECK_FLAGS) $(SOURCES)
+
+# ------------------------------------------------------------------
+# clang-tidy: static analysis (incl. the clang static analyzer, via the
+# clang-analyzer-* checks) of the first-party NIF sources.
+#
+# Unlike cppcheck, clang-tidy actually *compiles* each translation unit,
+# so it needs the MLX / Fine / ERTS headers and the exact build flags —
+# it reuses this Makefile's `$(CXXFLAGS)` verbatim via the trailing `--`.
+# That means it needs the same env the NIF build gets (MLX_INCLUDE_DIR,
+# FINE_INCLUDE_DIR, ERTS_INCLUDE_DIR), which `make` alone does not set.
+# Run it through `mix clang.tidy`, which supplies that env (reusing the
+# already-built/cached MLX) exactly like `mix bench.native` does; the
+# recipe below refuses to run without it rather than emit a confusing
+# clang error about an empty `-isystem`.
+#
+# Enabled checks and the header filter (diagnostics scoped to c_src/,
+# never MLX/Fine which arrive via -isystem) live in the repo-root
+# `.clang-tidy`. Install the tool with `brew install llvm`; override the
+# binary with CLANG_TIDY=/path/to/clang-tidy.
+# ------------------------------------------------------------------
+CLANG_TIDY ?= clang-tidy
+
+clang-tidy:
+	@test -n "$(MLX_INCLUDE_DIR)" || { \
+	  echo "clang-tidy needs the NIF build env — run 'mix clang.tidy', not 'make clang-tidy'." >&2; \
+	  exit 1; }
+	$(CLANG_TIDY) --quiet $(SOURCES) -- $(CXXFLAGS)
 
 # ------------------------------------------------------------------
 # bench-native: standalone C++ microbenchmarks under bench/native/.
