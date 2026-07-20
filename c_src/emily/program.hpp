@@ -122,6 +122,11 @@ public:
   //   * the recycled-`fun_id` collision the on-worker erase guards against
   //     can't fire on a stopping worker — it runs no further compiles.
   // So on the declined path we simply let `drop` destruct below (issue #172).
+  //
+  // post_to_worker constructs a std::function (may throw bad_alloc); a throw
+  // from this best-effort cleanup destructor is unrecoverable and would
+  // std::terminate regardless, so the escape is accepted here.
+  // NOLINTNEXTLINE(bugprone-exception-escape)
   ~Program() {
     for (auto &kv : compiled) {
       CompiledEntry &entry = kv.second;

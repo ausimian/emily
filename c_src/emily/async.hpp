@@ -44,13 +44,16 @@ namespace emily {
 
 namespace mx = mlx::core;
 
-namespace __async {
+namespace async_detail {
 
 // Build a binary term in msg_env from a null-terminated C string.
 inline ERL_NIF_TERM make_binary_from_cstr(ErlNifEnv *msg_env, const char *s) {
   size_t len = std::strlen(s);
   ERL_NIF_TERM term;
   unsigned char *data = enif_make_new_binary(msg_env, len, &term);
+  // The destination is a length-counted BEAM binary of exactly `len`
+  // bytes, not a C string, so a trailing NUL is neither needed nor wanted.
+  // NOLINTNEXTLINE(bugprone-not-null-terminated-result)
   std::memcpy(data, s, len);
   return term;
 }
@@ -80,7 +83,7 @@ error_reason_from_current_exception(ErlNifEnv *msg_env) {
   }
 }
 
-}  // namespace __async
+}  // namespace async_detail
 
 // Run `build_payload` on the worker thread of `w` and post the
 // result back to the caller PID as a message. Returns a fresh ref
@@ -132,7 +135,7 @@ fine::Term async_reply(ErlNifEnv *env,
               msg_env, ref_in_msg,
               enif_make_tuple2(
                   msg_env, fine::encode(msg_env, emily::atoms::error),
-                  __async::error_reason_from_current_exception(msg_env)));
+                  async_detail::error_reason_from_current_exception(msg_env)));
         }
       }
 

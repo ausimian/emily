@@ -148,6 +148,10 @@ public:
     }
   }
 
+  // shutdown() joins the reaper thread; std::thread::join can in theory
+  // throw std::system_error, but a throw from this best-effort teardown
+  // destructor is unrecoverable and would std::terminate regardless.
+  // NOLINTNEXTLINE(bugprone-exception-escape)
   ~Reaper() { shutdown(); }
 
 private:
@@ -198,6 +202,10 @@ public:
 
   // Non-blocking: signal stop and hand the thread to the Reaper to join
   // off-scheduler. Pending tasks are cancelled with {:error, :stopped}.
+  //
+  // retire() takes a lock and moves the thread to the reaper; a throw here
+  // is unrecoverable from a destructor and would std::terminate regardless.
+  // NOLINTNEXTLINE(bugprone-exception-escape)
   ~WorkerThread() { Reaper::instance().retire(state_.get()); }
 
   // Enqueue a task. Throws if the worker has been stopped or the queue is

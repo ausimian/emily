@@ -4,16 +4,30 @@
 # env) — see lib/mix/tasks/clang.tidy.ex and the `clang-tidy` target in
 # the Makefile.
 #
-# A focused, high-signal starting set: bug patterns, the clang static
-# analyzer (clang-analyzer-*), and performance checks. Deliberately not
-# the modernize/readability/cppcoreguidelines firehose yet — broaden once
-# this baseline is green. `bugprone-easily-swappable-parameters` is off
-# because it fires on nearly every NIF entry point (many same-typed args)
-# without pointing at a real defect.
+# A focused, high-signal set: bug patterns, the clang static analyzer
+# (clang-analyzer-*), and performance checks. Deliberately not the
+# modernize/readability/cppcoreguidelines firehose yet — broaden once this
+# baseline stays green.
+#
+# Disabled checks and why:
+#   * bugprone-easily-swappable-parameters — fires on nearly every NIF
+#     entry point (many same-typed args) without pointing at a real defect.
+#   * performance-unnecessary-value-param — every NIF takes its
+#     fine::ResourcePtr args by value because Fine's FINE_NIF macro decodes
+#     each BEAM term into a value and passes it in; the signature is the
+#     binding convention, not a stray copy (the cppcheck build suppresses
+#     the same thing as passedByValueCallback).
+#   * bugprone-throwing-static-initialization — FINE_NIF / FINE_RESOURCE
+#     register callbacks at static-init time via throwing constructors;
+#     this is inherent to Fine's registration model, across ~25 macro
+#     expansions we don't own.
+#   * performance-enum-size — Opcode and ref::Kind are int64_t on purpose
+#     (they pack into the int64 refs the Elixir lowerer emits); shrinking
+#     the base type would break that ABI.
 #
 # HeaderFilterRegex scopes diagnostics to our own headers; MLX and Fine
 # arrive via -isystem and are skipped, exactly as the compiler skips them.
-Checks: '-*,bugprone-*,clang-analyzer-*,performance-*,-bugprone-easily-swappable-parameters'
+Checks: '-*,bugprone-*,clang-analyzer-*,performance-*,-bugprone-easily-swappable-parameters,-performance-unnecessary-value-param,-bugprone-throwing-static-initialization,-performance-enum-size'
 WarningsAsErrors: '*'
 HeaderFilterRegex: 'c_src/'
 FormatStyle: none
