@@ -1,0 +1,19 @@
+# clang-tidy configuration for the C++ NIF under c_src/.
+#
+# Run it with `mix clang.tidy` (which supplies the MLX/Fine/ERTS build
+# env) — see lib/mix/tasks/clang.tidy.ex and the `clang-tidy` target in
+# the Makefile.
+#
+# A focused, high-signal starting set: bug patterns, the clang static
+# analyzer (clang-analyzer-*), and performance checks. Deliberately not
+# the modernize/readability/cppcoreguidelines firehose yet — broaden once
+# this baseline is green. `bugprone-easily-swappable-parameters` is off
+# because it fires on nearly every NIF entry point (many same-typed args)
+# without pointing at a real defect.
+#
+# HeaderFilterRegex scopes diagnostics to our own headers; MLX and Fine
+# arrive via -isystem and are skipped, exactly as the compiler skips them.
+Checks: '-*,bugprone-*,clang-analyzer-*,performance-*,-bugprone-easily-swappable-parameters'
+WarningsAsErrors: '*'
+HeaderFilterRegex: 'c_src/'
+FormatStyle: none
