@@ -200,6 +200,26 @@ jobs:
       - name: fast_kernels_full
         run: mix test --only fast_kernels_full
 
+  # C++ static analysis of the NIF sources with cppcheck. Kept separate
+  # from the precommit lane on purpose: the `cppcheck` Makefile target
+  # needs neither a built libmlx nor the BEAM toolchain (it analyses our
+  # own c_src/ tree and suppresses the third-party headers it can't see),
+  # so this runs on a bare checkout and finishes in seconds. Runs on
+  # macOS to match the platform the NIF actually ships on, and invokes
+  # the same `make cppcheck` a developer runs locally.
+  cppcheck:
+    name: cppcheck (NIF static analysis)
+    if: github.event_name != 'push' || github.ref_type == 'branch'
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install cppcheck
+        run: brew install cppcheck
+
+      - name: Run cppcheck
+        run: make cppcheck
+
   # ASan CI deferred: requires OTP built with --enable-sanitizers=address
   # (macOS SIP blocks DYLD_INSERT_LIBRARIES, and late-loaded libasan
   # fails). See Makefile and RELEASE.md for details.

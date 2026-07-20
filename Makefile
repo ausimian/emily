@@ -47,9 +47,47 @@ ifeq ($(EMILY_ASAN),1)
     LDFLAGS  += -fsanitize=address
 endif
 
-.PHONY: all clean bench-native
+.PHONY: all clean bench-native cppcheck
 
 all: $(NIF_SO) $(METALLIB)
+
+# ------------------------------------------------------------------
+# cppcheck: static analysis of the first-party NIF sources.
+#
+# Deliberately self-contained: it does NOT need libmlx built or the
+# MLX_INCLUDE_DIR / FINE_INCLUDE_DIR / ERTS_INCLUDE_DIR env that the
+# real compile relies on, so a developer can just run `make cppcheck`
+# from the repo root without a full NIF build (and CI can run it on a
+# bare checkout). cppcheck degrades gracefully on the third-party
+# headers it can't see — we only feed it our own `-Ic_src` tree and
+# suppress the unavoidable missing-include notices for <mlx/...>,
+# <fine.hpp>, <erl_nif.h>, etc. Findings are therefore scoped to code
+# we actually own.
+#
+# `passedByValueCallback` is suppressed on purpose: every NIF entry
+# point takes its container/aggregate args (std::vector, std::string,
+# std::tuple) by value because Fine's FINE_NIF macro decodes each BEAM
+# term into a value and passes it in — the signature is dictated by the
+# binding, not a stray copy. (Plain helpers still use const& where they
+# should.) Use inline `// cppcheck-suppress <id>` for one-off cases.
+#
+# Install: `brew install cppcheck`.
+# ------------------------------------------------------------------
+CPPCHECK       ?= cppcheck
+CPPCHECK_JOBS  ?= $(shell sysctl -n hw.ncpu 2>/dev/null || echo 4)
+CPPCHECK_FLAGS := --enable=warning,performance,portability \
+                  --std=c++20 --language=c++ \
+                  --inline-suppr \
+                  --error-exitcode=1 \
+                  --quiet -j $(CPPCHECK_JOBS) \
+                  -Ic_src \
+                  --suppress=missingInclude \
+                  --suppress=missingIncludeSystem \
+                  --suppress=unmatchedSuppression \
+                  --suppress=passedByValueCallback
+
+cppcheck:
+	$(CPPCHECK) $(CPPCHECK_FLAGS) $(SOURCES)
 
 # ------------------------------------------------------------------
 # bench-native: standalone C++ microbenchmarks under bench/native/.

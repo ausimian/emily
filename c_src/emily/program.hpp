@@ -53,7 +53,10 @@ inline int64_t index_of(int64_t r) { return r & kIndexMask; }
 class Program;
 
 struct CompiledInstr {
-  Opcode opcode;
+  // Value-initialized so a default-constructed instr has a defined opcode
+  // (the other members are containers that self-initialize). Every real
+  // construction aggregate-initializes all fields, overriding this.
+  Opcode opcode{};
   std::vector<int64_t> operands;             // packed refs
   std::vector<std::vector<int64_t>> iattrs;  // integer attrs (shapes/axes/dtype codes)
   // Nested programs an instruction carries (empty for all but control

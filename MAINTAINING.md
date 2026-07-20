@@ -191,6 +191,20 @@ so changing the attribute is the entire pin.
 
 ## Local debugging
 
+### Static analysis of the NIF (cppcheck)
+
+```sh
+brew install cppcheck   # one-time
+make cppcheck
+```
+
+Runs cppcheck over `c_src/` and exits non-zero on any finding. It needs
+neither a built `libmlx` nor the BEAM toolchain, so it works on a bare
+checkout in seconds — the same target CI runs (`.github/workflows/ci.yml`,
+the `cppcheck` job). See the `cppcheck` target in the `Makefile` for the
+enabled checks and suppressions; use inline `// cppcheck-suppress <id>`
+for one-off false positives.
+
 ### Build MLX in isolation
 
 ```sh
