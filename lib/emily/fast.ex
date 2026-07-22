@@ -68,10 +68,25 @@ defmodule Emily.Fast do
   backend it runs the composed fallback.
   """
 
+  import Nx.Defn, only: [deftransform: 2]
+
   alias Emily.Backend, as: B
   alias Emily.Fast.Block, as: FB
   alias Emily.Native
   alias Nx.Tensor, as: T
+
+  # Every defn-callable helper below is a `deftransform`, not a plain
+  # `def`. `defn` rewrites remote calls to
+  # `Nx.Defn.Compiler.__remote__/4`, which dispatches to the callee's
+  # generated `__defn:name__/arity` — only `defn`/`deftransform`
+  # definitions export that. A plain `def` raises "cannot invoke ...
+  # inside defn" as soon as the helper is called from a caller's own
+  # defn rather than as the top-level jit'd unit (#205). `deftransform`
+  # keeps the body plain Elixir, which `Nx.block/4` requires: its
+  # fallback callback is a pin-matched anonymous function, not
+  # expressible inside a defn body. The `*_fallback` helpers stay plain
+  # `defp` for the same reason — `Nx.Defn.Expr.block/4` applies them as
+  # ordinary Elixir on Expr-backed parameters at trace time.
 
   defp output_like(%T{} = t), do: Nx.template(t.shape, t.type, names: t.names)
 
@@ -102,7 +117,7 @@ defmodule Emily.Fast do
 
   """
   @spec rms_norm(Nx.Tensor.t(), Nx.Tensor.t(), keyword()) :: Nx.Tensor.t()
-  def rms_norm(x, weight, opts \\ []) do
+  deftransform rms_norm(x, weight, opts \\ []) do
     opts = Keyword.validate!(opts, eps: 1.0e-6)
     block = struct!(FB.RMSNorm, opts)
 
@@ -156,7 +171,7 @@ defmodule Emily.Fast do
   """
   @spec layer_norm(Nx.Tensor.t(), Nx.Tensor.t(), Nx.Tensor.t(), keyword()) ::
           Nx.Tensor.t()
-  def layer_norm(x, weight, bias, opts \\ []) do
+  deftransform layer_norm(x, weight, bias, opts \\ []) do
     opts = Keyword.validate!(opts, eps: 1.0e-5)
     block = struct!(FB.LayerNorm, opts)
 
@@ -218,7 +233,7 @@ defmodule Emily.Fast do
 
   """
   @spec rope(Nx.Tensor.t(), Nx.Tensor.t(), keyword()) :: Nx.Tensor.t()
-  def rope(x, offset, opts) do
+  deftransform rope(x, offset, opts) do
     opts = Keyword.validate!(opts, [:dims, traditional: false, base: 10_000.0, scale: 1.0])
     block = struct!(FB.RoPE, opts)
 
@@ -268,7 +283,7 @@ defmodule Emily.Fast do
   """
   @spec rope_with_freqs(Nx.Tensor.t(), Nx.Tensor.t(), Nx.Tensor.t(), keyword()) ::
           Nx.Tensor.t()
-  def rope_with_freqs(x, offset, freqs, opts) do
+  deftransform rope_with_freqs(x, offset, freqs, opts) do
     opts = Keyword.validate!(opts, [:dims, traditional: false, scale: 1.0])
     block = struct!(FB.RoPEWithFreqs, opts)
 
@@ -397,7 +412,7 @@ defmodule Emily.Fast do
           Nx.Tensor.t(),
           keyword()
         ) :: Nx.Tensor.t()
-  def scaled_dot_product_attention(q, k, v, opts \\ []) do
+  deftransform scaled_dot_product_attention(q, k, v, opts \\ []) do
     opts = Keyword.validate!(opts, [:scale, :sinks, causal: false])
     opts = Keyword.put_new_lazy(opts, :scale, fn -> default_sdpa_scale(q) end)
 
@@ -454,7 +469,14 @@ defmodule Emily.Fast do
       if causal do
         q_len = Nx.axis_size(q, -2)
         k_len = Nx.axis_size(k, -2)
-        mask = Nx.less_equal(Nx.iota({q_len, 1}), Nx.iota({1, k_len}))
+        # Bottom-right-aligned causal mask, matching mx::fast::sdpa's
+        # mask_mode "causal": query row i (at absolute position
+        # i + k_len - q_len) attends keys j <= i + (k_len - q_len).
+        mask =
+          Nx.greater_equal(
+            Nx.add(Nx.iota({q_len, 1}), k_len - q_len),
+            Nx.iota({1, k_len})
+          )
 
         bias =
           Nx.select(
@@ -484,7 +506,14 @@ defmodule Emily.Fast do
       if causal do
         q_len = Nx.axis_size(q, -2)
         k_len = Nx.axis_size(k, -2)
-        mask = Nx.less_equal(Nx.iota({q_len, 1}), Nx.iota({1, k_len}))
+        # Bottom-right-aligned causal mask, matching mx::fast::sdpa's
+        # mask_mode "causal": query row i (at absolute position
+        # i + k_len - q_len) attends keys j <= i + (k_len - q_len).
+        mask =
+          Nx.greater_equal(
+            Nx.add(Nx.iota({q_len, 1}), k_len - q_len),
+            Nx.iota({1, k_len})
+          )
 
         bias =
           Nx.select(
@@ -535,7 +564,7 @@ defmodule Emily.Fast do
           Nx.Tensor.t(),
           keyword()
         ) :: Nx.Tensor.t()
-  def scaled_dot_product_attention_with_mask(q, k, v, mask, opts \\ []) do
+  deftransform scaled_dot_product_attention_with_mask(q, k, v, mask, opts \\ []) do
     opts = Keyword.validate!(opts, [:scale, :sinks])
     opts = Keyword.put_new_lazy(opts, :scale, fn -> default_sdpa_scale(q) end)
 

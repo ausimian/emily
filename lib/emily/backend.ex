@@ -1856,6 +1856,12 @@ defmodule Emily.Backend do
   end
 
   @doc false
+  # `freqs` arrives in the HF inverse-frequency convention documented on
+  # `Emily.Fast.rope_with_freqs/4` (theta = position * freqs). MLX's
+  # `mx::fast::rope` expects the reciprocal table (it computes
+  # theta = position / freqs — see mlx/fast.cpp), so invert before the
+  # NIF. The composed-defn fallback multiplies by `freqs` directly, so
+  # this keeps the fused and fallback paths in agreement.
   def fast_rope_with_freqs(%T{} = out, x, offset, freqs, opts) do
     w = worker()
 
@@ -1868,7 +1874,7 @@ defmodule Emily.Backend do
         nil,
         opts[:scale] * 1.0,
         ref(offset),
-        ref(freqs)
+        Native.reciprocal(w, ref(freqs))
       )
 
     wrap(ref, out, w)

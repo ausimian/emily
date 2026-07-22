@@ -1242,9 +1242,13 @@ defmodule Emily.IR do
     {rx, state} = lower_node(x, state)
     {ro, state} = lower_node(offset, state)
     {rf, state} = lower_node(freqs, state)
+    # `freqs` is the HF inverse-frequency table (theta = position * freqs);
+    # mx::fast::rope expects its reciprocal (theta = position / freqs).
+    # Mirrors Emily.Backend.fast_rope_with_freqs/5.
+    {rf_inv, state} = emit(state, :reciprocal, [rf])
 
     attrs = [[b.dims], [bool_int(b.traditional)], [float_bits(b.scale)]]
-    emit_coerced(state, :fast_rope_freqs, [rx, ro, rf], attrs, t.type)
+    emit_coerced(state, :fast_rope_freqs, [rx, ro, rf_inv], attrs, t.type)
   end
 
   defp lower_block(%FB.SDPA{scale: scale, causal: causal}, [q, k, v], _expr, t, state) do
