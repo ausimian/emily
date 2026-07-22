@@ -294,11 +294,11 @@ tensor size**, not model kind:
 | Workload (M4 Pro, f32)                   | Best Emily lane vs EXLA-CPU |
 | ---------------------------------------- | --------------------------- |
 | Large matmul (2048²)                     | **5.0× faster**             |
-| ViT-base image classification            | **2.35× faster**            |
-| Qwen3-0.6B greedy decode                 | **1.67× faster** (`fuse`)   |
-| DistilBERT QA (one encoder forward)      | **1.27× faster**            |
+| ViT-base image classification            | **2.56× faster**            |
+| Qwen3-0.6B greedy decode                 | **1.68× faster** (`fuse`)   |
+| DistilBERT QA (one encoder forward)      | **1.28× faster**            |
 | Whisper-tiny transcription               | **11× slower**              |
-| Elementwise / matmul ≤ ~512 per dim      | up to ~2.3× slower          |
+| Elementwise / matmul ≤ ~512 per dim      | up to ~2.2× slower          |
 
 **Rule of thumb: reach for Emily when the per-op tensors are large** —
 hidden dim ≥ 768 and matmuls ≥ 1024 per dimension, which covers Qwen3,
@@ -311,17 +311,19 @@ with zero fallbacks**, so these gaps are kernel/dispatch efficiency,
 not coverage holes.
 
 **Versus EMLX (GPU-vs-GPU).** The same benchmark runs an `emlx` lane —
-the older MLX-backed Nx backend, also on the Metal GPU — so the
-comparison isn't only against the CPU. Here Emily's *compiler* is the
-differentiator: eager Emily is roughly EMLX-like, but native/fuse pull
-far ahead — **2.72× faster on DistilBERT QA**, **5.82× faster on
-Qwen3-0.6B decode**, and ~3.2× faster on the Qwen3-4B addendum. (EMLX
-did not complete the ViT-base or Whisper-tiny tiers in this harness.)
+the other MLX-backed Nx backend, also on the Metal GPU — so the
+comparison isn't only against the CPU. EMLX 0.4 is a much stronger
+baseline than 0.3 was (its times roughly halved or better), making this
+a compiler-vs-compiler contest: emlx comfortably beats Emily's *eager*
+lane on decode, while Emily's native/fuse lanes keep a consistent lead —
+**1.44× faster on DistilBERT QA**, **1.26× faster on Qwen3-0.6B
+decode**, and **1.17× faster on the Qwen3-4B addendum**. (EMLX did not
+complete the ViT-base or Whisper-tiny tiers in this harness.)
 
 For decode, use the native compiler rather than the eager backend:
-eager Qwen3 decode is 3.2× *slower* than EXLA, while native is 1.5×
-faster and fuse 1.67× — a 5.3× throughput swing from eager to fuse
-(12.51 → 66.42 tok/s) that is purely the per-op dispatch floor, paid
+eager Qwen3 decode is 3.4× *slower* than EXLA, while native is 1.5×
+faster and fuse 1.68× — a 5.6× throughput swing from eager to fuse
+(11.96 → 67.57 tok/s) that is purely the per-op dispatch floor, paid
 once per tiny op across thousands of decode steps.
 
 Re-run the benchmark with `elixir bench/emily_vs_exla.exs`; the full
