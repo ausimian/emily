@@ -87,7 +87,9 @@ defmodule Emily.MixProject do
     [
       {:elixir_make, "~> 0.9"},
       {:fine, "~> 0.1"},
-      {:nx, "~> 0.12"},
+      # Keep this three-segment requirement: `~> 0.12` also accepts Nx 0.13+
+      # until 1.0, while Emily's compiler currently targets the Nx 0.12 IR.
+      {:nx, "~> 0.12.0"},
       # Bumblebee + Axon are declared `optional: true` because the
       # only Emily module that touches either — `Emily.Bumblebee.FastKernels`
       # — is wrapped in a `Code.ensure_loaded?/1` gate and elides when
