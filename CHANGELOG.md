@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 <!-- %% CHANGELOG_ENTRIES %% -->
 
+## 1.0.1 - 2026-08-08
+
+### Fixed
+
+- Constrain Nx to the supported 0.12 release line so fresh dependency
+  resolution does not select incompatible Nx 0.13 releases.
+
 ## 1.0.0 - 2026-07-08
 
 First stable release. Emily runs `Nx` computations on Apple Silicon
