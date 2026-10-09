@@ -560,7 +560,8 @@ inline mx::array dispatch_op(Opcode op, const std::vector<mx::array> &in,
         static_cast<float>(emily::f64_from_bits(scalar_at(iattrs, 0, "fast_sdpa")));
     std::string mask_mode = scalar_at(iattrs, 1, "fast_sdpa") != 0 ? "causal" : "";
     return mx::fast::scaled_dot_product_attention(
-        in[0], in[1], in[2], scale, mask_mode, std::nullopt, std::nullopt, s);
+        in[0], in[1], in[2], scale, mask_mode, std::nullopt, std::nullopt,
+        /*force_fused=*/false, s);
   }
   case Opcode::FastSDPAMask: {
     if (in.size() != 4) {
@@ -571,7 +572,7 @@ inline mx::array dispatch_op(Opcode op, const std::vector<mx::array> &in,
         emily::f64_from_bits(scalar_at(iattrs, 0, "fast_sdpa_mask")));
     return mx::fast::scaled_dot_product_attention(
         in[0], in[1], in[2], scale, "array", std::optional<mx::array>(in[3]),
-        std::nullopt, s);
+        std::nullopt, /*force_fused=*/false, s);
   }
   case Opcode::FastSDPASinks: {
     if (in.size() != 4) {
@@ -584,7 +585,7 @@ inline mx::array dispatch_op(Opcode op, const std::vector<mx::array> &in,
         scalar_at(iattrs, 1, "fast_sdpa_sinks") != 0 ? "causal" : "";
     return mx::fast::scaled_dot_product_attention(
         in[0], in[1], in[2], scale, mask_mode, std::nullopt,
-        std::optional<mx::array>(in[3]), s);
+        std::optional<mx::array>(in[3]), /*force_fused=*/false, s);
   }
   case Opcode::FastSDPAMaskSinks: {
     if (in.size() != 5) {
@@ -596,7 +597,7 @@ inline mx::array dispatch_op(Opcode op, const std::vector<mx::array> &in,
         emily::f64_from_bits(scalar_at(iattrs, 0, "fast_sdpa_mask_sinks")));
     return mx::fast::scaled_dot_product_attention(
         in[0], in[1], in[2], scale, "array", std::optional<mx::array>(in[3]),
-        std::optional<mx::array>(in[4]), s);
+        std::optional<mx::array>(in[4]), /*force_fused=*/false, s);
   }
   case Opcode::QuantizedMatmul: {
     if (in.size() != 4) {
