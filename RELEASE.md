@@ -10,6 +10,12 @@
   cost in prefill throughput. Off by default; it works in both eager
   and natively compiled code.
 
+### Fixed
+
+- `Emily.Fast.rope_with_freqs/4` rotated by the wrong angles on the
+  Emily backend: MLX expects periods, not the inverse frequencies the
+  function takes. It now matches its documented contract.
+
 ### Changed
 
 - Updated the pinned MLX to 0.32.3. This is a maintenance bump that picks

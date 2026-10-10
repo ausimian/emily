@@ -272,8 +272,14 @@ defmodule Emily.Fast do
     opts = Keyword.validate!(opts, [:dims, traditional: false, scale: 1.0])
     block = struct!(FB.RoPEWithFreqs, opts)
 
-    Nx.block(block, [x, offset, freqs], output_like(x), fn ^block, x, offset, freqs ->
-      rope_freqs_fallback(x, offset, freqs, opts)
+    # `mx::fast::rope` takes the per-pair periods (`base ** (2i / dims)`),
+    # the reciprocal of the inverse frequencies this function accepts.
+    # The block carries periods so both the eager and native-compiled
+    # dispatch can pass them straight through.
+    periods = Nx.divide(1.0, freqs)
+
+    Nx.block(block, [x, offset, periods], output_like(x), fn ^block, x, offset, periods ->
+      rope_freqs_fallback(x, offset, Nx.divide(1.0, periods), opts)
     end)
   end
 
