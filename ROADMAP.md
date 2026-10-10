@@ -62,10 +62,6 @@ modes) are recorded in PLAN. The remaining open items:
 | B4b | FP8 dtype (`to_fp8` / `from_fp8`)                                         | Blocked on Nx upstream | Nx gains FP8, or M16 surfaces a concrete user story |
 | B5  | `ThreadLocalStream` / `set_default_stream`                                | Investigative         | Spike to confirm whether it simplifies the per-worker model |
 
-A defn-callable fallback for `Emily.Fast.einsum/2` (currently
-eager-only) is also open if a user surfaces cross-backend
-composability needs — see PLAN M27.
-
 ## 1.0 release
 
 Tracking checklist:

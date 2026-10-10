@@ -45,12 +45,8 @@ defmodule Emily.Fast do
     * `scaled_dot_product_attention_with_mask/5` — the same with an
       additive bias tensor; also supports `:sinks`.
     * `einsum/2` — `mx::einsum` (variadic operands, path-optimised by
-      MLX). **Eager-only**, not defn-callable: it takes refs directly
-      off Emily-backed tensors and raises on any other backend. There
-      is no defn fallback because writing a correct einsum-string
-      parser (diagonals, ellipsis, contraction ordering) is a non-trivial
-      piece of work we defer until a user asks for cross-backend
-      compatibility.
+      MLX). The fallback parses the equation and contracts the
+      operands pairwise with `Nx.dot/6`.
 
   ## Usage
 
@@ -70,9 +66,7 @@ defmodule Emily.Fast do
 
   import Nx.Defn, only: [deftransform: 2]
 
-  alias Emily.Backend, as: B
   alias Emily.Fast.Block, as: FB
-  alias Emily.Native
   alias Nx.Tensor, as: T
 
   # Every defn-callable helper below is a `deftransform`, not a plain
@@ -710,23 +704,37 @@ defmodule Emily.Fast do
   # =================================================================
 
   @doc """
-  Variadic-operand einsum computed by MLX's path-optimised
-  `mx::einsum` kernel.
+  Einstein summation over a list of operands.
 
   `subscripts` is a standard Einstein-summation equation (e.g.
   `"ij,jk->ik"`, `"bij,bjk->bik"`, `"bhid,bhjd->bhij"`,
   `"ij,jk,kl->il"`). `operands` is the corresponding list of tensors.
 
-  ## Eager-only, not defn-callable
+  On Emily this dispatches to MLX's path-optimised `mx::einsum`, both
+  eagerly and inside `defn` under `Emily.Compiler`. Other backends run a
+  composed fallback that contracts the operands pairwise, left to right,
+  with `Nx.dot/6`. MLX's matmul only supports floating-point types, so
+  on Emily an integer equation that contracts a label raises, as
+  `Nx.dot/2` on integers does. The result has the operands' merged type
+  (`Nx.Type.merge/2`), as with `Nx.dot/2`.
 
-  Unlike the other helpers in this module, `einsum/2` does **not**
-  emit an `Nx.Defn.Expr` node. It takes refs directly off Emily-backed
-  tensors and calls the NIF eagerly, in the same "direct-call helper"
-  style as `Emily.Quantization.quantized_matmul/2`. Every operand must
-  live on `Emily.Backend`; anything else raises `ArgumentError`.
-  Writing a correct einsum-string parser (for diagonals, ellipsis, and
-  contraction ordering) is deferred until a user needs cross-backend
-  compatibility.
+  The equation follows `mx::einsum`'s rules:
+
+    * Labels are the letters `a-z` and `A-Z`; spaces are ignored.
+    * A label repeated within one operand takes that operand's diagonal
+      (`"ii->i"`, or `"ii->"` for the trace).
+    * A label missing from the output is summed out.
+    * Without `->`, the output is every label that appears exactly
+      once, in alphabetical order (uppercase first).
+    * `...` stands for any leading dims. Ellipses align from the right
+      and broadcast against each other, and they lead the output when
+      it is implicit.
+    * A size-1 dim broadcasts against any size for the same label.
+
+  Equations that `mx::einsum` rejects (other characters, more than one
+  `...` in a subscript, a repeated output label, an output label no
+  input has, or mismatched sizes) raise `ArgumentError` when the call
+  is traced, on every backend.
 
   ## Examples
 
@@ -736,31 +744,50 @@ defmodule Emily.Fast do
       iex> Nx.shape(y)
       {2, 4}
 
+  Inside `defn`:
+
+      iex> q = Nx.iota({1, 2, 4, 8}, backend: Emily.Backend, type: :f32)
+      iex> k = Nx.iota({1, 2, 6, 8}, backend: Emily.Backend, type: :f32)
+      iex> y = Nx.Defn.jit_apply(
+      ...>   fn q, k -> Emily.Fast.einsum("...id,...jd->...ij", [q, k]) end,
+      ...>   [q, k]
+      ...> )
+      iex> Nx.shape(y)
+      {1, 2, 4, 6}
+
   """
+  # `Nx.block/4` needs a default fun taking the struct plus one argument
+  # per operand, so `einsum_fallback/3` has one clause per operand count.
+  # Longer operand lists skip the block and always run the composed path.
+  @max_einsum_block_operands 16
+
   @spec einsum(String.t(), [Nx.Tensor.t()]) :: Nx.Tensor.t()
-  def einsum(subscripts, operands) when is_binary(subscripts) and is_list(operands) do
-    refs = Enum.map(operands, &operand_ref!/1)
+  deftransform einsum(subscripts, operands) do
+    unless is_binary(subscripts) and is_list(operands) do
+      raise ArgumentError,
+            "Emily.Fast.einsum/2 expects an equation string and a list of operands, " <>
+              "got: #{inspect(subscripts)}, #{inspect(operands)}"
+    end
 
-    w = Emily.MlxStream.default_worker()
-    out_ref = Native.einsum(w, subscripts, refs)
+    spec = Emily.Fast.Einsum.parse!(subscripts, Enum.map(operands, &Nx.shape/1))
+    type = operands |> Enum.map(&Nx.type/1) |> Enum.reduce(&Nx.Type.merge/2)
 
-    shape = out_ref |> Native.shape() |> List.to_tuple()
-    type = Native.dtype(out_ref)
-
-    %T{
-      data: %B{ref: out_ref},
-      shape: shape,
-      type: type,
-      names: List.duplicate(nil, tuple_size(shape))
-    }
+    if length(operands) > @max_einsum_block_operands do
+      Emily.Fast.Einsum.compose(spec, operands, type)
+    else
+      block = %FB.Einsum{equation: Emily.Fast.Einsum.equation(spec)}
+      output = Nx.template(Emily.Fast.Einsum.output_shape(spec), type)
+      Nx.block(block, operands, output, einsum_fallback(spec, type, length(operands)))
+    end
   end
 
-  defp operand_ref!(%T{data: %B{ref: ref}}), do: ref
+  for n <- 1..@max_einsum_block_operands do
+    args = Macro.generate_arguments(n, __MODULE__)
 
-  defp operand_ref!(%T{data: %other_backend{}}) do
-    raise ArgumentError,
-          "Emily.Fast.einsum/2: every operand must live on Emily.Backend, got a " <>
-            "#{inspect(other_backend)}-backed tensor. Transfer with " <>
-            "`Nx.backend_transfer(t, Emily.Backend)` first."
+    defp einsum_fallback(spec, type, unquote(n)) do
+      fn _block, unquote_splicing(args) ->
+        Emily.Fast.Einsum.compose(spec, unquote(args), type)
+      end
+    end
   end
 end

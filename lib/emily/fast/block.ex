@@ -51,4 +51,11 @@ defmodule Emily.Fast.Block do
     @moduledoc false
     defstruct scale: nil, force_fused: false
   end
+
+  defmodule Einsum do
+    @moduledoc false
+    # `equation` is the explicit, ellipsis-free form from
+    # `Emily.Fast.Einsum.equation/1`.
+    defstruct equation: nil
+  end
 end

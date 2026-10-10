@@ -14,6 +14,12 @@
   own position, for example in batched decode.
 - `Emily.Bumblebee.FastKernels.apply/2` accepts `force_fused_sdpa: true`,
   which passes `force_fused: true` to every rewritten attention layer.
+- `Emily.Fast.einsum/2` can now be called inside `defn`. Under
+  `Emily.Compiler`, evaluated or natively compiled, it still runs MLX's
+  `mx::einsum`. Other backends, such as `Nx.BinaryBackend` and EXLA, run a
+  composed `Nx.dot/6` fallback that handles diagonals, ellipses,
+  broadcasting and implicit output. Equations that `mx::einsum` would
+  reject raise `ArgumentError` on every backend, naming the problem.
 
 ### Fixed
 
@@ -45,6 +51,9 @@
 
 ### Changed
 
+- `Emily.Fast.einsum/2` no longer requires every operand to be on
+  `Emily.Backend`. Operands on other backends run the composed
+  fallback, or are moved to Emily when mixed with Emily tensors.
 - Updated the pinned MLX to 0.32.3. This is a maintenance bump that picks
   up upstream correctness fixes (NaN propagation in arg reductions,
   quantized matmul with a quantized dim that is not a multiple of 32,
