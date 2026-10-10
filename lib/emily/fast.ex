@@ -189,9 +189,11 @@ defmodule Emily.Fast do
   Fused RoPE with the standard geometric-progression theta schedule.
 
   Rotates the trailing `dims` axes of `x` (typically `head_dim`) in
-  position-indexed planes. `offset` is a scalar integer tensor
-  (usually `Nx.tensor(0)` for prompt-processing, or the KV-cache
-  length for incremental decode).
+  position-indexed planes. `offset` is an integer tensor holding the
+  position of the first token: a scalar (usually `Nx.tensor(0)` for
+  prompt processing, or the KV-cache length for incremental decode),
+  or a `{batch}` vector giving each entry along the leading axis of
+  `x` its own offset.
 
   `opts`:
 
@@ -246,6 +248,7 @@ defmodule Emily.Fast do
   Use this overload when the model applies a non-standard scaling
   strategy to the base frequencies (e.g. Llama-3, LongRoPE, linear,
   dynamic). `freqs` must be a 1-D `:f32` tensor of length `dims / 2`.
+  `offset` is a scalar or `{batch}` vector, as in `rope/3`.
 
   `opts`:
 
@@ -272,8 +275,14 @@ defmodule Emily.Fast do
     opts = Keyword.validate!(opts, [:dims, traditional: false, scale: 1.0])
     block = struct!(FB.RoPEWithFreqs, opts)
 
-    Nx.block(block, [x, offset, freqs], output_like(x), fn ^block, x, offset, freqs ->
-      rope_freqs_fallback(x, offset, freqs, opts)
+    # `mx::fast::rope` takes the per-pair periods (`base ** (2i / dims)`),
+    # the reciprocal of the inverse frequencies this function accepts.
+    # The block carries periods so both the eager and native-compiled
+    # dispatch can pass them straight through.
+    periods = Nx.divide(1.0, freqs)
+
+    Nx.block(block, [x, offset, periods], output_like(x), fn ^block, x, offset, periods ->
+      rope_freqs_fallback(x, offset, Nx.divide(1.0, periods), opts)
     end)
   end
 
@@ -293,12 +302,20 @@ defmodule Emily.Fast do
     rank = tuple_size(shape)
     seq_len = elem(shape, rank - 2)
 
-    positions =
-      Nx.iota({seq_len}, type: :f32)
-      |> Nx.multiply(scale)
-      |> Nx.add(Nx.as_type(offset, :f32))
+    positions = Nx.iota({seq_len}, type: :f32)
+    offset = Nx.as_type(offset, :f32)
 
-    angle = Nx.outer(positions, inv_freq)
+    # A scalar offset shifts every sequence alike; a {batch} offset
+    # shifts each entry along x's leading axis, giving {batch, seq}.
+    # Like MLX, scale the whole position, offset included.
+    positions =
+      case Nx.rank(offset) do
+        0 -> Nx.add(positions, offset)
+        1 -> Nx.add(Nx.new_axis(positions, 0), Nx.new_axis(offset, 1))
+      end
+      |> Nx.multiply(scale)
+
+    angle = Nx.multiply(Nx.new_axis(positions, -1), inv_freq)
     cos = Nx.cos(angle)
     sin = Nx.sin(angle)
 
@@ -347,12 +364,18 @@ defmodule Emily.Fast do
     Nx.reshape(stacked, shape)
   end
 
-  # cos/sin arrive as {seq, half}; target is {..., seq, half}.
+  # cos/sin arrive as {seq, half}, or {batch, seq, half} for a
+  # per-batch offset; target is {batch, ..., seq, half}.
   defp broadcast_trig(trig, target) do
     target_shape = Nx.shape(target)
     rank = tuple_size(target_shape)
-    pad_axes = rank - 2
-    trig_shape = List.duplicate(1, pad_axes) ++ Tuple.to_list(Nx.shape(trig))
+
+    trig_shape =
+      case Nx.shape(trig) do
+        {seq, half} -> List.duplicate(1, rank - 2) ++ [seq, half]
+        {batch, seq, half} -> [batch | List.duplicate(1, rank - 3)] ++ [seq, half]
+      end
+
     Nx.broadcast(Nx.reshape(trig, List.to_tuple(trig_shape)), target_shape)
   end
 
@@ -473,7 +496,7 @@ defmodule Emily.Fast do
       if causal do
         q_len = Nx.axis_size(q, -2)
         k_len = Nx.axis_size(k, -2)
-        mask = Nx.less_equal(Nx.iota({q_len, 1}), Nx.iota({1, k_len}))
+        mask = causal_keep_mask(q_len, k_len)
 
         bias =
           Nx.select(
@@ -491,6 +514,12 @@ defmodule Emily.Fast do
     Nx.dot(probs, [-1], [0, 1], v, [-2], [0, 1])
   end
 
+  # MLX's causal mask is aligned to the bottom-right: query `i` sees
+  # keys `0..(k_len - q_len + i)`, so the last query sees every key.
+  defp causal_keep_mask(q_len, k_len) do
+    Nx.greater_equal(Nx.add(Nx.iota({q_len, 1}), k_len - q_len), Nx.iota({1, k_len}))
+  end
+
   defp sdpa_sinks_fallback(q, k, v, sinks, opts) do
     scale = opts[:scale]
     causal = opts[:causal]
@@ -503,7 +532,7 @@ defmodule Emily.Fast do
       if causal do
         q_len = Nx.axis_size(q, -2)
         k_len = Nx.axis_size(k, -2)
-        mask = Nx.less_equal(Nx.iota({q_len, 1}), Nx.iota({1, k_len}))
+        mask = causal_keep_mask(q_len, k_len)
 
         bias =
           Nx.select(
