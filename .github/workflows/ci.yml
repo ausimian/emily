@@ -305,8 +305,9 @@ jobs:
   # latest patch release. The NIF is recompiled per cell because it builds
   # against that OTP's erl_nif headers. MLX is not: like clang-tidy, the
   # MLX cache is restore-only and its restore-keys fall back to main's
-  # install, so MLX only rebuilds when `@mlx_version` changes. `_build` is
-  # deliberately not cached so each cell is a clean compile.
+  # install, so MLX only rebuilds when `@mlx_version` changes. Compiled
+  # deps are cached per resolved Elixir/OTP pair, but Emily's own `_build`
+  # output is excluded so every cell compiles the project from clean.
   compat:
     name: compat (elixir ${{ matrix.elixir }}, otp ${{ matrix.otp }})
     if: github.event_name != 'push' || github.ref_type == 'branch'
@@ -336,6 +337,7 @@ jobs:
         run: sudo xcode-select -s /Applications/Xcode_16.2.app
 
       - name: Setup Beam
+        id: beam
         uses: erlef/setup-beam@v1
         with:
           otp-version: ${{ matrix.otp }}
@@ -355,7 +357,35 @@ jobs:
           key: mlx-${{ runner.os }}-aot-${{ hashFiles('c_src/**', 'Makefile', 'mix.exs', 'scripts/build-mlx.sh') }}
           restore-keys: mlx-${{ runner.os }}-aot-
 
+      # Keyed by the versions setup-beam actually resolved (not the
+      # matrix's minor/major), since Mix rebuilds every dep when the
+      # Elixir or OTP version changes.
+      - name: Restore built deps
+        id: built-deps
+        uses: actions/cache/restore@v5
+        with:
+          path: |
+            _build/test/lib
+            !_build/test/lib/emily
+          key: compat-deps-${{ runner.os }}-elixir-${{ steps.beam.outputs.elixir-version }}-otp-${{ steps.beam.outputs.otp-version }}-${{ hashFiles('mix.lock') }}
+          restore-keys: compat-deps-${{ runner.os }}-elixir-${{ steps.beam.outputs.elixir-version }}-otp-${{ steps.beam.outputs.otp-version }}-
+
       - run: mix deps.get
+
+      # Compiles only stale deps; a plain `mix deps.compile` would rebuild
+      # every dep even on a cache hit.
+      - run: mix deps.loadpaths
+
+      # Saved before the project compile so a cell that fails on Emily's
+      # own warnings still caches its deps.
+      - name: Save built deps
+        if: steps.built-deps.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v5
+        with:
+          path: |
+            _build/test/lib
+            !_build/test/lib/emily
+          key: ${{ steps.built-deps.outputs.cache-primary-key }}
 
       - run: mix compile --warnings-as-errors
 
