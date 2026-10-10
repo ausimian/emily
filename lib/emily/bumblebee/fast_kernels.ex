@@ -43,14 +43,20 @@ if Code.ensure_loaded?(Axon) and Code.ensure_loaded?(Bumblebee.Layers) do
       * `:layer_norm` (Axon's built-in normalization layer).
       * `Bumblebee.Layers.apply_rotary_embedding/5` — supports the
         default schedule plus the `:linear`, `:dynamic`, `:longrope`,
-        `:llama3` scaling strategies. Inverse frequencies are
-        precomputed Elixir-side using Bumblebee's own helpers and
-        passed to `mx::fast::rope` via the `freqs`-override overload.
+        `:llama3` scaling strategies, following Bumblebee's own
+        schedules. Scaled inverse frequencies are precomputed at
+        rewrite time and passed to `mx::fast::rope` via the
+        `freqs`-override overload. The fused kernel runs for
+        single-token calls (cached decode), with each row's position as
+        its offset; multi-token calls such as prefill rotate by the
+        explicit `position_ids`, so padded and batched inputs keep
+        Bumblebee's per-token positions.
       * `Bumblebee.Layers.attention_output_impl/3` — coalesced with
         its sibling `attention_weights_impl/7` into a single
         `mx::fast::scaled_dot_product_attention` dispatch. Mask
-        translation: causal + window + key/head/bias collapsed to one
-        additive `array` mask.
+        translation: plain and causal self-attention use MLX's built-in
+        modes; anything else (key mask, bias, sliding window, or a
+        cache offset) is collapsed into one additive `array` mask.
 
     ## What's *not* rewritten
 
@@ -62,10 +68,12 @@ if Code.ensure_loaded?(Axon) and Code.ensure_loaded?(Bumblebee.Layers) do
         training paths continue using composed defn.
     """
 
+    alias Nx.Defn.Expr
+
     # Bumblebee's RoPE / attention impls are `defnp` (private), so we
     # can't capture them as `&BL.x/n` from outside the module. Instead
     # we identify a captured op by its `{module, function, arity}` via
-    # `:erlang.fun_info/1`.
+    # `Function.info/2`.
     @rope_mfa {Bumblebee.Layers, :apply_rotary_embedding, 5}
     @attention_output_mfa {Bumblebee.Layers, :attention_output_impl, 3}
 
@@ -145,28 +153,26 @@ if Code.ensure_loaded?(Axon) and Code.ensure_loaded?(Bumblebee.Layers) do
     # Bumblebee's apply_rotary_embedding/5 takes (query, key,
     # position_ids, attention_mask, opts) and returns
     # {rotated_query, rotated_key} as a tuple. We replace it with a
-    # function that does the same shape contract but precomputes
-    # inv_frequency Elixir-side (cheap, runs once per layer per call)
-    # and dispatches to the fused MLX rope kernel for each of Q/K.
+    # function that has the same shape contract. Scaled schedules get
+    # their inverse frequencies precomputed once at rewrite time.
     #
-    # The fused MLX kernel rotates the trailing `dims` of x; Bumblebee
-    # passes Q/K shaped {batch, seq, heads, head_dim} and applies
-    # rotation across the head_dim axis. That matches MLX's contract
-    # directly — no transpose required.
+    # `position_ids` can hold any per-token positions: Bumblebee's
+    # generation derives them from the attention mask, so padded or
+    # batched prompts are neither contiguous nor equal across rows. The
+    # fused kernel only takes one starting position per batch entry, so
+    # it handles single-token calls (cached decode, the hot path), and
+    # longer calls rotate by their explicit positions instead.
 
     @doc false
     def apply_rope(%Axon{} = model) do
       Axon.map_nodes(model, fn
         %Axon.Node{op: op, opts: opts} = node ->
           if fn_mfa(op) == @rope_mfa do
-            # Precompute the freqs tensor once at rewrite time and
-            # stash it into the node's opts so the per-layer-per-token
-            # hot path (`fast_rope_impl`) can grab it directly instead
-            # of redoing the Enum/to_flat_list arithmetic on every
-            # call. Skipped for the standard (nil) schedule — that path
-            # uses MLX's internal base/theta, no freqs needed.
-            freqs = precompute_freqs(opts)
-            new_opts = Keyword.put(opts, :precomputed_freqs, freqs)
+            # Stash the precomputed freqs in the node's opts so the
+            # per-layer-per-token hot path (`fast_rope_impl`) can grab
+            # them directly instead of redoing the arithmetic on every
+            # call.
+            new_opts = Keyword.put(opts, :precomputed_freqs, precompute_freqs(opts))
             %{node | op: &fast_rope_impl/5, opts: new_opts}
           else
             node
@@ -177,23 +183,64 @@ if Code.ensure_loaded?(Axon) and Code.ensure_loaded?(Bumblebee.Layers) do
       end)
     end
 
+    # Mirrors the inv_frequency branches of
+    # Bumblebee.Layers.create_sinusoidal_positions/5. Returns `nil` when
+    # the frequencies follow from `base` alone (the default schedule and
+    # `:dynamic`, which only changes `base`), a tensor for a fixed
+    # schedule, or `{short, long}` tensors for `:longrope`, which picks
+    # one per call by sequence length.
+    #
+    # Everything is built on Nx.BinaryBackend so the tensors can be
+    # embedded in the traced defn as constants (see `freqs_constant/2`).
     defp precompute_freqs(opts) do
-      case Keyword.get(opts, :scaling_strategy) do
-        nil ->
-          nil
+      Nx.with_default_backend(Nx.BinaryBackend, fn -> scaled_inv_frequency(opts) end)
+    end
 
-        strategy ->
-          inv_frequency_for(
-            strategy,
-            opts[:size],
-            opts[:base] || 10_000,
-            opts[:max_positions] || 2048
+    defp scaled_inv_frequency(opts) do
+      dims = opts[:size]
+      base = opts[:base] || 10_000
+
+      case Keyword.get(opts, :scaling_strategy) do
+        %{type: :linear, factor: factor} ->
+          # Bumblebee divides positions by `factor`, which is the same
+          # angle as dividing the inverse frequencies by it.
+          default_inv_frequency(base, dims) |> Nx.divide(factor)
+
+        %{type: :longrope, short_factor: short_factor, long_factor: long_factor} ->
+          inv_frequency = default_inv_frequency(base, dims)
+
+          {Nx.divide(
+             inv_frequency,
+             Nx.tensor(short_factor, type: :f32)
+           ), Nx.divide(inv_frequency, Nx.tensor(long_factor, type: :f32))}
+
+        %{
+          type: :llama3,
+          factor: factor,
+          low_frequency_factor: low_freq_factor,
+          high_frequency_factor: high_freq_factor,
+          original_max_positions: orig_max_pos
+        } ->
+          llama3_inv_frequency(
+            default_inv_frequency(base, dims),
+            factor,
+            low_freq_factor,
+            high_freq_factor,
+            orig_max_pos
           )
+
+        _other ->
+          nil
       end
     end
 
+    defp default_inv_frequency(base, dims) do
+      range = Nx.iota({div(dims, 2)}, type: :f32) |> Nx.multiply(2) |> Nx.divide(dims)
+      Nx.divide(1.0, Nx.pow(base, range))
+    end
+
     @doc false
-    def fast_rope_impl(query, key, position_ids, _attention_mask, opts \\ []) do
+    def fast_rope_impl(query, key, position_ids, attention_mask, opts \\ []) do
       opts =
         Keyword.validate!(opts, [
           :size,
@@ -204,105 +251,138 @@ if Code.ensure_loaded?(Axon) and Code.ensure_loaded?(Bumblebee.Layers) do
           base: 10_000
         ])
 
-      dims = opts[:size]
-      base = opts[:base]
-      freqs = opts[:precomputed_freqs]
-
-      # Position offset: Bumblebee's apply_rotary_embedding ignores
-      # position_ids most of the time (position 0..seq_len-1 implicit
-      # in its sin/cos table), but for KV-cache decode it matters. The
-      # fused kernel takes a scalar offset; we read the first position
-      # and assume contiguous positions from there. This is what
-      # Bumblebee's own decode loop does.
-      offset_scalar =
-        case Nx.shape(position_ids) do
-          {} -> position_ids
-          _ -> position_ids |> Nx.flatten() |> Nx.slice([0], [1]) |> Nx.squeeze(axes: [0])
+      # Same rule as Bumblebee: during cached decode position_ids only
+      # covers the new tokens, but the attention mask spans the whole
+      # sequence. The `:dynamic` and `:longrope` schedules depend on it.
+      sequence_length =
+        case attention_mask do
+          %Axon.None{} -> Nx.axis_size(position_ids, 1)
+          _ -> Nx.axis_size(attention_mask, 1)
         end
 
-      if freqs do
-        # Scaled schedule: freqs was computed once at rewrite time.
-        q =
-          Emily.Fast.rope_with_freqs(query, offset_scalar, freqs, dims: dims, traditional: false)
+      {schedule, amplitude} = rope_schedule(opts, sequence_length)
+      dims = opts[:size]
 
-        k = Emily.Fast.rope_with_freqs(key, offset_scalar, freqs, dims: dims, traditional: false)
-        {q, k}
+      rotate =
+        case Nx.shape(position_ids) do
+          {batch, 1} ->
+            # One token per row: each row's position is exactly a
+            # per-batch offset for the fused kernel.
+            offset = Nx.reshape(position_ids, {batch})
+            &fused_rope(&1, offset, schedule, dims)
+
+          _ ->
+            &explicit_rope(&1, position_ids, schedule, dims)
+        end
+
+      # Bumblebee's `:longrope` scales cos and sin by `amplitude`, which
+      # scales the rotated output by the same factor.
+      scale = fn x -> if amplitude == 1.0, do: x, else: Nx.multiply(x, amplitude) end
+
+      {scale.(rotate.(query)), scale.(rotate.(key))}
+    end
+
+    # Resolves the frequency schedule for one call, as
+    # `{{:base, base} | {:freqs, inv_freq}, amplitude}`.
+    defp rope_schedule(opts, sequence_length) do
+      dims = opts[:size]
+      max_positions = opts[:max_positions]
+
+      case {opts[:scaling_strategy], opts[:precomputed_freqs]} do
+        {%{type: :dynamic, factor: factor}, _} when sequence_length > max_positions ->
+          # Mirrors Bumblebee's base adjustment for sequences longer
+          # than max_positions, including its operator order.
+          base =
+            :math.pow(
+              opts[:base] * (factor * sequence_length / max_positions - (factor - 1)),
+              dims / (dims - 2)
+            )
+
+          {{:base, base}, 1.0}
+
+        {%{type: :longrope} = strategy, {short_freqs, long_freqs}} ->
+          freqs =
+            if sequence_length > strategy.original_max_positions,
+              do: long_freqs,
+              else: short_freqs
+
+          {{:freqs, freqs},
+           longrope_cos_sin_factor(max_positions, strategy.original_max_positions)}
+
+        {_strategy, nil} ->
+          {{:base, opts[:base]}, 1.0}
+
+        {_strategy, freqs} ->
+          {{:freqs, freqs}, 1.0}
+      end
+    end
+
+    defp longrope_cos_sin_factor(max_positions, original_max_positions) do
+      scale = max_positions / original_max_positions
+
+      if scale <= 1.0 do
+        1.0
       else
-        # Standard schedule: MLX computes freqs internally from `base`.
-        q =
-          Emily.Fast.rope(query, offset_scalar, dims: dims, traditional: false, base: base * 1.0)
-
-        k = Emily.Fast.rope(key, offset_scalar, dims: dims, traditional: false, base: base * 1.0)
-        {q, k}
+        :math.sqrt(:math.log(scale) / :math.log(original_max_positions) + 1.0)
       end
     end
 
-    # Mirrors Bumblebee.Layers.create_sinusoidal_positions/5 inv_freq
-    # branch — but we only need the frequency vector, not cos/sin.
-    defp inv_frequency_for(strategy, dims, base, max_positions) do
-      range = Nx.iota({div(dims, 2)}) |> Nx.multiply(2) |> Nx.divide(dims)
+    # Fused kernel on a {batch, seq, heads, head_dim} tensor. It takes
+    # positions from axis -2, hence the transposes.
+    defp fused_rope(x, offset, schedule, dims) do
+      x = Nx.transpose(x, axes: [0, 2, 1, 3])
 
-      case strategy do
-        %{type: :linear, factor: _factor} ->
-          # `:linear` only divides position by `factor` — inv_freq
-          # itself is unchanged from the default.
-          Nx.divide(1.0, Nx.pow(base, range))
+      rotated =
+        case schedule do
+          {:base, base} ->
+            Emily.Fast.rope(x, offset, dims: dims, traditional: false, base: base * 1.0)
 
-        %{type: :dynamic, factor: _factor} ->
-          # Dynamic scaling adjusts base only when sequence_length
-          # exceeds max_positions; precompute with the base unchanged
-          # for the common case. Unsafe for very long contexts; out of
-          # scope for v1 (would need runtime base recomputation per
-          # call).
-          Nx.divide(1.0, Nx.pow(base, range))
+          {:freqs, freqs} ->
+            Emily.Fast.rope_with_freqs(x, offset, freqs_constant(freqs, x),
+              dims: dims,
+              traditional: false
+            )
+        end
 
-        %{
-          type: :longrope,
-          short_factor: short_factor,
-          original_max_positions: original_max_positions
-        } ->
-          # We can't tell at trace time whether we're above
-          # original_max_positions, so default to short_factor (the
-          # below-threshold schedule). Models past their training
-          # length get treated as if they're inside it — which matches
-          # how Bumblebee handles the default-allocated cache.
-          factor = Nx.tensor(short_factor, type: :f32)
-          scale = max_positions / original_max_positions
-
-          cos_sin_factor =
-            if scale <= 1.0 do
-              1.0
-            else
-              (:math.log(scale) / :math.log(original_max_positions) + 1.0)
-              |> :math.sqrt()
-            end
-
-          Nx.pow(base, range)
-          |> then(&Nx.divide(1.0, &1))
-          |> Nx.divide(factor)
-          |> Nx.multiply(cos_sin_factor)
-
-        %{
-          type: :llama3,
-          factor: factor,
-          low_frequency_factor: low_freq_factor,
-          high_frequency_factor: high_freq_factor,
-          original_max_positions: orig_max_pos
-        } ->
-          inv_freq_base = Nx.divide(1.0, Nx.pow(base, range))
-
-          llama3_inv_frequency(
-            inv_freq_base,
-            factor,
-            low_freq_factor,
-            high_freq_factor,
-            orig_max_pos
-          )
-
-        _other ->
-          Nx.divide(1.0, Nx.pow(base, range))
-      end
+      Nx.transpose(rotated, axes: [0, 2, 1, 3])
     end
+
+    # Bumblebee's rotation at arbitrary per-token positions, computing
+    # the angles for the given positions only rather than a table over
+    # the whole sequence.
+    defp explicit_rope(x, position_ids, schedule, dims) do
+      inv_freq =
+        case schedule do
+          {:base, base} ->
+            Nx.with_default_backend(Nx.BinaryBackend, fn -> default_inv_frequency(base, dims) end)
+
+          {:freqs, freqs} ->
+            freqs
+        end
+
+      angle =
+        position_ids
+        |> Nx.as_type(:f32)
+        |> Nx.new_axis(-1)
+        |> Nx.multiply(freqs_constant(inv_freq, x))
+
+      angle = Nx.concatenate([angle, angle], axis: -1) |> Nx.new_axis(2)
+      cos = angle |> Nx.cos() |> Nx.as_type(Nx.type(x))
+      sin = angle |> Nx.sin() |> Nx.as_type(Nx.type(x))
+
+      half = div(Nx.axis_size(x, -1), 2)
+      x1 = Nx.slice_along_axis(x, 0, half, axis: -1)
+      x2 = Nx.slice_along_axis(x, half, half, axis: -1)
+      rotated_half = Nx.concatenate([Nx.negate(x2), x1], axis: -1)
+
+      Nx.add(Nx.multiply(x, cos), Nx.multiply(rotated_half, sin))
+    end
+
+    # The precomputed freqs are a concrete tensor, but Axon calls the
+    # layer impl while tracing, where every operand must be an
+    # expression.
+    defp freqs_constant(freqs, %Nx.Tensor{data: %Expr{}}), do: Expr.tensor(freqs)
+    defp freqs_constant(freqs, _x), do: freqs
 
     # Reimplementation of Bumblebee.Layers.llama3_inv_frequency/5 that
     # works on a concrete tensor (not a defn'd one). It runs Elixir-side
@@ -380,23 +460,29 @@ if Code.ensure_loaded?(Axon) and Code.ensure_loaded?(Bumblebee.Layers) do
       build_fused_attention(weights_axon, value_axon)
     end
 
-    # Decompose a captured external function into `{module, name,
-    # arity}`, or return `nil` for anonymous / local closures (and for
-    # non-function ops like atom-keyed built-ins).
+    # Decompose a captured named function into `{module, name, arity}`,
+    # or return `nil` for anonymous closures (and for non-function ops
+    # like atom-keyed built-ins).
+    #
+    # Bumblebee captures its impls from inside its own module
+    # (`&attention_output_impl/3`), which yields a `:local` fun, not an
+    # `:external` one. `Function.info/2` still reports the real module,
+    # name and arity for those; anonymous funs get a compiler-generated
+    # name like `-attention/8-fun-0-`.
     defp fn_mfa(fun) when is_function(fun) do
-      case Function.info(fun, :type) do
-        {:type, :external} ->
-          {:module, m} = Function.info(fun, :module)
-          {:name, n} = Function.info(fun, :name)
-          {:arity, a} = Function.info(fun, :arity)
-          {m, n, a}
+      {:module, m} = Function.info(fun, :module)
+      {:name, n} = Function.info(fun, :name)
+      {:arity, a} = Function.info(fun, :arity)
 
-        _ ->
-          nil
+      case Function.info(fun, :type) do
+        {:type, :external} -> {m, n, a}
+        {:type, :local} -> if anonymous_fun_name?(n), do: nil, else: {m, n, a}
       end
     end
 
     defp fn_mfa(_), do: nil
+
+    defp anonymous_fun_name?(name), do: String.starts_with?(Atom.to_string(name), "-")
 
     # Walk back from the `weights` input (a dropout layer wrapping the
     # attention_weights_impl call) and extract the original Q/K/mask/etc
@@ -466,20 +552,19 @@ if Code.ensure_loaded?(Axon) and Code.ensure_loaded?(Bumblebee.Layers) do
       k_seq = Nx.axis_size(k, -2)
       type = Nx.type(q)
 
-      offset_scalar = ensure_offset_scalar(offset)
-
-      mask = build_attention_mask(key_mask, bias, offset_scalar, opts, q_seq, k_seq, type)
+      mask = build_attention_mask(key_mask, bias, offset, opts, q_seq, k_seq, type)
+      sdpa_opts = [scale: scale]
 
       out_bhsd =
         case mask do
           :none ->
-            Emily.Fast.scaled_dot_product_attention(q, k, v, scale: scale, causal: false)
+            Emily.Fast.scaled_dot_product_attention(q, k, v, [causal: false] ++ sdpa_opts)
 
           :causal ->
-            Emily.Fast.scaled_dot_product_attention(q, k, v, scale: scale, causal: true)
+            Emily.Fast.scaled_dot_product_attention(q, k, v, [causal: true] ++ sdpa_opts)
 
           %Nx.Tensor{} = additive ->
-            Emily.Fast.scaled_dot_product_attention_with_mask(q, k, v, additive, scale: scale)
+            Emily.Fast.scaled_dot_product_attention_with_mask(q, k, v, additive, sdpa_opts)
         end
 
       out = Nx.transpose(out_bhsd, axes: [0, 2, 1, 3])
@@ -490,9 +575,9 @@ if Code.ensure_loaded?(Axon) and Code.ensure_loaded?(Bumblebee.Layers) do
 
         _ ->
           head_mask = Nx.reshape(head_mask, {1, :auto, 1, 1})
-          # head_mask is applied to weights in Bumblebee — we approximate
-          # by scaling the per-head outputs. This is exact only when
-          # head_mask is 0/1; fractional values diverge slightly.
+          # Bumblebee scales the per-head weights by head_mask before
+          # multiplying by V. Scaling the per-head outputs instead is
+          # equivalent, since the weights-by-V product is linear.
           out
           |> Nx.transpose(axes: [0, 2, 1, 3])
           |> Nx.multiply(head_mask)
@@ -507,22 +592,40 @@ if Code.ensure_loaded?(Axon) and Code.ensure_loaded?(Bumblebee.Layers) do
     # Replicates the mask-construction in attention_weights_impl.
     # Returns one of :none, :causal, or an additive %Nx.Tensor{}.
     defp build_attention_mask(key_mask, bias, offset, opts, q_seq, k_seq, type) do
-      case classify_mask(key_mask, bias, opts) do
-        :none -> :none
-        :causal -> :causal
-        :array -> additive_mask(key_mask, bias, offset, opts, q_seq, k_seq, type)
+      case classify_mask(key_mask, bias, offset, opts, q_seq, k_seq) do
+        :none ->
+          :none
+
+        :causal ->
+          :causal
+
+        :array ->
+          offset = ensure_offset_scalar(offset)
+          additive_mask(key_mask, bias, offset, opts, q_seq, k_seq, type)
       end
     end
 
-    defp classify_mask(key_mask, bias, opts) do
-      plain? = key_mask == %Axon.None{} and bias == %Axon.None{} and opts[:window_size] == nil
+    # MLX's built-in causal mask aligns the last query with the last
+    # key and knows nothing about Bumblebee's cache `offset`. It only
+    # matches Bumblebee's causal mask (query i sees keys 0..offset+i)
+    # when there is no offset and Q and K have the same length; in every
+    # other causal case, such as decoding against a preallocated KV
+    # cache, we build the mask explicitly.
+    defp classify_mask(key_mask, bias, offset, opts, q_seq, k_seq) do
+      plain? = none?(key_mask) and none?(bias) and opts[:window_size] == nil
+      aligned? = none?(offset) and q_seq == k_seq
 
       cond do
         plain? and opts[:causal] != true -> :none
-        plain? and opts[:causal] == true -> :causal
+        plain? and aligned? -> :causal
         true -> :array
       end
     end
+
+    # Absent optional inputs arrive as `%Axon.None{__propagate__: false}`,
+    # so match on the struct rather than comparing to `%Axon.None{}`.
+    defp none?(%Axon.None{}), do: true
+    defp none?(_), do: false
 
     defp additive_mask(key_mask, bias, offset, opts, q_seq, k_seq, type) do
       key_mask_tensor = resolve_key_mask(key_mask)

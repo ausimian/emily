@@ -15,6 +15,15 @@
 
 ### Fixed
 
+- `Emily.Bumblebee.FastKernels.apply/1` now rewrites the attention and
+  RoPE layers of Bumblebee models. Before, it only rewrote RMSNorm and
+  LayerNorm: it never recognised Bumblebee's attention and RoPE layers,
+  so the fused SDPA and RoPE kernels never ran. Decoder models such as
+  Qwen3 now get the fused kernels, whose advantage grows with context
+  length. The newly active paths are checked against stock Bumblebee,
+  including the `:linear`, `:dynamic`, `:longrope` and `:llama3` RoPE
+  scaling strategies, padded and batched position ids, and causal decode
+  against a KV cache.
 - `Emily.Fast.rope_with_freqs/4` rotated by the wrong angles on the
   Emily backend: MLX expects periods, not the inverse frequencies the
   function takes. It now matches its documented contract.
