@@ -11,7 +11,7 @@ defmodule Emily.Bumblebee.FastKernelsTest do
 
   Conformance against full Bumblebee transformer models lives in
   `test/emily/conformance/*_full_test.exs` (opt-in via the
-  `:fast_kernels_full` tag).
+  `:fast_kernels_full` tag, and `:qwen3_full` for Qwen3).
   """
 
   use ExUnit.Case, async: true

@@ -14,7 +14,7 @@ on:
   workflow_dispatch:
     inputs:
       run_full_tests:
-        description: 'Run full model tests (whisper_full, vit_full, distilbert_full, training_full, fast_kernels_full)'
+        description: 'Run full model tests (whisper_full, vit_full, distilbert_full, training_full, fast_kernels_full, qwen3_full)'
         type: boolean
         default: true
 
@@ -217,6 +217,9 @@ jobs:
 
       - name: fast_kernels_full
         run: mix test --only fast_kernels_full
+
+      - name: qwen3_full
+        run: mix test --only qwen3_full
 
   # C++ static analysis of the NIF sources with cppcheck. Kept separate
   # from the precommit lane on purpose: the `cppcheck` Makefile target
