@@ -100,18 +100,6 @@ std::vector<mx::array> replay_program(const Program &prog,
                                       const std::vector<mx::array> &inputs,
                                       mx::Stream &s, const ReplayCtx &ctx = {});
 
-// True iff any *top-level* instruction of `prog` is a `while`. mx::compile
-// can't trace a data-dependent host loop, so a (sub-)program containing one
-// is replayed host-controlled rather than wrapped whole.
-bool contains_top_level_while(const Program &prog) {
-  for (const auto &instr : prog.instrs) {
-    if (instr.opcode == Opcode::While) {
-      return true;
-    }
-  }
-  return false;
-}
-
 // Fetch (building on first use) `prog`'s per-stream-cached `mx::compile`'d
 // replay callable. The compiled graph bakes in `prog`'s captured weights and
 // the stream, so the cache is keyed by stream index; `worker` is stored in
@@ -211,8 +199,7 @@ std::vector<mx::array> replay_program(const Program &prog,
       // across iterations (same body program + stream), so hoisting it keeps
       // the per-token loop from re-locking the compile cache and copying the
       // std::function every step. Empty when not fusing -> raw replay below.
-      const bool fuse_body =
-          ctx.fuse_loops && !contains_top_level_while(body_p);
+      const bool fuse_body = ctx.fuse_loops && !body_p.has_top_level_while;
       Program::CompiledFn body_fn =
           fuse_body ? compiled_callable(body_p, s, ctx.worker)
                     : Program::CompiledFn{};
@@ -403,6 +390,7 @@ compile_program(ErlNifEnv *, int64_t n_inputs,
             ") must equal the loop-carried state size (" +
             std::to_string(out_count) + ")");
       }
+      prog->has_top_level_while = true;
     }
 
     prog->instrs.push_back(CompiledInstr{op, std::move(operands[i]),
@@ -476,7 +464,7 @@ fine::Term eval_program_nif(ErlNifEnv *env, fine::ResourcePtr<WorkerThread> w,
           // path, an mx::compile'd replay cached per stream. Either way the
           // captures stay constant and shapes are stable -> cache hits.
           // `mx::eval` only (no async): compiled callables return lazy roots.
-          if (contains_top_level_while(*prog)) {
+          if (prog->has_top_level_while) {
             ReplayCtx ctx;
             ctx.fuse_loops = true;
             ctx.worker = worker_state;
