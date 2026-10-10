@@ -40,6 +40,8 @@
 - The defn fallback of `Emily.Fast.rope/3` and `rope_with_freqs/4` (used
   on non-Emily backends) added the offset after applying `:scale`; it now
   scales the whole position, as MLX does.
+- Emily now compiles without warnings on Elixir 1.20. Its type checker
+  flagged an unreachable clause in `mix emily.doctor` (#195).
 
 ### Changed
 
