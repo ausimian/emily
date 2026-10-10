@@ -37,6 +37,12 @@
   including the `:linear`, `:dynamic`, `:longrope` and `:llama3` RoPE
   scaling strategies, padded and batched position ids, and causal decode
   against a KV cache.
+- `Emily.Bumblebee.FastKernels.apply/1` now fuses attention in models
+  whose checkpoint sets a nonzero attention dropout rate, such as
+  DistilBERT and other BERT-family models. Before, it left those
+  attention layers unfused, although dropout does nothing at inference
+  (#221). The fused layer applies no dropout, so train with the stock
+  model rather than a rewritten one.
 - `Emily.Fast.rope_with_freqs/4` rotated by the wrong angles on the
   Emily backend: MLX expects periods, not the inverse frequencies the
   function takes. It now matches its documented contract.

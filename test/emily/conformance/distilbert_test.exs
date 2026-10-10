@@ -37,6 +37,7 @@ defmodule Emily.Conformance.DistilbertTest do
     only: [assert_all_close: 2, assert_all_close: 3, mode_test: 2, mode_test: 3]
 
   alias Emily.Bumblebee.FastKernels
+  alias Emily.FastKernelsRewrites
 
   @moduletag :conformance
   @moduletag capture_log: true
@@ -200,6 +201,14 @@ defmodule Emily.Conformance.DistilbertTest do
 
     fast_model = FastKernels.apply(model)
 
+    # The checkpoint's attention dropout rate is 0.1, which must not
+    # stop the attention layers being fused. Two LayerNorms and one
+    # attention per block, plus the embeddings norm.
+    blocks = spec.num_blocks
+
+    assert FastKernelsRewrites.counts(fast_model) ==
+             %{fast_layer_norm_impl: 2 * blocks + 1, fast_sdpa_impl: blocks}
+
     inputs = %{
       "input_ids" => Nx.tensor([[10, 20, 30, 40, 50, 60, 70, 80, 0, 0]]),
       "attention_mask" => Nx.tensor([[1, 1, 1, 1, 1, 1, 1, 1, 0, 0]])
@@ -209,8 +218,8 @@ defmodule Emily.Conformance.DistilbertTest do
 
     assert Nx.shape(outputs.hidden_state) == {1, 10, 32}
 
-    # DistilBERT has LayerNorm but no RMSNorm or RoPE; this primarily
-    # exercises the fused LayerNorm + SDPA paths.
+    # DistilBERT has LayerNorm but no RMSNorm or RoPE, so this exercises
+    # the fused LayerNorm and SDPA paths.
     assert_all_close(
       outputs.hidden_state[[.., 1..3, 1..3]],
       Nx.tensor([
