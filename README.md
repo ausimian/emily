@@ -559,14 +559,17 @@ builds. See the `Emily` moduledoc for the full opt-in snippet.
 ## Testing
 
 ```bash
-mix test                           # fast suite (unit + property)
-mix test --only conformance        # + Bumblebee tiny-random suites
-mix test --only qwen3_full         # full Qwen3-0.6B checkpoint (~1.5 GB)
-mix test --only qwen3_quant_full   # quantized Qwen3-0.6B end-to-end
+mix test                           # default suite (unit, property, soak)
+mix test --only conformance        # Bumblebee tiny-random suites, all compiler lanes
+mix test --only native             # tiny-random suites, native lane only
+mix test --only fuse               # tiny-random suites, fused (mx::compile) lane only
+mix test --only qwen3_full         # full Qwen3-0.6B (~1.5 GB): native, fused, FastKernels, serving
 mix test --only vit_full           # full ViT-base (~330 MB)
 mix test --only whisper_full       # full whisper-tiny (~150 MB)
+mix test --only distilbert_full    # full DistilBERT (~250 MB)
+mix test --only fast_kernels_full  # FastKernels rewrites on full ViT and Whisper
 mix test --only training_full      # MNIST convergence canary
-mix test --only soak               # memory + concurrency soak harnesses
+mix test --only soak               # memory and concurrency soak harnesses only
 ```
 
 Each layer has its own oracle: hand-computed expected values at the
