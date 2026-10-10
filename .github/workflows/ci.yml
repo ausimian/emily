@@ -291,6 +291,19 @@ jobs:
           key: mlx-${{ runner.os }}-aot-${{ hashFiles('c_src/**', 'Makefile', 'mix.exs', 'scripts/build-mlx.sh') }}
           restore-keys: mlx-${{ runner.os }}-aot-
 
+      # `mix clang.tidy` is a project task, so Mix compiles the project
+      # (every dep, then Emily) before it can run it. Restore the
+      # precommit aot lane's `_build`, built under this same runner,
+      # Xcode, MIX_ENV and variant, so the deps are already compiled.
+      # Restore-only: this job never saves, so it can't race precommit's
+      # save of the same key.
+      - name: Restore build
+        uses: actions/cache/restore@v5
+        with:
+          path: _build
+          key: build-${{ runner.os }}-aot-${{ hashFiles('mix.lock', 'c_src/**', 'Makefile', '.tool-versions', 'mix.exs', 'config/config.exs') }}
+          restore-keys: build-${{ runner.os }}-aot-
+
       - run: mix deps.get
 
       - name: Run clang-tidy
