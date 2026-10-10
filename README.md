@@ -136,7 +136,7 @@ The in-repo checkout keeps `c_src/` on disk, so `mix compile` takes
 the source-build path: `scripts/build-mlx.sh` cmake-builds
 `libmlx.a` + `mlx.metallib` out of `deps/mlx_src/` into
 `$EMILY_CACHE/mlx-<version>-<variant>/`, then `elixir_make` links
-the NIF against it. Xcode + the Metal toolchain are required.
+the NIF against it. Xcode 16 or later + the Metal toolchain are required.
 
 Force an MLX rebuild with `mix compile.emily_mlx --force` after
 editing `scripts/build-mlx.sh` or bumping `@mlx_version`.
