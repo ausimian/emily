@@ -332,12 +332,24 @@ defmodule Emily.MixProject do
 
   defp before_closing_body_tag(_), do: ""
 
+  # Mix tasks that only work in a checkout of this repo, so they are left
+  # out of the hex package: `bench.native` and `clang.tidy` need `c_src/`,
+  # and `emily.checksums` is a release step. `emily.checksums` also calls
+  # `:public_key`, which emily doesn't declare, so shipping it made every
+  # consumer's compile warn.
+  @maintainer_tasks ~w(
+    lib/mix/tasks/bench.native.ex
+    lib/mix/tasks/clang.tidy.ex
+    lib/mix/tasks/emily.checksums.ex
+  )
+
   defp package do
     [
       licenses: ["MIT"],
       links: %{"GitHub" => @source_url},
       files:
-        ~w(lib mix.exs native_checksums.txt README.md ARCHITECTURE.md ROADMAP.md CHANGELOG.md LICENSE)
+        (Path.wildcard("lib/**/*.ex") -- @maintainer_tasks) ++
+          ~w(mix.exs native_checksums.txt README.md ARCHITECTURE.md ROADMAP.md CHANGELOG.md LICENSE)
     ]
   end
 
