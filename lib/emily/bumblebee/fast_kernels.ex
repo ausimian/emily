@@ -34,6 +34,9 @@ if Code.ensure_loaded?(Axon) and Code.ensure_loaded?(Bumblebee.Layers) do
         model_info =
           update_in(model_info.model, &Emily.Bumblebee.FastKernels.apply/1)
 
+        # or, to bound attention memory for long-context prefill:
+        #   update_in(model_info.model, &Emily.Bumblebee.FastKernels.apply(&1, force_fused_sdpa: true))
+
         # then proceed with Bumblebee.Audio.speech_to_text_whisper/5
         # (or Text.generation/4 / etc.) as usual.
 
@@ -79,14 +82,26 @@ if Code.ensure_loaded?(Axon) and Code.ensure_loaded?(Bumblebee.Layers) do
 
     @doc """
     Apply every available rewrite to `model`.
+
+    ## Options
+
+      * `:force_fused_sdpa` - if `true`, the rewritten attention layers
+        pass `force_fused: true` to `Emily.Fast`'s SDPA helpers, so MLX
+        always uses a fused attention kernel and raises when none
+        supports the shape. This bounds attention memory for long
+        prefill with head dims 192 and 256, at some cost in prefill
+        throughput. See "Forcing the fused kernel" in
+        `Emily.Fast.scaled_dot_product_attention/4`. Defaults to `false`.
     """
-    @spec apply(Axon.t()) :: Axon.t()
-    def apply(%Axon{} = model) do
+    @spec apply(Axon.t(), keyword()) :: Axon.t()
+    def apply(%Axon{} = model, opts \\ []) do
+      opts = Keyword.validate!(opts, force_fused_sdpa: false)
+
       model
       |> apply_rms_norm()
       |> apply_layer_norm()
       |> apply_rope()
-      |> apply_attention()
+      |> apply_attention(force_fused: opts[:force_fused_sdpa])
     end
 
     # ----------------------------------------------------------------
@@ -439,26 +454,30 @@ if Code.ensure_loaded?(Axon) and Code.ensure_loaded?(Bumblebee.Layers) do
     # may dead-code-eliminate it; if not, the fused output still wins.
 
     @doc false
-    def apply_attention(%Axon{} = model) do
-      Axon.rewrite_nodes(model, &attention_rewriter/1)
+    def apply_attention(%Axon{} = model, opts \\ []) do
+      opts = Keyword.validate!(opts, force_fused: false)
+      Axon.rewrite_nodes(model, &attention_rewriter(&1, opts[:force_fused]))
     end
 
     # The rewriter: skip unless we're looking at attention_output_impl
     # with dropout disabled. Flattened into `cond` to stay within the
     # credo nesting limit.
-    defp attention_rewriter(%Axon.Node{op: op, opts: attn_opts}) do
+    defp attention_rewriter(%Axon.Node{op: op, opts: attn_opts}, force_fused) do
       cond do
-        fn_mfa(op) != @attention_output_mfa -> :skip
-        Keyword.get(attn_opts, :dropout_rate, 0.0) != 0 -> :skip
-        true -> &build_fused_attention_from_inputs/2
+        fn_mfa(op) != @attention_output_mfa ->
+          :skip
+
+        Keyword.get(attn_opts, :dropout_rate, 0.0) != 0 ->
+          :skip
+
+        true ->
+          fn [weights_axon, value_axon], _output ->
+            build_fused_attention(weights_axon, value_axon, force_fused)
+          end
       end
     end
 
-    defp attention_rewriter(_), do: :skip
-
-    defp build_fused_attention_from_inputs([weights_axon, value_axon], _output) do
-      build_fused_attention(weights_axon, value_axon)
-    end
+    defp attention_rewriter(_node, _force_fused), do: :skip
 
     # Decompose a captured named function into `{module, name, arity}`,
     # or return `nil` for anonymous closures (and for non-function ops
@@ -487,7 +506,7 @@ if Code.ensure_loaded?(Axon) and Code.ensure_loaded?(Bumblebee.Layers) do
     # Walk back from the `weights` input (a dropout layer wrapping the
     # attention_weights_impl call) and extract the original Q/K/mask/etc
     # Axon graphs.
-    defp build_fused_attention(%Axon{output: id, nodes: nodes}, value_axon) do
+    defp build_fused_attention(%Axon{output: id, nodes: nodes}, value_axon, force_fused) do
       weights_node = nodes[id]
       weights_id = unwrap_dropout(weights_node, nodes, id)
       %Axon.Node{parent: parent_ids, opts: weights_opts} = nodes[weights_id]
@@ -518,7 +537,8 @@ if Code.ensure_loaded?(Axon) and Code.ensure_loaded?(Bumblebee.Layers) do
         [q, k, value_axon, key_mask, head_mask, bias, offset],
         causal: Keyword.get(weights_opts, :causal, false),
         window_size: Keyword.get(weights_opts, :window_size),
-        scale: Keyword.get(weights_opts, :scale)
+        scale: Keyword.get(weights_opts, :scale),
+        force_fused: force_fused
       )
     end
 
@@ -535,7 +555,14 @@ if Code.ensure_loaded?(Axon) and Code.ensure_loaded?(Bumblebee.Layers) do
     # interesting to thread through).
     @doc false
     def fast_sdpa_impl(query, key, value, key_mask, head_mask, bias, offset, opts \\ []) do
-      opts = Keyword.validate!(opts, [:causal, :window_size, :scale, mode: :inference])
+      opts =
+        Keyword.validate!(opts, [
+          :causal,
+          :window_size,
+          :scale,
+          force_fused: false,
+          mode: :inference
+        ])
 
       # Layout: {batch, seq, heads, head_dim} → {batch, heads, seq, head_dim}
       q = Nx.transpose(query, axes: [0, 2, 1, 3])
@@ -553,7 +580,7 @@ if Code.ensure_loaded?(Axon) and Code.ensure_loaded?(Bumblebee.Layers) do
       type = Nx.type(q)
 
       mask = build_attention_mask(key_mask, bias, offset, opts, q_seq, k_seq, type)
-      sdpa_opts = [scale: scale]
+      sdpa_opts = [scale: scale, force_fused: opts[:force_fused]]
 
       out_bhsd =
         case mask do

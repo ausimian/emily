@@ -240,6 +240,32 @@ defmodule Emily.Bumblebee.FastKernelsTest do
     end
   end
 
+  describe "apply/2 :force_fused_sdpa" do
+    test "defaults to false on the rewritten attention layers" do
+      assert fused_sdpa_opts(FastKernels.apply(attention_model([]))) == [false]
+    end
+
+    test "passes force_fused: true to the rewritten attention layers" do
+      # MLX's fused kernels need a head dim of 64 or more.
+      model = attention_model([], head_dim: 64)
+      rewritten = FastKernels.apply(model, force_fused_sdpa: true)
+
+      assert fused_sdpa_opts(rewritten) == [true]
+
+      inputs = %{
+        "q" => random({1, 4, 2, 64}, 0),
+        "k" => random({1, 4, 2, 64}, 1),
+        "v" => random({1, 4, 2, 64}, 2)
+      }
+
+      assert_same_output(model, rewritten, inputs, compiler: Emily.Compiler)
+    end
+
+    test "rejects unknown options" do
+      assert_raise ArgumentError, fn -> FastKernels.apply(attention_model([]), force: true) end
+    end
+  end
+
   describe "apply/1 idempotence" do
     test "applying twice doesn't break the model" do
       model =
@@ -285,9 +311,10 @@ defmodule Emily.Bumblebee.FastKernelsTest do
       if inputs[name], do: Axon.input(Atom.to_string(name), shape: shape), else: BL.none()
     end
 
-    q = Axon.input("q", shape: {nil, nil, 2, 8})
-    k = Axon.input("k", shape: {nil, nil, 2, 8})
-    v = Axon.input("v", shape: {nil, nil, 2, 8})
+    head_dim = Keyword.get(inputs, :head_dim, 8)
+    q = Axon.input("q", shape: {nil, nil, 2, head_dim})
+    k = Axon.input("k", shape: {nil, nil, 2, head_dim})
+    v = Axon.input("v", shape: {nil, nil, 2, head_dim})
 
     {out, _weights} =
       BL.attention(
@@ -309,6 +336,13 @@ defmodule Emily.Bumblebee.FastKernelsTest do
       {:name, name} = Function.info(op, :name)
       name
     end
+  end
+
+  defp fused_sdpa_opts(%Axon{nodes: nodes}) do
+    for {_id, %Axon.Node{op: op, opts: opts}} <- nodes,
+        is_function(op),
+        Function.info(op, :name) == {:name, :fast_sdpa_impl},
+        do: opts[:force_fused]
   end
 
   defp random(shape, seed) do

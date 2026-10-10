@@ -12,6 +12,8 @@
 - `Emily.Fast.rope/3` and `rope_with_freqs/4` accept a `{batch}` offset
   as well as a scalar, so each entry along the leading axis starts at its
   own position, for example in batched decode.
+- `Emily.Bumblebee.FastKernels.apply/2` accepts `force_fused_sdpa: true`,
+  which passes `force_fused: true` to every rewritten attention layer.
 
 ### Fixed
 
