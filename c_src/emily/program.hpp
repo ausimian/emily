@@ -77,6 +77,11 @@ public:
   std::vector<fine::ResourcePtr<Tensor>> consts;
   std::vector<CompiledInstr> instrs;
   std::vector<int64_t> outputs; // packed refs
+  // True iff any *top-level* instruction is a `while`. mx::compile can't
+  // trace a data-dependent host loop, so such a program is replayed
+  // host-controlled rather than wrapped whole. Set by `compile_program`;
+  // a static property of the IR, so it is never re-derived at eval time.
+  bool has_top_level_while = false;
 
   using CompiledFn =
       std::function<std::vector<mx::array>(const std::vector<mx::array> &)>;
