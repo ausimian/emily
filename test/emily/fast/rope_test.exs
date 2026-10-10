@@ -13,6 +13,8 @@ defmodule Emily.Fast.RoPETest do
 
   import Emily.BackendGenerators, only: [assert_close: 3]
 
+  alias Emily.FastFallback
+
   @f32_tol 1.0e-4
 
   setup do
@@ -35,7 +37,7 @@ defmodule Emily.Fast.RoPETest do
         Emily.Fast.rope(x, offset, dims: dims, traditional: false, base: 10_000.0)
       end
 
-      expected = Nx.Defn.jit(fun, compiler: Nx.Defn.Evaluator).(ref_x, ref_offset)
+      expected = FastFallback.run(fun, [ref_x, ref_offset])
       fused = Nx.Defn.jit(fun, compiler: Emily.Compiler).(x, offset)
 
       assert_close(fused, expected, tol: @f32_tol)
@@ -55,7 +57,7 @@ defmodule Emily.Fast.RoPETest do
         Emily.Fast.rope(x, offset, dims: dims, traditional: true, base: 10_000.0)
       end
 
-      expected = Nx.Defn.jit(fun, compiler: Nx.Defn.Evaluator).(ref_x, ref_offset)
+      expected = FastFallback.run(fun, [ref_x, ref_offset])
       fused = Nx.Defn.jit(fun, compiler: Emily.Compiler).(x, offset)
 
       assert_close(fused, expected, tol: @f32_tol)
@@ -77,7 +79,7 @@ defmodule Emily.Fast.RoPETest do
         Emily.Fast.rope(x, offset, dims: dims, traditional: false, base: 10_000.0)
       end
 
-      expected = Nx.Defn.jit(fun, compiler: Nx.Defn.Evaluator).(ref_x, ref_offset)
+      expected = FastFallback.run(fun, [ref_x, ref_offset])
       fused = Nx.Defn.jit(fun, compiler: Emily.Compiler).(x, offset)
 
       assert_close(fused, expected, tol: @f32_tol)
@@ -105,12 +107,12 @@ defmodule Emily.Fast.RoPETest do
       ref_offset = Nx.tensor(0, type: :s32, backend: Nx.BinaryBackend)
 
       expected =
-        Nx.Defn.jit(
+        FastFallback.run(
           fn x, offset, freqs ->
             Emily.Fast.rope_with_freqs(x, offset, freqs, dims: dims, traditional: false)
           end,
-          compiler: Nx.Defn.Evaluator
-        ).(ref_x, ref_offset, ref_inv_freq)
+          [ref_x, ref_offset, ref_inv_freq]
+        )
 
       x = Nx.backend_copy(ref_x, Emily.Backend)
       offset = Nx.backend_copy(ref_offset, Emily.Backend)
