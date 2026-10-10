@@ -29,7 +29,7 @@ Add `:emily` to your `mix.exs` deps:
 ```elixir
 def deps do
   [
-    {:emily, "~> 1.0"}
+    {:emily, "~> 1.1"}
   ]
 end
 ```
@@ -101,7 +101,7 @@ Releases on first `mix compile`.
 
 ### As a hex consumer
 
-Add `{:emily, "~> 1.0"}` to `mix.exs`, then:
+Add `{:emily, "~> 1.1"}` to `mix.exs`, then:
 
 ```sh
 mix deps.get
