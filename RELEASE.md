@@ -9,6 +9,9 @@
   where MLX otherwise builds the full attention-score matrix, at some
   cost in prefill throughput. Off by default; it works in both eager
   and natively compiled code.
+- `Emily.Fast.rope/3` and `rope_with_freqs/4` accept a `{batch}` offset
+  as well as a scalar, so each entry along the leading axis starts at its
+  own position, for example in batched decode.
 
 ### Fixed
 
@@ -18,6 +21,9 @@
 - The defn fallback of `Emily.Fast.scaled_dot_product_attention/4` (used
   on non-Emily backends) applied an inverted causal mask, letting each
   query attend to later keys instead of earlier ones.
+- The defn fallback of `Emily.Fast.rope/3` and `rope_with_freqs/4` (used
+  on non-Emily backends) added the offset after applying `:scale`; it now
+  scales the whole position, as MLX does.
 
 ### Changed
 

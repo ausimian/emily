@@ -128,6 +128,92 @@ defmodule Emily.Fast.RoPETest do
     end
   end
 
+  describe "per-batch offset" do
+    # A {batch} offset rotates each entry along the leading axis from its
+    # own starting position, the same as one call per entry with a
+    # scalar offset.
+    for {lane, {backend, compiler}} <- [
+          fused: {Emily.Backend, [compiler: Emily.Compiler]},
+          native:
+            {Emily.Backend, [compiler: Emily.Compiler, native: true, native_fallback: :raise]},
+          fallback: {Nx.BinaryBackend, [compiler: Nx.Defn.Evaluator]}
+        ] do
+      test "matches per-entry scalar offsets (#{lane})" do
+        Nx.default_backend(unquote(backend))
+        dims = 8
+        x = Nx.iota({2, 2, 3, dims}, type: :f32) |> Nx.divide(50)
+        freqs = Nx.tensor([1.0, 0.1, 0.01, 0.001])
+
+        rope = fn x, offset, _freqs -> Emily.Fast.rope(x, offset, dims: dims) end
+
+        with_freqs = fn x, offset, freqs ->
+          Emily.Fast.rope_with_freqs(x, offset, freqs, dims: dims)
+        end
+
+        for fun <- [rope, with_freqs] do
+          jit = Nx.Defn.jit(fun, unquote(compiler))
+          batched = jit.(x, Nx.tensor([3, 7]), freqs)
+
+          per_entry =
+            Nx.concatenate([
+              jit.(x[0..0], Nx.tensor(3), freqs),
+              jit.(x[1..1], Nx.tensor(7), freqs)
+            ])
+
+          assert_close(batched, per_entry, tol: @f32_tol)
+        end
+      end
+
+      test "scales the whole position, offset included (#{lane})" do
+        Nx.default_backend(unquote(backend))
+        dims = 8
+        x = Nx.iota({2, 2, 3, dims}, type: :f32) |> Nx.divide(50)
+        offset = Nx.tensor([3, 7])
+
+        actual =
+          Nx.Defn.jit(
+            fn x, offset -> Emily.Fast.rope(x, offset, dims: dims, scale: 0.5) end,
+            unquote(compiler)
+          ).(x, offset)
+
+        assert_close(actual, split_half_rope(x, offset, 0.5, dims), tol: @f32_tol)
+      end
+    end
+  end
+
+  # Independent split-half RoPE on Nx.BinaryBackend: position
+  # (i + offset[b]) * scale for token i of batch entry b.
+  defp split_half_rope(x, offset, scale, dims) do
+    x = Nx.backend_copy(x, Nx.BinaryBackend)
+    offset = Nx.backend_copy(offset, Nx.BinaryBackend)
+    {batch, _heads, seq, _dims} = Nx.shape(x)
+
+    positions =
+      Nx.iota({batch, seq}, axis: 1, backend: Nx.BinaryBackend)
+      |> Nx.add(Nx.new_axis(offset, 1))
+      |> Nx.multiply(scale)
+
+    inv_freq =
+      Nx.iota({div(dims, 2)}, type: :f32, backend: Nx.BinaryBackend)
+      |> Nx.multiply(2 / dims)
+      |> then(&Nx.divide(1.0, Nx.pow(10_000.0, &1)))
+
+    angle = Nx.multiply(Nx.new_axis(positions, -1), inv_freq) |> Nx.new_axis(1)
+    {cos, sin} = {Nx.cos(angle), Nx.sin(angle)}
+
+    half = div(dims, 2)
+    x1 = Nx.slice_along_axis(x, 0, half, axis: -1)
+    x2 = Nx.slice_along_axis(x, half, half, axis: -1)
+
+    Nx.concatenate(
+      [
+        Nx.subtract(Nx.multiply(x1, cos), Nx.multiply(x2, sin)),
+        Nx.add(Nx.multiply(x1, sin), Nx.multiply(x2, cos))
+      ],
+      axis: -1
+    )
+  end
+
   describe "fast_rope_int/8 (integer offset, incremental decode)" do
     # Incremental decode ropes one token at a time at an integer absolute
     # position. It must be correct for seq == 1 — fed the 4D

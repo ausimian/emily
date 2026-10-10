@@ -189,9 +189,11 @@ defmodule Emily.Fast do
   Fused RoPE with the standard geometric-progression theta schedule.
 
   Rotates the trailing `dims` axes of `x` (typically `head_dim`) in
-  position-indexed planes. `offset` is a scalar integer tensor
-  (usually `Nx.tensor(0)` for prompt-processing, or the KV-cache
-  length for incremental decode).
+  position-indexed planes. `offset` is an integer tensor holding the
+  position of the first token: a scalar (usually `Nx.tensor(0)` for
+  prompt processing, or the KV-cache length for incremental decode),
+  or a `{batch}` vector giving each entry along the leading axis of
+  `x` its own offset.
 
   `opts`:
 
@@ -246,6 +248,7 @@ defmodule Emily.Fast do
   Use this overload when the model applies a non-standard scaling
   strategy to the base frequencies (e.g. Llama-3, LongRoPE, linear,
   dynamic). `freqs` must be a 1-D `:f32` tensor of length `dims / 2`.
+  `offset` is a scalar or `{batch}` vector, as in `rope/3`.
 
   `opts`:
 
@@ -299,12 +302,20 @@ defmodule Emily.Fast do
     rank = tuple_size(shape)
     seq_len = elem(shape, rank - 2)
 
-    positions =
-      Nx.iota({seq_len}, type: :f32)
-      |> Nx.multiply(scale)
-      |> Nx.add(Nx.as_type(offset, :f32))
+    positions = Nx.iota({seq_len}, type: :f32)
+    offset = Nx.as_type(offset, :f32)
 
-    angle = Nx.outer(positions, inv_freq)
+    # A scalar offset shifts every sequence alike; a {batch} offset
+    # shifts each entry along x's leading axis, giving {batch, seq}.
+    # Like MLX, scale the whole position, offset included.
+    positions =
+      case Nx.rank(offset) do
+        0 -> Nx.add(positions, offset)
+        1 -> Nx.add(Nx.new_axis(positions, 0), Nx.new_axis(offset, 1))
+      end
+      |> Nx.multiply(scale)
+
+    angle = Nx.multiply(Nx.new_axis(positions, -1), inv_freq)
     cos = Nx.cos(angle)
     sin = Nx.sin(angle)
 
@@ -353,12 +364,18 @@ defmodule Emily.Fast do
     Nx.reshape(stacked, shape)
   end
 
-  # cos/sin arrive as {seq, half}; target is {..., seq, half}.
+  # cos/sin arrive as {seq, half}, or {batch, seq, half} for a
+  # per-batch offset; target is {batch, ..., seq, half}.
   defp broadcast_trig(trig, target) do
     target_shape = Nx.shape(target)
     rank = tuple_size(target_shape)
-    pad_axes = rank - 2
-    trig_shape = List.duplicate(1, pad_axes) ++ Tuple.to_list(Nx.shape(trig))
+
+    trig_shape =
+      case Nx.shape(trig) do
+        {seq, half} -> List.duplicate(1, rank - 2) ++ [seq, half]
+        {batch, seq, half} -> [batch | List.duplicate(1, rank - 3)] ++ [seq, half]
+      end
+
     Nx.broadcast(Nx.reshape(trig, List.to_tuple(trig_shape)), target_shape)
   end
 
