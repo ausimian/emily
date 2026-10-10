@@ -120,12 +120,13 @@ fine::Term fast_scaled_dot_product_attention_nif(
     double scale,
     std::string mask_mode,
     std::vector<fine::ResourcePtr<Tensor>> mask_arrs,
-    std::vector<fine::ResourcePtr<Tensor>> sinks_arrs) {
+    std::vector<fine::ResourcePtr<Tensor>> sinks_arrs,
+    bool force_fused) {
   return async_encoded(env, w,
       [q = std::move(q), k = std::move(k), v = std::move(v),
        scale, mask_mode = std::move(mask_mode),
        mask_arrs = std::move(mask_arrs),
-       sinks_arrs = std::move(sinks_arrs)](mx::Stream &s) {
+       sinks_arrs = std::move(sinks_arrs), force_fused](mx::Stream &s) {
         std::optional<mx::array> mask_arr;
         if (!mask_arrs.empty()) {
           mask_arr = mask_arrs[0]->array;
@@ -136,7 +137,7 @@ fine::Term fast_scaled_dot_product_attention_nif(
         }
         return wrap(mx::fast::scaled_dot_product_attention(
             q->array, k->array, v->array, static_cast<float>(scale), mask_mode,
-            mask_arr, sinks_arr, /*force_fused=*/false, s));
+            mask_arr, sinks_arr, force_fused, s));
       });
 }
 FINE_NIF(fast_scaled_dot_product_attention_nif, 0);

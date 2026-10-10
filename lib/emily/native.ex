@@ -885,8 +885,10 @@ defmodule Emily.Native do
           float(),
           String.t(),
           [tensor()],
-          [tensor()]
+          [tensor()],
+          boolean()
         ) :: reference()
+  # credo:disable-for-next-line Credo.Check.Refactor.FunctionArity
   def fast_scaled_dot_product_attention_nif(
         _w,
         _q,
@@ -895,7 +897,8 @@ defmodule Emily.Native do
         _scale,
         _mask_mode,
         _mask_arrs,
-        _sinks_arrs
+        _sinks_arrs,
+        _force_fused
       ),
       do: nif()
 
@@ -907,30 +910,44 @@ defmodule Emily.Native do
           float(),
           String.t(),
           [tensor()],
-          [tensor()]
+          [tensor()],
+          boolean()
         ) :: tensor()
-  def fast_scaled_dot_product_attention(w, q, k, v, scale, mask_mode, mask_arrs, sinks_arrs),
-    do:
-      await(
-        fast_scaled_dot_product_attention_nif(
-          w,
-          q,
-          k,
-          v,
-          scale,
-          mask_mode,
-          mask_arrs,
-          sinks_arrs
-        ),
-        native_context(
-          :fast_scaled_dot_product_attention,
-          w,
-          [q: q, k: k, v: v] ++
-            named_list(:mask, mask_arrs) ++ named_list(:sink, sinks_arrs),
-          scale: scale,
-          mask_mode: mask_mode
+  # credo:disable-for-next-line Credo.Check.Refactor.FunctionArity
+  def fast_scaled_dot_product_attention(
+        w,
+        q,
+        k,
+        v,
+        scale,
+        mask_mode,
+        mask_arrs,
+        sinks_arrs,
+        force_fused
+      ),
+      do:
+        await(
+          fast_scaled_dot_product_attention_nif(
+            w,
+            q,
+            k,
+            v,
+            scale,
+            mask_mode,
+            mask_arrs,
+            sinks_arrs,
+            force_fused
+          ),
+          native_context(
+            :fast_scaled_dot_product_attention,
+            w,
+            [q: q, k: k, v: v] ++
+              named_list(:mask, mask_arrs) ++ named_list(:sink, sinks_arrs),
+            scale: scale,
+            mask_mode: mask_mode,
+            force_fused: force_fused
+          )
         )
-      )
 
   # --- Sort --------------------------------------------------------
 

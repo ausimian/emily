@@ -99,9 +99,9 @@ enum class Opcode : int64_t {
   FastRoPE = 56,
   // operands [x, offset, freqs]; iattrs [[dims],[traditional],[scale_bits]]
   FastRoPEFreqs = 57,
-  // operands [q, k, v]; iattrs [[scale_bits],[causal]]
+  // operands [q, k, v]; iattrs [[scale_bits],[causal],[force_fused]]
   FastSDPA = 58,
-  // operands [q, k, v, mask]; iattrs [[scale_bits]]
+  // operands [q, k, v, mask]; iattrs [[scale_bits],[force_fused]]
   FastSDPAMask = 59,
   // operands [x, w_q, scales, biases];
   // iattrs [[transpose],[group_size],[bits],[mode_code]]
@@ -242,13 +242,14 @@ enum class Opcode : int64_t {
   // the IR slices for the thin case, matching Emily.Backend.native_svd/3.
   LinalgSVD = 120,
   // SDPA with attention sinks (gpt-oss). operands [q, k, v, sinks];
-  // iattrs [[scale_bits], [causal]]. Mirrors
+  // iattrs [[scale_bits], [causal], [force_fused]]. Mirrors
   // Emily.Backend.fast_scaled_dot_product_attention_with_sinks/6 — same
   // mx::fast::scaled_dot_product_attention entry point as FastSDPA, with
   // the sinks operand wired into the kernel's `sinks` arg.
   FastSDPASinks = 121,
   // SDPA with both an explicit additive mask and attention sinks
-  // (gpt-oss). operands [q, k, v, mask, sinks]; iattrs [[scale_bits]];
+  // (gpt-oss). operands [q, k, v, mask, sinks];
+  // iattrs [[scale_bits], [force_fused]];
   // mask_mode = "array". Mirrors
   // Emily.Backend.fast_scaled_dot_product_attention_with_mask_and_sinks/7.
   FastSDPAMaskSinks = 122,
@@ -559,9 +560,10 @@ inline mx::array dispatch_op(Opcode op, const std::vector<mx::array> &in,
     auto scale =
         static_cast<float>(emily::f64_from_bits(scalar_at(iattrs, 0, "fast_sdpa")));
     std::string mask_mode = scalar_at(iattrs, 1, "fast_sdpa") != 0 ? "causal" : "";
+    bool force_fused = scalar_at(iattrs, 2, "fast_sdpa") != 0;
     return mx::fast::scaled_dot_product_attention(
         in[0], in[1], in[2], scale, mask_mode, std::nullopt, std::nullopt,
-        /*force_fused=*/false, s);
+        force_fused, s);
   }
   case Opcode::FastSDPAMask: {
     if (in.size() != 4) {
@@ -570,9 +572,10 @@ inline mx::array dispatch_op(Opcode op, const std::vector<mx::array> &in,
     }
     auto scale = static_cast<float>(
         emily::f64_from_bits(scalar_at(iattrs, 0, "fast_sdpa_mask")));
+    bool force_fused = scalar_at(iattrs, 1, "fast_sdpa_mask") != 0;
     return mx::fast::scaled_dot_product_attention(
         in[0], in[1], in[2], scale, "array", std::optional<mx::array>(in[3]),
-        std::nullopt, /*force_fused=*/false, s);
+        std::nullopt, force_fused, s);
   }
   case Opcode::FastSDPASinks: {
     if (in.size() != 4) {
@@ -583,9 +586,10 @@ inline mx::array dispatch_op(Opcode op, const std::vector<mx::array> &in,
         emily::f64_from_bits(scalar_at(iattrs, 0, "fast_sdpa_sinks")));
     std::string mask_mode =
         scalar_at(iattrs, 1, "fast_sdpa_sinks") != 0 ? "causal" : "";
+    bool force_fused = scalar_at(iattrs, 2, "fast_sdpa_sinks") != 0;
     return mx::fast::scaled_dot_product_attention(
         in[0], in[1], in[2], scale, mask_mode, std::nullopt,
-        std::optional<mx::array>(in[3]), /*force_fused=*/false, s);
+        std::optional<mx::array>(in[3]), force_fused, s);
   }
   case Opcode::FastSDPAMaskSinks: {
     if (in.size() != 5) {
@@ -595,9 +599,10 @@ inline mx::array dispatch_op(Opcode op, const std::vector<mx::array> &in,
     }
     auto scale = static_cast<float>(
         emily::f64_from_bits(scalar_at(iattrs, 0, "fast_sdpa_mask_sinks")));
+    bool force_fused = scalar_at(iattrs, 1, "fast_sdpa_mask_sinks") != 0;
     return mx::fast::scaled_dot_product_attention(
         in[0], in[1], in[2], scale, "array", std::optional<mx::array>(in[3]),
-        std::optional<mx::array>(in[4]), /*force_fused=*/false, s);
+        std::optional<mx::array>(in[4]), force_fused, s);
   }
   case Opcode::QuantizedMatmul: {
     if (in.size() != 4) {

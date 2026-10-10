@@ -1,3 +1,15 @@
+### Added
+
+- `Emily.Fast.scaled_dot_product_attention/4` and
+  `scaled_dot_product_attention_with_mask/5` accept `force_fused: true`.
+  MLX then always uses one of its fused attention kernels instead of
+  choosing per shape, and raises `ArgumentError` if no fused kernel
+  supports the shape. This keeps attention memory bounded for
+  long-context prefill with head dims 192 and 256 (for example Gemma),
+  where MLX otherwise builds the full attention-score matrix, at some
+  cost in prefill throughput. Off by default; it works in both eager
+  and natively compiled code.
+
 ### Changed
 
 - Updated the pinned MLX to 0.32.3. This is a maintenance bump that picks

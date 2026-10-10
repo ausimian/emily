@@ -1762,23 +1762,34 @@ defmodule Emily.Backend do
         scale: s.scale
       )
 
-  def block(%FB.SDPA{scale: scale, causal: causal}, out, [q, k, v], _fun),
-    do: fast_scaled_dot_product_attention(out, q, k, v, scale: scale, causal: causal)
-
-  def block(%FB.SDPAWithSinks{scale: scale, causal: causal}, out, [q, k, v, sinks], _fun),
+  def block(%FB.SDPA{} = b, out, [q, k, v], _fun),
     do:
-      fast_scaled_dot_product_attention_with_sinks(out, q, k, v, sinks,
-        scale: scale,
-        causal: causal
+      fast_scaled_dot_product_attention(out, q, k, v,
+        scale: b.scale,
+        causal: b.causal,
+        force_fused: b.force_fused
       )
 
-  def block(%FB.SDPAWithMask{scale: scale}, out, [q, k, v, mask], _fun),
-    do: fast_scaled_dot_product_attention_with_mask(out, q, k, v, mask, scale: scale)
+  def block(%FB.SDPAWithSinks{} = b, out, [q, k, v, sinks], _fun),
+    do:
+      fast_scaled_dot_product_attention_with_sinks(out, q, k, v, sinks,
+        scale: b.scale,
+        causal: b.causal,
+        force_fused: b.force_fused
+      )
 
-  def block(%FB.SDPAWithMaskAndSinks{scale: scale}, out, [q, k, v, mask, sinks], _fun),
+  def block(%FB.SDPAWithMask{} = b, out, [q, k, v, mask], _fun),
+    do:
+      fast_scaled_dot_product_attention_with_mask(out, q, k, v, mask,
+        scale: b.scale,
+        force_fused: b.force_fused
+      )
+
+  def block(%FB.SDPAWithMaskAndSinks{} = b, out, [q, k, v, mask, sinks], _fun),
     do:
       fast_scaled_dot_product_attention_with_mask_and_sinks(out, q, k, v, mask, sinks,
-        scale: scale
+        scale: b.scale,
+        force_fused: b.force_fused
       )
 
   # ---- quantized matmul block ----
@@ -1888,7 +1899,8 @@ defmodule Emily.Backend do
         opts[:scale] * 1.0,
         mask_mode,
         [],
-        []
+        [],
+        force_fused?(opts)
       )
 
     if @debug_detect_nan_inf,
@@ -1911,7 +1923,8 @@ defmodule Emily.Backend do
         opts[:scale] * 1.0,
         mask_mode,
         [],
-        [ref(sinks)]
+        [ref(sinks)],
+        force_fused?(opts)
       )
 
     if @debug_detect_nan_inf,
@@ -1933,7 +1946,8 @@ defmodule Emily.Backend do
         opts[:scale] * 1.0,
         "array",
         [ref(mask)],
-        []
+        [],
+        force_fused?(opts)
       )
 
     if @debug_detect_nan_inf,
@@ -1963,7 +1977,8 @@ defmodule Emily.Backend do
         opts[:scale] * 1.0,
         "array",
         [ref(mask)],
-        [ref(sinks)]
+        [ref(sinks)],
+        force_fused?(opts)
       )
 
     if @debug_detect_nan_inf,
@@ -1976,4 +1991,6 @@ defmodule Emily.Backend do
 
     wrap(r, out, w)
   end
+
+  defp force_fused?(opts), do: Keyword.get(opts, :force_fused, false)
 end

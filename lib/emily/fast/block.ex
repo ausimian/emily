@@ -34,21 +34,21 @@ defmodule Emily.Fast.Block do
 
   defmodule SDPA do
     @moduledoc false
-    defstruct scale: nil, causal: false
+    defstruct scale: nil, causal: false, force_fused: false
   end
 
   defmodule SDPAWithSinks do
     @moduledoc false
-    defstruct scale: nil, causal: false
+    defstruct scale: nil, causal: false, force_fused: false
   end
 
   defmodule SDPAWithMask do
     @moduledoc false
-    defstruct scale: nil
+    defstruct scale: nil, force_fused: false
   end
 
   defmodule SDPAWithMaskAndSinks do
     @moduledoc false
-    defstruct scale: nil
+    defstruct scale: nil, force_fused: false
   end
 end

@@ -278,4 +278,110 @@ defmodule Emily.Fast.SDPATest do
       assert_close(fused, expected, tol: @f32_tol)
     end
   end
+
+  describe ":force_fused" do
+    # Head dim 64 has a fused kernel for both prefill (q_len > 8) and
+    # decode, so every variant can be forced.
+    test "forced fused matches defn fallback for every variant" do
+      shape = {1, 2, 16, 64}
+      {_, _, q_len, _} = shape
+      k_len = q_len
+
+      {ref_q, ref_k, ref_v} = qkv_tensors(shape, Nx.BinaryBackend)
+
+      ref_mask =
+        Nx.iota({1, 1, 1, k_len}, backend: Nx.BinaryBackend)
+        |> Nx.greater_equal(k_len - 2)
+        |> Nx.select(-1.0e9, 0.0)
+        |> Nx.broadcast({1, 1, q_len, k_len})
+
+      ref_sinks = Nx.tensor([-0.25, 0.25], type: :f32, backend: Nx.BinaryBackend)
+
+      refs = [ref_q, ref_k, ref_v, ref_mask, ref_sinks]
+      args = Enum.map(refs, &Nx.backend_copy(&1, Emily.Backend))
+
+      funs = [
+        fn q, k, v, _m, _s ->
+          Emily.Fast.scaled_dot_product_attention(q, k, v, force_fused: true)
+        end,
+        fn q, k, v, _m, _s ->
+          Emily.Fast.scaled_dot_product_attention(q, k, v, causal: true, force_fused: true)
+        end,
+        fn q, k, v, m, _s ->
+          Emily.Fast.scaled_dot_product_attention_with_mask(q, k, v, m, force_fused: true)
+        end,
+        fn q, k, v, _m, s ->
+          Emily.Fast.scaled_dot_product_attention(q, k, v, sinks: s, force_fused: true)
+        end,
+        fn q, k, v, m, s ->
+          Emily.Fast.scaled_dot_product_attention_with_mask(q, k, v, m,
+            sinks: s,
+            force_fused: true
+          )
+        end
+      ]
+
+      for fun <- funs do
+        expected = apply(Nx.Defn.jit(fun, compiler: Nx.Defn.Evaluator), refs)
+        fused = apply(Nx.Defn.jit(fun, compiler: Emily.Compiler), args)
+        assert_close(fused, expected, tol: @f32_tol)
+      end
+    end
+
+    # The case force_fused exists for: multi-token prefill with head
+    # dim 256, which MLX's default routing sends to the unfused path.
+    test "forced fused matches defn fallback for head dim 256 prefill" do
+      shape = {1, 2, 16, 256}
+
+      {ref_q, ref_k, ref_v} = qkv_tensors(shape, Nx.BinaryBackend)
+
+      q = Nx.backend_copy(ref_q, Emily.Backend)
+      k = Nx.backend_copy(ref_k, Emily.Backend)
+      v = Nx.backend_copy(ref_v, Emily.Backend)
+
+      fun = fn q, k, v ->
+        Emily.Fast.scaled_dot_product_attention(q, k, v, causal: true, force_fused: true)
+      end
+
+      expected = Nx.Defn.jit(fun, compiler: Nx.Defn.Evaluator).(ref_q, ref_k, ref_v)
+      fused = Nx.Defn.jit(fun, compiler: Emily.Compiler).(q, k, v)
+
+      assert_close(fused, expected, tol: @f32_tol)
+    end
+
+    test "raises when no fused kernel supports the shape" do
+      # No fused kernel exists for head dim 32.
+      {q, k, v} = qkv_tensors({1, 2, 16, 32}, Emily.Backend)
+      mask = Nx.broadcast(Nx.tensor(0.0, backend: Emily.Backend), {1, 1, 16, 16})
+      sinks = Nx.tensor([-0.25, 0.25], type: :f32, backend: Emily.Backend)
+
+      funs = [
+        fn q, k, v, _m, _s ->
+          Emily.Fast.scaled_dot_product_attention(q, k, v, force_fused: true)
+        end,
+        fn q, k, v, m, _s ->
+          Emily.Fast.scaled_dot_product_attention_with_mask(q, k, v, m, force_fused: true)
+        end,
+        fn q, k, v, _m, s ->
+          Emily.Fast.scaled_dot_product_attention(q, k, v, sinks: s, force_fused: true)
+        end,
+        fn q, k, v, m, s ->
+          Emily.Fast.scaled_dot_product_attention_with_mask(q, k, v, m,
+            sinks: s,
+            force_fused: true
+          )
+        end
+      ]
+
+      for fun <- funs do
+        assert_raise ArgumentError, ~r/no fused kernel is available/, fn ->
+          Nx.Defn.jit(fun, compiler: Emily.Compiler).(q, k, v, mask, sinks)
+        end
+      end
+
+      # The default routing falls back to the unfused path instead.
+      default = fn q, k, v -> Emily.Fast.scaled_dot_product_attention(q, k, v) end
+      assert Nx.shape(Nx.Defn.jit(default, compiler: Emily.Compiler).(q, k, v)) == {1, 2, 16, 32}
+    end
+  end
 end

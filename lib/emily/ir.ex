@@ -1247,7 +1247,7 @@ defmodule Emily.IR do
     emit_coerced(state, :fast_rope_freqs, [rx, ro, rf], attrs, t.type)
   end
 
-  defp lower_block(%FB.SDPA{scale: scale, causal: causal}, [q, k, v], _expr, t, state) do
+  defp lower_block(%FB.SDPA{} = b, [q, k, v], _expr, t, state) do
     {rq, state} = lower_node(q, state)
     {rk, state} = lower_node(k, state)
     {rv, state} = lower_node(v, state)
@@ -1256,17 +1256,24 @@ defmodule Emily.IR do
       state,
       :fast_sdpa,
       [rq, rk, rv],
-      [[float_bits(scale)], [bool_int(causal)]],
+      [[float_bits(b.scale)], [bool_int(b.causal)], [bool_int(b.force_fused)]],
       t.type
     )
   end
 
-  defp lower_block(%FB.SDPAWithMask{scale: scale}, [q, k, v, mask], _expr, t, state) do
+  defp lower_block(%FB.SDPAWithMask{} = b, [q, k, v, mask], _expr, t, state) do
     {rq, state} = lower_node(q, state)
     {rk, state} = lower_node(k, state)
     {rv, state} = lower_node(v, state)
     {rm, state} = lower_node(mask, state)
-    emit_coerced(state, :fast_sdpa_mask, [rq, rk, rv, rm], [[float_bits(scale)]], t.type)
+
+    emit_coerced(
+      state,
+      :fast_sdpa_mask,
+      [rq, rk, rv, rm],
+      [[float_bits(b.scale)], [bool_int(b.force_fused)]],
+      t.type
+    )
   end
 
   # SDPA with attention sinks (gpt-oss). Mirrors
@@ -1276,7 +1283,7 @@ defmodule Emily.IR do
   # arg and the causal flag as the mask_mode discriminator
   # ("causal" / "").
   defp lower_block(
-         %FB.SDPAWithSinks{scale: scale, causal: causal},
+         %FB.SDPAWithSinks{} = b,
          [q, k, v, sinks],
          _expr,
          t,
@@ -1291,7 +1298,7 @@ defmodule Emily.IR do
       state,
       :fast_sdpa_sinks,
       [rq, rk, rv, rs],
-      [[float_bits(scale)], [bool_int(causal)]],
+      [[float_bits(b.scale)], [bool_int(b.causal)], [bool_int(b.force_fused)]],
       t.type
     )
   end
@@ -1299,9 +1306,9 @@ defmodule Emily.IR do
   # SDPA with an additive mask *and* attention sinks (gpt-oss). Mirrors
   # Emily.Backend.fast_scaled_dot_product_attention_with_mask_and_sinks/7 —
   # mask_mode is fixed "array" (the dispatcher hard-codes it), so only the
-  # scale crosses as an iattr.
+  # scale and force_fused cross as iattrs.
   defp lower_block(
-         %FB.SDPAWithMaskAndSinks{scale: scale},
+         %FB.SDPAWithMaskAndSinks{} = b,
          [q, k, v, mask, sinks],
          _expr,
          t,
@@ -1317,7 +1324,7 @@ defmodule Emily.IR do
       state,
       :fast_sdpa_mask_sinks,
       [rq, rk, rv, rm, rs],
-      [[float_bits(scale)]],
+      [[float_bits(b.scale)], [bool_int(b.force_fused)]],
       t.type
     )
   end
