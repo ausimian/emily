@@ -39,6 +39,7 @@ jobs:
           - os: macos-14
             variant: aot
             min: "14.0"
+            xcode: "16.2"
           - os: macos-26
             variant: jit
             min: "26.2"
@@ -53,6 +54,14 @@ jobs:
       EMILY_CACHE: ~/Library/Caches/emily
     steps:
       - uses: actions/checkout@v6
+
+      # MLX >= 0.32.1 Metal kernels use `metal::remove_addrspace_t`, which
+      # the Metal stdlib in the macos-14 image's default Xcode (15.4)
+      # lacks. 16.2 is the newest Xcode on that image; the deployment
+      # target, not the SDK, sets the macOS 14 floor.
+      - name: Select Xcode ${{ matrix.xcode }}
+        if: matrix.xcode
+        run: sudo xcode-select -s /Applications/Xcode_${{ matrix.xcode }}.app
 
       - name: Setup Beam
         uses: erlef/setup-beam@v1
@@ -129,6 +138,7 @@ jobs:
           - os: macos-14
             variant: aot
             min: "14.0"
+            xcode: "16.2"
           - os: macos-26
             variant: jit
             min: "26.2"
@@ -143,6 +153,14 @@ jobs:
       EMILY_CACHE: ~/Library/Caches/emily
     steps:
       - uses: actions/checkout@v6
+
+      # MLX >= 0.32.1 Metal kernels use `metal::remove_addrspace_t`, which
+      # the Metal stdlib in the macos-14 image's default Xcode (15.4)
+      # lacks. 16.2 is the newest Xcode on that image; the deployment
+      # target, not the SDK, sets the macOS 14 floor.
+      - name: Select Xcode ${{ matrix.xcode }}
+        if: matrix.xcode
+        run: sudo xcode-select -s /Applications/Xcode_${{ matrix.xcode }}.app
 
       - name: Setup Beam
         uses: erlef/setup-beam@v1
@@ -239,6 +257,13 @@ jobs:
       EMILY_CACHE: ~/Library/Caches/emily
     steps:
       - uses: actions/checkout@v6
+
+      # MLX >= 0.32.1 Metal kernels use `metal::remove_addrspace_t`, which
+      # the Metal stdlib in the macos-14 image's default Xcode (15.4)
+      # lacks. 16.2 is the newest Xcode on that image; the deployment
+      # target, not the SDK, sets the macOS 14 floor.
+      - name: Select Xcode 16.2
+        run: sudo xcode-select -s /Applications/Xcode_16.2.app
 
       - name: Setup Beam
         uses: erlef/setup-beam@v1
