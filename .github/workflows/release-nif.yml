@@ -11,15 +11,15 @@ name: Release NIF
 # * `workflow_dispatch` — manual rebuild against any branch. Useful
 #   for debugging or reproducing a release without cutting a new
 #   tag. Artefacts go to workflow run storage (retention 90 days);
-#   no GitHub release is touched.
+#   no GitHub release is touched and nothing is published to Hex.
 #
 # Consumers verify each tarball against the SHA256 pinned in
 # `native_checksums.txt`, which ships inside the hex package (and is
 # thus covered by Hex's package hash in the consumer's mix.lock — a
-# trust root independent of the mutable GitHub release). The maintainer
-# regenerates that file with `mix emily.publish` once the release is
-# public; the `.sha256` sidecars uploaded here are informational only.
-# See MAINTAINING.md.
+# trust root independent of the mutable GitHub release). The
+# `publish-hex` job regenerates that file with `mix emily.publish` once
+# the release is public, then publishes the package; the `.sha256`
+# sidecars uploaded here are informational only. See MAINTAINING.md.
 
 on:
   push:
@@ -203,3 +203,92 @@ jobs:
           TAG: ${{ needs.prepare-release.outputs.version }}
           REPO: ${{ github.repository }}
         run: gh release edit "$TAG" --repo "$REPO" --draft=false
+
+  # Publish the package to Hex once the release is public. `mix
+  # emily.publish` hashes the tarballs it downloads from that release into
+  # `native_checksums.txt`, which ships inside the package, so consumers
+  # still verify the NIF against Hex's package hash rather than the GitHub
+  # release.
+  #
+  # On tag push this publishes, using `HEX_API_KEY` from the `hex`
+  # environment (see MAINTAINING.md). On workflow_dispatch it runs every
+  # step except the upload: it pins checksums for the current `@version`'s
+  # release, then builds the package and docs. That exercises the job
+  # without the key, since `mix hex.publish --dry-run` still requires one.
+  #
+  # macOS because `hex.publish` builds docs, which compiles the project,
+  # and in a checkout that builds MLX and the NIF. MIX_ENV=docs matches
+  # the preferred env of `emily.publish` and `hex.publish`, so `hex.build`
+  # reuses the same compile.
+  publish-hex:
+    needs: [prepare-release, publish-release]
+    # `publish-release` is skipped on workflow_dispatch; `!cancelled()`
+    # lets this job still run then, while `needs` keeps it after the
+    # release is public on tag push.
+    if: >-
+      !cancelled() && needs.prepare-release.result == 'success' &&
+      (needs.publish-release.result == 'success' || github.event_name == 'workflow_dispatch')
+    runs-on: macos-14
+    environment: ${{ github.event_name == 'push' && 'hex' || '' }}
+    permissions:
+      contents: read
+    env:
+      MIX_ENV: docs
+      EMILY_MLX_VARIANT: aot
+      EMILY_CACHE: ~/Library/Caches/emily
+      VERSION: ${{ needs.prepare-release.outputs.version }}
+    steps:
+      - uses: actions/checkout@v6
+
+      # See the build job: MLX >= 0.32.1 needs Xcode 16 on macos-14.
+      - name: Select Xcode 16.2
+        run: sudo xcode-select -s /Applications/Xcode_16.2.app
+
+      - uses: erlef/setup-beam@v1
+        with:
+          version-file: .tool-versions
+          version-type: strict
+
+      - name: Restore deps
+        uses: actions/cache/restore@v5
+        with:
+          path: deps
+          key: deps-${{ runner.os }}-${{ hashFiles('mix.lock') }}
+          restore-keys: deps-${{ runner.os }}-
+
+      # The aot build cell above saves this cache, so it is warm by now.
+      - name: Restore MLX install
+        uses: actions/cache/restore@v5
+        with:
+          path: ~/Library/Caches/emily
+          key: mlx-release-${{ runner.os }}-aot-${{ hashFiles('c_src/**', 'Makefile', 'mix.exs', 'scripts/build-mlx.sh') }}
+          restore-keys: mlx-release-${{ runner.os }}-aot-
+
+      # Hex publishes mix.exs's `@version`, so refuse to publish a tag
+      # that doesn't match it.
+      - name: Check tag matches @version
+        if: github.event_name == 'push'
+        run: |
+          MIX_VERSION=$(grep -m1 '@version' mix.exs | awk -F'"' '{print $2}')
+          if [[ "$MIX_VERSION" != "$VERSION" ]]; then
+            echo "error: tag $VERSION does not match mix.exs @version $MIX_VERSION" >&2
+            exit 1
+          fi
+
+      - run: mix deps.get
+
+      - name: Pin NIF checksums
+        run: mix emily.publish
+
+      - name: Build package
+        run: mix hex.build
+
+      - name: Publish to Hex
+        if: github.event_name == 'push'
+        env:
+          HEX_API_KEY: ${{ secrets.HEX_API_KEY }}
+        run: mix hex.publish --yes
+
+      - name: Build docs
+        if: github.event_name == 'workflow_dispatch'
+        run: mix docs

@@ -50,11 +50,11 @@ default `aot`) through `config/config.exs` and stash the atom as
 ## Cutting a release
 
 Consumers verify each NIF tarball against the checksum pinned in
-`native_checksums.txt`, which ships in the hex package. The publish step
-itself is two commands (steps 4–5): `mix emily.publish` regenerates that
-file from the built release artifacts, then `mix hex.publish` publishes —
-so there is nothing to update or commit by hand (the file is git-ignored
-and can't go stale).
+`native_checksums.txt`, which ships in the hex package. Once the tag is
+pushed, the release workflow builds the NIFs, publishes the GitHub
+release, regenerates that file from the published tarballs and publishes
+the package to Hex, so there is nothing to update or commit by hand (the
+file is git-ignored and can't go stale).
 
 ### 1. Land changes on `main`
 
@@ -67,17 +67,25 @@ canonical "still works" signal.
 mix publisho patch   # or minor / major
 ```
 
-Bumps `@version`, rolls `RELEASE.md` into `CHANGELOG.md` under a
-dated `## <v>` heading, commits `Version <v>`, and creates an annotated
+Run it on a `release/<v>` branch cut from the tip of `main`: `main` is
+protected and takes changes through PRs only. `publisho` bumps
+`@version`, rolls `RELEASE.md` into `CHANGELOG.md` under a dated
+`## <v>` heading, commits `Version <v>`, and creates an annotated
 bare-semver tag (no `v` prefix). It does **not** push — that's the next
 step.
 
-### 3. Push the commit and the tag
+### 3. Merge the release PR, then push the tag
 
 ```sh
-git push              # the `Version <v>` commit
-git push origin <v>   # the tag — this is what fires the release workflow
+git push -u origin release/<v>   # the branch only, not the tag
+gh pr create --base main --title "Version <v>"
+# once CI is green, merge it with a merge commit, then:
+git push origin <v>              # the tag — this is what fires the release workflow
 ```
+
+Push the tag only after the PR merges, so the release builds from a
+commit in `main`'s history. A merge commit (not a squash) keeps the
+tagged `Version <v>` commit itself in that history.
 
 The tag push fires `.github/workflows/release-nif.yml`, which fans
 out `{variant × target}`:
@@ -103,38 +111,64 @@ so its assets become public with no manual step. That job is gated to the
 tag-push path, so a manual `workflow_dispatch` rebuild leaves the release
 untouched — see *Rebuilding without retagging*.
 
-### 4. Pin the checksums
+### 4. Hex publish (automatic)
 
-Once the workflow has finished and the release is public:
+When the release is public, the workflow's `publish-hex` job:
+
+1. checks that the tag matches mix.exs's `@version`, since Hex publishes
+   `@version`;
+2. runs `mix emily.publish` (an alias for `mix emily.checksums`), which
+   downloads each tarball from the public release and records its SHA256
+   in `native_checksums.txt`. It does **not** trust the `.sha256`
+   sidecars; it hashes the bytes itself;
+3. runs `mix hex.build`, then `mix hex.publish --yes`, publishing the
+   package (including `native_checksums.txt`) and its docs.
+
+Because `native_checksums.txt` ships inside the package, it is covered
+by Hex's package hash in the consumer's `mix.lock`, a trust root
+independent of the mutable GitHub release.
+
+It authenticates with `HEX_API_KEY`, a secret on the repository's `hex`
+environment. One-time setup:
+
+1. Generate a Hex API key with write access (on hex.pm, under
+   Dashboard → Keys), scoped as narrowly as Hex allows.
+2. In the repository settings, create an environment named `hex`. Under
+   *Deployment branches and tags*, allow only tags matching
+   `[0-9]*.[0-9]*.[0-9]*`.
+3. Add the key to that environment as the secret `HEX_API_KEY`.
+
+Only the tag-triggered run uses the `hex` environment, so no other run
+can read the key.
+
+A `workflow_dispatch` run executes the same job without the upload: it
+pins checksums for the current `@version`'s (already public) release,
+then runs `mix hex.build` and `mix docs`. Use it to check the job before
+tagging. (`mix hex.publish --dry-run` can't stand in for it, because it
+still requires a key.)
+
+#### Publishing by hand
+
+If `publish-hex` fails after the release is public, fix the cause and
+re-run the job from the Actions tab. Pinning is idempotent, and
+`hex.publish` refuses to overwrite a published version without
+`--replace`. To publish from a checkout instead:
 
 ```sh
-mix emily.publish   # alias for `mix emily.checksums`
+mix hex.user auth    # if this machine isn't authenticated
+mix emily.publish    # pin checksums from the public release
+mix hex.publish      # package (incl. native_checksums.txt) + docs
 ```
 
-Downloads each tarball from the now-public release and records its SHA256
-into `native_checksums.txt`. It does **not** trust the `.sha256` sidecars —
-it hashes the bytes itself. If the release isn't public yet, the download
-404s and the task aborts before writing anything.
-
-### 5. Publish to Hex
-
-```sh
-mix hex.publish   # publishes the package (incl. native_checksums.txt) + docs
-```
-
-Packages `native_checksums.txt` — so it's covered by Hex's package hash in
-the consumer's `mix.lock`, a trust root independent of the mutable GitHub
-release — and publishes the package + docs.
-
-Steps 4 and 5 are two separate commands on purpose — they can't be folded
-into one alias. Mix only loads the Hex archive for the task *named on the
+These are two separate commands on purpose — they can't be folded into
+one alias. Mix only loads the Hex archive for the task *named on the
 command line*, so a `hex.publish` step chained inside an alias (whose CLI
 name is `emily.publish`) fails with `** (Mix) The task "hex.publish" could
 not be found`. Running `mix hex.publish` directly is what loads Hex.
 `hex.publish` keeps its `:docs` `preferred_env`, so it publishes docs as
 well as the package.
 
-### 6. Verify end-to-end (recommended)
+### 5. Verify end-to-end (recommended)
 
 After publishing, in a throwaway project:
 
@@ -153,7 +187,7 @@ variant-mismatched consumer (`config :emily, variant: :jit`) should
 download the JIT tarball instead — worth spot-checking both lanes on
 the first release of a bump. The checksum pin only exists in the
 *published* package, so this must run against the published package,
-i.e. after step 5.
+i.e. after step 4.
 
 ### Rebuilding without retagging
 
@@ -169,7 +203,8 @@ gh workflow run release-nif.yml --repo ausimian/emily --ref main
 The dispatch run resolves `@version` from `mix.exs`, builds the
 same tarballs, and stashes them as workflow-run artefacts
 (retention 90 days). The GitHub release is untouched, so consumers
-on that version see no change.
+on that version see no change. The `publish-hex` job runs too, but
+stops short of uploading (see step 4), so nothing reaches Hex.
 
 ## Bumping MLX
 
