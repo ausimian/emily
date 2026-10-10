@@ -31,6 +31,7 @@ defmodule Emily.Fast.ComposedDefnTest do
   import Nx.Defn
   import Emily.BackendGenerators, only: [assert_close: 3]
 
+  alias Emily.FastFallback
   alias Emily.IR
   alias Nx.Defn.Composite
 
@@ -157,14 +158,7 @@ defmodule Emily.Fast.ComposedDefnTest do
   end
 
   # Composed result on the fallback lane: plain Evaluator + BinaryBackend.
-  # Pin the default backend too: the fallbacks create constants on the
-  # default backend, and one on Emily.Backend would pull the whole
-  # computation onto Emily's eager ops.
-  defp fallback(caller, args) do
-    Nx.with_default_backend(Nx.BinaryBackend, fn ->
-      Nx.Defn.jit_apply(caller, args, compiler: Nx.Defn.Evaluator)
-    end)
-  end
+  defp fallback(caller, args), do: FastFallback.run(caller, args)
 
   # ----------------------------------------------------------------
   # §1 — the issue's repro, two levels deep
@@ -319,7 +313,7 @@ defmodule Emily.Fast.ComposedDefnTest do
     test "each composed caller contains its fast_* opcode" do
       {x, w, b} = norm_inputs()
       {rx, o, f} = rope_inputs()
-      {q, k, v, m, s} = sdpa_inputs()
+      {q, k, v, m, _s} = sdpa_inputs()
 
       for {caller, args, opcode} <- [
             {&rms_caller/2, [x, w], :fast_rms_norm},

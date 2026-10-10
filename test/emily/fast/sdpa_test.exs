@@ -14,6 +14,8 @@ defmodule Emily.Fast.SDPATest do
 
   import Emily.BackendGenerators, only: [assert_close: 3]
 
+  alias Emily.FastFallback
+
   @f32_tol 1.0e-4
   @bf16_tol 1.0e-2
 
@@ -61,7 +63,7 @@ defmodule Emily.Fast.SDPATest do
         Emily.Fast.scaled_dot_product_attention(q, k, v, causal: false)
       end
 
-      expected = Nx.Defn.jit(fun, compiler: Nx.Defn.Evaluator).(ref_q, ref_k, ref_v)
+      expected = FastFallback.run(fun, [ref_q, ref_k, ref_v])
       fused = Nx.Defn.jit(fun, compiler: Emily.Compiler).(q, k, v)
 
       assert_close(fused, expected, tol: @f32_tol)
@@ -82,7 +84,7 @@ defmodule Emily.Fast.SDPATest do
         Emily.Fast.scaled_dot_product_attention(q, k, v, causal: true)
       end
 
-      expected = Nx.Defn.jit(fun, compiler: Nx.Defn.Evaluator).(ref_q, ref_k, ref_v)
+      expected = FastFallback.run(fun, [ref_q, ref_k, ref_v])
       fused = Nx.Defn.jit(fun, compiler: Emily.Compiler).(q, k, v)
 
       assert_close(fused, expected, tol: @f32_tol)
@@ -113,7 +115,7 @@ defmodule Emily.Fast.SDPATest do
       end
 
       expected =
-        Nx.Defn.jit(fun, compiler: Nx.Defn.Evaluator).(ref_q, ref_k, ref_v, ref_mask)
+        FastFallback.run(fun, [ref_q, ref_k, ref_v, ref_mask])
 
       fused = Nx.Defn.jit(fun, compiler: Emily.Compiler).(q, k, v, mask)
 
@@ -142,7 +144,7 @@ defmodule Emily.Fast.SDPATest do
       end
 
       expected =
-        Nx.Defn.jit(fun, compiler: Nx.Defn.Evaluator).(ref_q, ref_k, ref_v, ref_mask)
+        FastFallback.run(fun, [ref_q, ref_k, ref_v, ref_mask])
 
       fused = Nx.Defn.jit(fun, compiler: Emily.Compiler).(q, k, v, mask)
 
@@ -237,7 +239,7 @@ defmodule Emily.Fast.SDPATest do
         Emily.Fast.scaled_dot_product_attention(q, k, v, sinks: s)
       end
 
-      expected = Nx.Defn.jit(fun, compiler: Nx.Defn.Evaluator).(ref_q, ref_k, ref_v, ref_sinks)
+      expected = FastFallback.run(fun, [ref_q, ref_k, ref_v, ref_sinks])
       fused = Nx.Defn.jit(fun, compiler: Emily.Compiler).(q, k, v, sinks)
 
       assert_close(fused, expected, tol: @f32_tol)
@@ -271,7 +273,7 @@ defmodule Emily.Fast.SDPATest do
       end
 
       expected =
-        Nx.Defn.jit(fun, compiler: Nx.Defn.Evaluator).(ref_q, ref_k, ref_v, ref_mask, ref_sinks)
+        FastFallback.run(fun, [ref_q, ref_k, ref_v, ref_mask, ref_sinks])
 
       fused = Nx.Defn.jit(fun, compiler: Emily.Compiler).(q, k, v, mask, sinks)
 
@@ -322,7 +324,7 @@ defmodule Emily.Fast.SDPATest do
       ]
 
       for fun <- funs do
-        expected = apply(Nx.Defn.jit(fun, compiler: Nx.Defn.Evaluator), refs)
+        expected = FastFallback.run(fun, refs)
         fused = apply(Nx.Defn.jit(fun, compiler: Emily.Compiler), args)
         assert_close(fused, expected, tol: @f32_tol)
       end
@@ -343,7 +345,7 @@ defmodule Emily.Fast.SDPATest do
         Emily.Fast.scaled_dot_product_attention(q, k, v, causal: true, force_fused: true)
       end
 
-      expected = Nx.Defn.jit(fun, compiler: Nx.Defn.Evaluator).(ref_q, ref_k, ref_v)
+      expected = FastFallback.run(fun, [ref_q, ref_k, ref_v])
       fused = Nx.Defn.jit(fun, compiler: Emily.Compiler).(q, k, v)
 
       assert_close(fused, expected, tol: @f32_tol)

@@ -20,6 +20,8 @@ defmodule Emily.Fast.RMSNormTest do
 
   import Emily.BackendGenerators, only: [assert_close: 3]
 
+  alias Emily.FastFallback
+
   @f32_tol 1.0e-5
   @bf16_tol 1.0e-2
 
@@ -41,7 +43,7 @@ defmodule Emily.Fast.RMSNormTest do
       weight = Nx.tensor([0.5, 1.0, 1.5, 2.0], backend: Nx.BinaryBackend)
 
       fun = fn x, w -> Emily.Fast.rms_norm(x, w, eps: 1.0e-6) end
-      got = Nx.Defn.jit(fun, compiler: Nx.Defn.Evaluator).(x, weight)
+      got = FastFallback.run(fun, [x, weight])
       expected = reference_rms_norm(x, weight, 1.0e-6)
 
       assert_close(got, expected, tol: @f32_tol)
@@ -66,7 +68,7 @@ defmodule Emily.Fast.RMSNormTest do
       fun = fn x, w -> Emily.Fast.rms_norm(x, w, eps: 1.0e-6) end
 
       expected =
-        Nx.Defn.jit(fun, compiler: Nx.Defn.Evaluator).(ref_x, ref_w)
+        FastFallback.run(fun, [ref_x, ref_w])
 
       fused = Nx.Defn.jit(fun, compiler: Emily.Compiler).(x, w)
 
@@ -87,7 +89,7 @@ defmodule Emily.Fast.RMSNormTest do
 
       fun = fn x, w -> Emily.Fast.rms_norm(x, w, eps: 1.0e-6) end
 
-      expected = Nx.Defn.jit(fun, compiler: Nx.Defn.Evaluator).(ref_x_bf, ref_w_bf)
+      expected = FastFallback.run(fun, [ref_x_bf, ref_w_bf])
       fused = Nx.Defn.jit(fun, compiler: Emily.Compiler).(x, w)
 
       assert_close(fused, expected, tol: @bf16_tol)
@@ -116,7 +118,7 @@ defmodule Emily.Fast.RMSNormTest do
       ref_x = Nx.backend_copy(x, Nx.BinaryBackend)
       ref_w = Nx.backend_copy(w, Nx.BinaryBackend)
 
-      expected = Nx.Defn.jit(fun, compiler: Nx.Defn.Evaluator).(ref_x, ref_w)
+      expected = FastFallback.run(fun, [ref_x, ref_w])
       fused = Nx.Defn.jit(fun, compiler: Emily.Compiler).(x, w)
       assert_close(fused, expected, tol: @f32_tol)
     end

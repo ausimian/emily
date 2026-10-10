@@ -9,8 +9,14 @@ defmodule Emily.Fast.LayerNormTest do
 
   import Emily.BackendGenerators, only: [assert_close: 3]
 
+  alias Emily.FastFallback
+
   @f32_tol 1.0e-5
-  @bf16_tol 1.0e-2
+  # The fallback rounds the normalized value to bf16 before applying
+  # weight and bias (Bumblebee's recipe), while the fused kernel applies
+  # them in f32 and rounds once, so the two differ by a couple of bf16
+  # ulps (about 0.4% each).
+  @bf16_tol 2.0e-2
 
   defp reference_layer_norm(x, weight, bias, eps) do
     orig_type = Nx.type(x)
@@ -33,7 +39,7 @@ defmodule Emily.Fast.LayerNormTest do
       b = Nx.tensor([0.1, -0.1, 0.2, -0.2], backend: Nx.BinaryBackend)
 
       fun = fn x, w, b -> Emily.Fast.layer_norm(x, w, b, eps: 1.0e-5) end
-      got = Nx.Defn.jit(fun, compiler: Nx.Defn.Evaluator).(x, w, b)
+      got = FastFallback.run(fun, [x, w, b])
       expected = reference_layer_norm(x, w, b, 1.0e-5)
 
       assert_close(got, expected, tol: @f32_tol)
@@ -59,7 +65,7 @@ defmodule Emily.Fast.LayerNormTest do
 
       fun = fn x, w, b -> Emily.Fast.layer_norm(x, w, b, eps: 1.0e-5) end
 
-      expected = Nx.Defn.jit(fun, compiler: Nx.Defn.Evaluator).(ref_x, ref_w, ref_b)
+      expected = FastFallback.run(fun, [ref_x, ref_w, ref_b])
       fused = Nx.Defn.jit(fun, compiler: Emily.Compiler).(x, w, b)
 
       assert_close(fused, expected, tol: @f32_tol)
@@ -80,7 +86,7 @@ defmodule Emily.Fast.LayerNormTest do
 
       fun = fn x, w, b -> Emily.Fast.layer_norm(x, w, b, eps: 1.0e-5) end
 
-      expected = Nx.Defn.jit(fun, compiler: Nx.Defn.Evaluator).(ref_x, ref_w, ref_b)
+      expected = FastFallback.run(fun, [ref_x, ref_w, ref_b])
       fused = Nx.Defn.jit(fun, compiler: Emily.Compiler).(x, w, b)
 
       assert_close(fused, expected, tol: @bf16_tol)
