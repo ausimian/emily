@@ -24,10 +24,15 @@
 #   * performance-enum-size — Opcode and ref::Kind are int64_t on purpose
 #     (they pack into the int64 refs the Elixir lowerer emits); shrinking
 #     the base type would break that ABI.
+#   * bugprone-signed-bitwise — new in LLVM 23. Flags the shifts and
+#     masks that unpack the IR's dtype codes and slot refs; those are
+#     int64_t because the Elixir lowerer emits them as BEAM integers, and
+#     they are always non-negative, so the signed operations are
+#     well-defined.
 #
 # HeaderFilterRegex scopes diagnostics to our own headers; MLX and Fine
 # arrive via -isystem and are skipped, exactly as the compiler skips them.
-Checks: '-*,bugprone-*,clang-analyzer-*,performance-*,-bugprone-easily-swappable-parameters,-performance-unnecessary-value-param,-bugprone-throwing-static-initialization,-performance-enum-size'
+Checks: '-*,bugprone-*,clang-analyzer-*,performance-*,-bugprone-easily-swappable-parameters,-performance-unnecessary-value-param,-bugprone-throwing-static-initialization,-performance-enum-size,-bugprone-signed-bitwise'
 WarningsAsErrors: '*'
 HeaderFilterRegex: 'c_src/'
 FormatStyle: none
