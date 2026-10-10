@@ -157,8 +157,13 @@ defmodule Emily.Fast.ComposedDefnTest do
   end
 
   # Composed result on the fallback lane: plain Evaluator + BinaryBackend.
+  # Pin the default backend too: the fallbacks create constants on the
+  # default backend, and one on Emily.Backend would pull the whole
+  # computation onto Emily's eager ops.
   defp fallback(caller, args) do
-    Nx.Defn.jit_apply(caller, args, compiler: Nx.Defn.Evaluator)
+    Nx.with_default_backend(Nx.BinaryBackend, fn ->
+      Nx.Defn.jit_apply(caller, args, compiler: Nx.Defn.Evaluator)
+    end)
   end
 
   # ----------------------------------------------------------------
@@ -364,14 +369,10 @@ defmodule Emily.Fast.ComposedDefnTest do
         Nx.Defn.jit_apply(caller, to_emily(args), compiler: Emily.Compiler, native: false)
       end
 
-      receive do
-        {:block_fallback, struct} ->
-          if match?("Elixir.Emily.Fast.Block." <> _, Atom.to_string(struct)) do
-            flunk("Emily.Fast block #{inspect(struct)} fell back to the composed slow path")
-          end
-      after
-        0 -> :ok
-      end
+      # Telemetry handlers run in the caller, so any fallback event is
+      # already in the mailbox.
+      refute_received {:block_fallback, Emily.Fast.Block.RMSNorm}
+      refute_received {:block_fallback, Emily.Fast.Block.SDPAWithMask}
     end
   end
 end

@@ -17,6 +17,11 @@
 
 ### Fixed
 
+- `Emily.Fast` kernels can now be called from inside a caller's own
+  `defn` or `defnp`, as the module documentation shows. Before, they only
+  worked as the top-level function passed to `Nx.Defn.jit`, and raised
+  "cannot invoke ... inside defn because it was not defined with defn"
+  when nested (#205).
 - `Emily.Bumblebee.FastKernels.apply/1` now rewrites the attention and
   RoPE layers of Bumblebee models. Before, it only rewrote RMSNorm and
   LayerNorm: it never recognised Bumblebee's attention and RoPE layers,
