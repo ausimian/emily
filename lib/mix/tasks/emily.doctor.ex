@@ -375,8 +375,6 @@ defmodule Mix.Tasks.Emily.Doctor do
 
   defp parse_macos_version(_version), do: :unknown
 
-  defp version_too_old?(:unknown, _variant), do: false
-
   defp version_too_old?(version, variant) do
     {minimum, _label} = minimum_macos(variant)
     version < minimum
