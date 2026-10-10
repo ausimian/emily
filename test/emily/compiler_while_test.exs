@@ -94,6 +94,23 @@ defmodule Emily.CompilerWhileTest do
     acc
   end
 
+  # A loop whose body runs its own loop. mx::compile can't trace the inner
+  # data-dependent loop, so under fusion the outer body stays host-controlled
+  # and only the inner body fuses.
+  defn nested_loops(x) do
+    {_i, acc} =
+      while {i = 0, acc = x}, Nx.less(i, 3) do
+        {_j, inner} =
+          while {j = 0, inner = acc}, Nx.less(j, 2) do
+            {j + 1, Nx.add(inner, 1.0)}
+          end
+
+        {i + 1, Nx.multiply(inner, 2.0)}
+      end
+
+    acc
+  end
+
   describe "fused-while (fuse) == evaluator within f32 tol" do
     test "loop body with a softmax run fuses and stays all-close" do
       x = t([[1.0, 2.0, 3.0], [0.5, -1.0, 2.0]])
@@ -151,6 +168,20 @@ defmodule Emily.CompilerWhileTest do
       assert Nx.to_flat_list(fused) == [1.0, 2.0, 3.0, 4.0]
       assert Nx.to_binary(fused) == Nx.to_binary(eval)
     end
+
+    test "a nested loop keeps the outer body host-controlled and fuses the inner one" do
+      # The outer body contains a `while`, so it must replay host-controlled
+      # rather than go to mx::compile, which can't trace the inner loop. The
+      # values are exact integer-valued floats, so the fused result is
+      # bit-identical to the evaluator.
+      x = t([1.0, 2.0])
+      fused = Nx.Defn.jit(&nested_loops/1, @fuse).(x)
+      eval = Nx.Defn.jit(&nested_loops/1, @eval).(x)
+
+      assert %Emily.Backend{} = fused.data
+      assert Nx.to_flat_list(fused) == [36.0, 44.0]
+      assert Nx.to_binary(fused) == Nx.to_binary(eval)
+    end
   end
 
   describe "defn while compiles native == evaluator" do
@@ -176,6 +207,10 @@ defmodule Emily.CompilerWhileTest do
 
     test "single-tensor loop state (no :elem projection)" do
       equiv(&double_until/1, [t([1.0, 3.0, 7.0])])
+    end
+
+    test "nested loops" do
+      equiv(&nested_loops/1, [t([1.0, 2.0])])
     end
 
     test "dynamic put_slice (KV-write shape) inside the loop body" do
