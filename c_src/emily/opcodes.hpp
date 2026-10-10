@@ -253,9 +253,13 @@ enum class Opcode : int64_t {
   // mask_mode = "array". Mirrors
   // Emily.Backend.fast_scaled_dot_product_attention_with_mask_and_sinks/7.
   FastSDPAMaskSinks = 122,
+  // mx::einsum. operands: the einsum operands (variadic);
+  // iattrs [[codepoints...]] of the explicit equation string. Mirrors
+  // Emily.Backend's Emily.Fast.Block.Einsum clause (Native.einsum).
+  Einsum = 123,
 };
 
-inline constexpr int64_t kOpcodeCount = 123;
+inline constexpr int64_t kOpcodeCount = 124;
 
 // Quant mode code (Emily.IR @quant_modes) -> MLX mode string.
 inline std::string qmode_from_code(int64_t code) {
@@ -603,6 +607,11 @@ inline mx::array dispatch_op(Opcode op, const std::vector<mx::array> &in,
     return mx::fast::scaled_dot_product_attention(
         in[0], in[1], in[2], scale, "array", std::optional<mx::array>(in[3]),
         std::optional<mx::array>(in[4]), force_fused, s);
+  }
+  case Opcode::Einsum: {
+    const auto &codes = attr0(iattrs, "einsum");
+    std::string equation(codes.begin(), codes.end());
+    return mx::einsum(equation, in, s);
   }
   case Opcode::QuantizedMatmul: {
     if (in.size() != 4) {

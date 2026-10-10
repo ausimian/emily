@@ -1792,6 +1792,11 @@ defmodule Emily.Backend do
         force_fused: b.force_fused
       )
 
+  def block(%FB.Einsum{equation: equation}, out, operands, _fun) do
+    w = worker()
+    w |> Native.einsum(equation, Enum.map(operands, &ref/1)) |> wrap(out, w)
+  end
+
   # ---- quantized matmul block ----
   def block(%Emily.Quantization.Block.QuantizedMatmul{} = qb, out, [x, q, s, b], _fun) do
     w = worker()

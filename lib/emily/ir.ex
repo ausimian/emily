@@ -216,7 +216,10 @@ defmodule Emily.IR do
     # operands [q, k, v, sinks]; iattrs [[scale_bits], [causal]]
     fast_sdpa_sinks: 121,
     # operands [q, k, v, mask, sinks]; iattrs [[scale_bits]]
-    fast_sdpa_mask_sinks: 122
+    fast_sdpa_mask_sinks: 122,
+    # mx::einsum. operands: the einsum operands (variadic); iattrs
+    # [[codepoints...]] of the explicit equation string.
+    einsum: 123
   }
 
   # Quant mode string -> code; decoded by qmode_from_code in
@@ -1329,6 +1332,13 @@ defmodule Emily.IR do
     )
   end
 
+  # Emily.Fast.einsum. Mirrors the Emily.Backend block clause: the
+  # equation string crosses as its codepoints.
+  defp lower_block(%FB.Einsum{equation: equation}, operands, _expr, t, state) do
+    {refs, state} = Enum.map_reduce(operands, state, &lower_node/2)
+    emit_coerced(state, :einsum, refs, [String.to_charlist(equation)], t.type)
+  end
+
   defp lower_block(%QB.QuantizedMatmul{} = qb, [x, q, s, b], _expr, t, state) do
     {rx, state} = lower_node(x, state)
     {rq, state} = lower_node(q, state)
@@ -1631,7 +1641,7 @@ defmodule Emily.IR do
     raise ArgumentError,
           "Emily Expr compiler does not yet lower the block " <>
             "#{inspect(struct.__struct__)} (no fallback). Supported: RMSNorm, " <>
-            "LayerNorm, RoPE, RoPEWithFreqs, SDPA, SDPAWithMask, QuantizedMatmul."
+            "LayerNorm, RoPE, RoPEWithFreqs, SDPA, SDPAWithMask, Einsum, QuantizedMatmul."
   end
 
   # The flattened loop-carried state of a `while` arg: Nx delivers it as a
