@@ -5,7 +5,7 @@ defmodule Emily.FastKernelsRewrites do
   (`:fast_layer_norm_impl`, `:fast_rms_norm_impl`, `:fast_rope_impl`,
   `:fast_sdpa_impl`).
 
-  The `:fast_kernels_full` tests assert these counts so that a model the
+  The `:fast_kernels_full` and `:qwen3_full` tests assert these counts so that a model the
   shim silently stops rewriting fails loudly, instead of passing because
   the unrewritten model still matches the reference.
   """

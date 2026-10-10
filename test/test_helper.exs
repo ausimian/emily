@@ -13,10 +13,12 @@
 #     mix test --only whisper_full       # ~150 MB checkpoint
 #     mix test --only distilbert_full    # ~250 MB checkpoint
 #
-# Qwen3 conformance lives outside `mix test` entirely —
-# `scripts/qwen3_conformance.exs` is a standalone Mix.install script
-# pinning the Bumblebee main ref that carries Qwen3 support. See its
-# header for usage.
+# `:qwen3_full` runs the real Qwen3-0.6B decoder (~1.5 GB checkpoint)
+# natively, with `fuse: true`, with the `Emily.Bumblebee.FastKernels`
+# rewrites and through `Nx.Serving`, against stock Bumblebee on the
+# evaluator:
+#
+#     mix test --only qwen3_full
 #
 # (Soak tests deliberately stay in the default suite; see
 # `test/soak/memory_test.exs` for the rationale.)
@@ -36,8 +38,8 @@
 #
 # `:fast_kernels_full` is the M11 fused-kernel variant of the full
 # ViT and Whisper conformance models (and one tiny-random DistilBERT
-# smoke), plus real Qwen3-0.6B for RMSNorm, RoPE, causal
-# grouped-query attention and KV-cache decode. Each test applies
+# smoke). The fused RMSNorm, RoPE, causal grouped-query attention and
+# KV-cache decode on Qwen3 run under `:qwen3_full`. Each test applies
 # `Emily.Bumblebee.FastKernels.apply/2` to the loaded Axon model so
 # that RMSNorm / LayerNorm / RoPE / SDPA dispatch through the MLX
 # `mx::fast::*` kernels via `Emily.Fast`, on the evaluator and the
@@ -71,6 +73,7 @@ ExUnit.start(
     :whisper_full,
     :distilbert_full,
     :training_full,
-    :fast_kernels_full
+    :fast_kernels_full,
+    :qwen3_full
   ]
 )
