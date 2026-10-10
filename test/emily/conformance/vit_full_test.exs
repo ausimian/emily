@@ -25,6 +25,7 @@ defmodule Emily.Conformance.VitFullTest do
   use Emily.ConformanceHelper
 
   alias Emily.Bumblebee.FastKernels
+  alias Emily.FastKernelsRewrites
 
   @moduletag :vit_full
   @moduletag capture_log: true
@@ -70,37 +71,56 @@ defmodule Emily.Conformance.VitFullTest do
   end
 
   @tag :fast_kernels_full
-  test "ViT with fused MLX kernels matches the pinned argmax within widened tolerance" do
-    {:ok, %{model: model, params: params}} =
-      Bumblebee.load_model({:hf, "google/vit-base-patch16-224"})
+  test "FastKernels rewrites every LayerNorm and attention layer of ViT" do
+    {:ok, %{model: model}} = Bumblebee.load_model({:hf, "google/vit-base-patch16-224"})
 
-    fast_model = FastKernels.apply(model)
+    # 12 blocks: two LayerNorms and one attention each, plus the final norm.
+    assert FastKernelsRewrites.counts(FastKernels.apply(model)) ==
+             %{fast_layer_norm_impl: 25, fast_sdpa_impl: 12}
+  end
 
-    inputs = %{
-      "pixel_values" => Nx.broadcast(Nx.tensor(0.5, type: :f32), {1, 224, 224, 3})
-    }
+  # `:force_fused_sdpa` only changes which kernel MLX picks. At ViT's head
+  # dim of 64 it already picks the fused one, so that variant checks the
+  # option reaches the kernel and lowers natively, not its memory effect.
+  for {variant, apply_opts, predict_opts} <- [
+        {"evaluator", [], []},
+        {"native", [], [compiler: Emily.Compiler, native: true, native_fallback: :raise]},
+        {"native, force_fused_sdpa", [force_fused_sdpa: true],
+         [compiler: Emily.Compiler, native: true, native_fallback: :raise]}
+      ] do
+    @tag :fast_kernels_full
+    test "ViT with fused MLX kernels (#{variant}) matches the pinned argmax within widened tolerance" do
+      {:ok, %{model: model, params: params}} =
+        Bumblebee.load_model({:hf, "google/vit-base-patch16-224"})
 
-    outputs = Axon.predict(fast_model, params, inputs)
+      fast_model = FastKernels.apply(model, unquote(apply_opts))
 
-    assert Nx.shape(outputs.logits) == {1, 1000}
+      inputs = %{
+        "pixel_values" => Nx.broadcast(Nx.tensor(0.5, type: :f32), {1, 224, 224, 3})
+      }
 
-    argmax =
-      outputs.logits
-      |> Nx.argmax(axis: -1)
-      |> Nx.backend_transfer(Nx.BinaryBackend)
-      |> Nx.to_flat_list()
-      |> hd()
+      outputs = Axon.predict(fast_model, params, inputs, unquote(predict_opts))
 
-    assert argmax == 763
+      assert Nx.shape(outputs.logits) == {1, 1000}
 
-    # Fused LayerNorm + SDPA reorder ops slightly; loosen tolerance by
-    # ~10× over the pinned-logits assertion above. Empirical gap on
-    # M3 was ~3e-4 across 12 layers; 1e-3 is comfortable.
-    assert_all_close(
-      outputs.logits[[.., 0..4]],
-      Nx.tensor([[0.0112, -0.5066, -0.7792, -1.0436, -0.1899]]),
-      atol: 1.0e-3,
-      rtol: 1.0e-3
-    )
+      argmax =
+        outputs.logits
+        |> Nx.argmax(axis: -1)
+        |> Nx.backend_transfer(Nx.BinaryBackend)
+        |> Nx.to_flat_list()
+        |> hd()
+
+      assert argmax == 763
+
+      # Fused LayerNorm + SDPA reorder ops slightly; loosen tolerance by
+      # ~10× over the pinned-logits assertion above. Empirical gap on
+      # M3 was ~3e-4 across 12 layers; 1e-3 is comfortable.
+      assert_all_close(
+        outputs.logits[[.., 0..4]],
+        Nx.tensor([[0.0112, -0.5066, -0.7792, -1.0436, -0.1899]]),
+        atol: 1.0e-3,
+        rtol: 1.0e-3
+      )
+    end
   end
 end

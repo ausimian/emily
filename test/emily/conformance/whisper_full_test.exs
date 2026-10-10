@@ -26,6 +26,7 @@ defmodule Emily.Conformance.WhisperFullTest do
   use Emily.ConformanceHelper
 
   alias Emily.Bumblebee.FastKernels
+  alias Emily.FastKernelsRewrites
 
   @moduletag :whisper_full
   @moduletag capture_log: true
@@ -123,47 +124,67 @@ defmodule Emily.Conformance.WhisperFullTest do
   end
 
   @tag :fast_kernels_full
-  test "Whisper-tiny with fused MLX kernels matches the pinned argmax within widened tolerance" do
-    {:ok, %{model: model, params: params}} =
-      Bumblebee.load_model({:hf, "openai/whisper-tiny"})
+  test "FastKernels rewrites every LayerNorm and attention layer of Whisper" do
+    {:ok, %{model: model}} = Bumblebee.load_model({:hf, "openai/whisper-tiny"})
 
-    fast_model = FastKernels.apply(model)
+    # 4 encoder blocks (2 norms, self-attention) and 4 decoder blocks (3
+    # norms, self- and cross-attention), plus each stack's final norm.
+    assert FastKernelsRewrites.counts(FastKernels.apply(model)) ==
+             %{fast_layer_norm_impl: 22, fast_sdpa_impl: 12}
+  end
 
-    input_features =
-      Nx.sin(Nx.iota({1, 3000, 80}, type: :f32) |> Nx.multiply(0.01))
+  # As in `vit_full_test.exs`: at head dim 64 MLX already picks the fused
+  # kernel, so the `:force_fused_sdpa` variant checks the option reaches
+  # the self- and cross-attention kernels and lowers natively.
+  for {variant, apply_opts, predict_opts} <- [
+        {"evaluator", [], []},
+        {"native", [], [compiler: Emily.Compiler, native: true, native_fallback: :raise]},
+        {"native, force_fused_sdpa", [force_fused_sdpa: true],
+         [compiler: Emily.Compiler, native: true, native_fallback: :raise]}
+      ] do
+    @tag :fast_kernels_full
+    test "Whisper-tiny with fused MLX kernels (#{variant}) matches the pinned argmax within widened tolerance" do
+      {:ok, %{model: model, params: params}} =
+        Bumblebee.load_model({:hf, "openai/whisper-tiny"})
 
-    decoder_input_ids = Nx.tensor([[50_258, 50_259, 50_359, 50_363, 50, 100]])
-    decoder_attention_mask = Nx.tensor([[1, 1, 1, 1, 1, 1]])
+      fast_model = FastKernels.apply(model, unquote(apply_opts))
 
-    inputs = %{
-      "input_features" => input_features,
-      "decoder_input_ids" => decoder_input_ids,
-      "decoder_attention_mask" => decoder_attention_mask
-    }
+      input_features =
+        Nx.sin(Nx.iota({1, 3000, 80}, type: :f32) |> Nx.multiply(0.01))
 
-    outputs = Axon.predict(fast_model, params, inputs)
+      decoder_input_ids = Nx.tensor([[50_258, 50_259, 50_359, 50_363, 50, 100]])
+      decoder_attention_mask = Nx.tensor([[1, 1, 1, 1, 1, 1]])
 
-    assert Nx.shape(outputs.logits) == {1, 6, 51_865}
+      inputs = %{
+        "input_features" => input_features,
+        "decoder_input_ids" => decoder_input_ids,
+        "decoder_attention_mask" => decoder_attention_mask
+      }
 
-    argmax =
-      outputs.logits[[.., -1, ..]]
-      |> Nx.argmax(axis: -1)
-      |> Nx.backend_transfer(Nx.BinaryBackend)
-      |> Nx.to_flat_list()
-      |> hd()
+      outputs = Axon.predict(fast_model, params, inputs, unquote(predict_opts))
 
-    assert argmax == 50_257
+      assert Nx.shape(outputs.logits) == {1, 6, 51_865}
 
-    # Fused LayerNorm + SDPA path: same logits-slice pin, with the
-    # tolerance loosened one further OOM to absorb cross-attention's
-    # extra fused-kernel reordering.
-    assert_all_close(
-      outputs.logits[[.., 0..2, 0..2]],
-      Nx.tensor([
-        [[2.9246, 0.2663, 3.8530], [-4.5523, -8.4833, -4.4232], [17.7350, 16.3070, 13.2149]]
-      ]),
-      atol: 1.0e-2,
-      rtol: 1.0e-2
-    )
+      argmax =
+        outputs.logits[[.., -1, ..]]
+        |> Nx.argmax(axis: -1)
+        |> Nx.backend_transfer(Nx.BinaryBackend)
+        |> Nx.to_flat_list()
+        |> hd()
+
+      assert argmax == 50_257
+
+      # Fused LayerNorm + SDPA path: same logits-slice pin, with the
+      # tolerance loosened one further OOM to absorb cross-attention's
+      # extra fused-kernel reordering.
+      assert_all_close(
+        outputs.logits[[.., 0..2, 0..2]],
+        Nx.tensor([
+          [[2.9246, 0.2663, 3.8530], [-4.5523, -8.4833, -4.4232], [17.7350, 16.3070, 13.2149]]
+        ]),
+        atol: 1.0e-2,
+        rtol: 1.0e-2
+      )
+    end
   end
 end
