@@ -85,7 +85,10 @@ git push origin <v>              # the tag — this is what fires the release wo
 
 Push the tag only after the PR merges, so the release builds from a
 commit in `main`'s history. A merge commit (not a squash) keeps the
-tagged `Version <v>` commit itself in that history.
+tagged `Version <v>` commit itself in that history. The workflow's
+`prepare-release` job refuses a tag whose commit isn't in `main`'s
+history, so a tag pushed too early fails before anything is built or
+released.
 
 The tag push fires `.github/workflows/release-nif.yml`, which fans
 out `{variant × target}`:
@@ -137,8 +140,16 @@ environment. One-time setup:
    *Deployment branches and tags*, allow only tags matching
    `[0-9]*.[0-9]*.[0-9]*`.
 3. Add the key to that environment as the secret `HEX_API_KEY`.
+4. Under *Settings → Rules → Rulesets*, create an active tag ruleset
+   ("Release tags") targeting `[0-9]*.[0-9]*.[0-9]*`. Restrict creations,
+   updates and deletions, with *Repository admin* as the only bypass.
 
-Only the tag-triggered run uses the `hex` environment, so no other run
+The environment rule matches tag *names* only, and a tag-push run uses
+the workflow file from the tagged commit. So the ruleset is what keeps
+the key safe: without it, anyone able to push a matching tag could
+publish an arbitrary commit, and no check inside the workflow could
+stop them. With it, only repository admins can create release tags, and
+only the tag-triggered run uses the `hex` environment, so no other run
 can read the key.
 
 A `workflow_dispatch` run executes the same job without the upload: it

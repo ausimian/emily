@@ -40,6 +40,23 @@ jobs:
       version: ${{ steps.version.outputs.version }}
     steps:
       - uses: actions/checkout@v6
+        with:
+          # Full history, so the check below can see main.
+          fetch-depth: 0
+
+      # Refuse a tag whose commit isn't in main's history, such as one
+      # pushed before its release PR merged. This only guards against
+      # mistakes: a tag-push run uses the workflow file from the tagged
+      # commit, so it can't stop someone who can push tags. The "Release
+      # tags" ruleset, which lets only repository admins create release
+      # tags, is the actual control (see MAINTAINING.md).
+      - name: Check tag is on main
+        if: github.event_name == 'push'
+        run: |
+          if ! git merge-base --is-ancestor HEAD origin/main; then
+            echo "error: tag $GITHUB_REF_NAME ($(git rev-parse HEAD)) is not in main's history" >&2
+            exit 1
+          fi
 
       - name: Resolve version
         id: version
