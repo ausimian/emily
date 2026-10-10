@@ -34,11 +34,14 @@
 #
 #     mix test --only grad_conformance
 #
-# `:fast_kernels_full` is the M11 fused-kernel variant of every full
-# conformance model (and one tiny-random DistilBERT smoke). Each test
-# applies `Emily.Bumblebee.FastKernels.apply/1` to the loaded Axon
-# model so that RMSNorm / LayerNorm / RoPE / SDPA dispatch through
-# the MLX `mx::fast::*` kernels via `Emily.Fast`. Run explicitly:
+# `:fast_kernels_full` is the M11 fused-kernel variant of the full
+# ViT and Whisper conformance models (and one tiny-random DistilBERT
+# smoke), plus real Qwen3-0.6B for RMSNorm, RoPE, causal
+# grouped-query attention and KV-cache decode. Each test applies
+# `Emily.Bumblebee.FastKernels.apply/2` to the loaded Axon model so
+# that RMSNorm / LayerNorm / RoPE / SDPA dispatch through the MLX
+# `mx::fast::*` kernels via `Emily.Fast`, on the evaluator and the
+# native compiler. Run explicitly:
 #
 #     mix test --only fast_kernels_full
 #
