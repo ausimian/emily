@@ -15,6 +15,9 @@
 - `Emily.Fast.rope_with_freqs/4` rotated by the wrong angles on the
   Emily backend: MLX expects periods, not the inverse frequencies the
   function takes. It now matches its documented contract.
+- The defn fallback of `Emily.Fast.scaled_dot_product_attention/4` (used
+  on non-Emily backends) applied an inverted causal mask, letting each
+  query attend to later keys instead of earlier ones.
 
 ### Changed
 

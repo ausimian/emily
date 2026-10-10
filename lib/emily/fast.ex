@@ -479,7 +479,7 @@ defmodule Emily.Fast do
       if causal do
         q_len = Nx.axis_size(q, -2)
         k_len = Nx.axis_size(k, -2)
-        mask = Nx.less_equal(Nx.iota({q_len, 1}), Nx.iota({1, k_len}))
+        mask = causal_keep_mask(q_len, k_len)
 
         bias =
           Nx.select(
@@ -497,6 +497,12 @@ defmodule Emily.Fast do
     Nx.dot(probs, [-1], [0, 1], v, [-2], [0, 1])
   end
 
+  # MLX's causal mask is aligned to the bottom-right: query `i` sees
+  # keys `0..(k_len - q_len + i)`, so the last query sees every key.
+  defp causal_keep_mask(q_len, k_len) do
+    Nx.greater_equal(Nx.add(Nx.iota({q_len, 1}), k_len - q_len), Nx.iota({1, k_len}))
+  end
+
   defp sdpa_sinks_fallback(q, k, v, sinks, opts) do
     scale = opts[:scale]
     causal = opts[:causal]
@@ -509,7 +515,7 @@ defmodule Emily.Fast do
       if causal do
         q_len = Nx.axis_size(q, -2)
         k_len = Nx.axis_size(k, -2)
-        mask = Nx.less_equal(Nx.iota({q_len, 1}), Nx.iota({1, k_len}))
+        mask = causal_keep_mask(q_len, k_len)
 
         bias =
           Nx.select(
