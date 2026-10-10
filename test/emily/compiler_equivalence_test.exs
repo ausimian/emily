@@ -733,6 +733,85 @@ defmodule Emily.CompilerEquivalenceTest do
         [q, k, v, mask, sinks]
       )
     end
+
+    # force_fused rides as a trailing iattr on every SDPA opcode. Head
+    # dim 64 has a fused kernel, so each forced variant must run and
+    # match the Evaluator path.
+    test "sdpa with force_fused matches the fused kernel for every variant" do
+      shape = {1, 2, 16, 64}
+      q = Nx.iota(shape, type: :f32, backend: Emily.Backend) |> Nx.divide(4096.0)
+      k = Nx.iota(shape, type: :f32, backend: Emily.Backend) |> Nx.divide(3072.0)
+      v = Nx.iota(shape, type: :f32, backend: Emily.Backend) |> Nx.divide(2048.0)
+      mask = Nx.broadcast(Nx.tensor(0.0, backend: Emily.Backend), {1, 1, 16, 16})
+      sinks = et([-1.0, 1.0])
+
+      assert_equiv(
+        fn q, k, v ->
+          Emily.Fast.scaled_dot_product_attention(q, k, v, causal: true, force_fused: true)
+        end,
+        [q, k, v]
+      )
+
+      assert_equiv(
+        fn q, k, v, m ->
+          Emily.Fast.scaled_dot_product_attention_with_mask(q, k, v, m, force_fused: true)
+        end,
+        [q, k, v, mask]
+      )
+
+      assert_equiv(
+        fn q, k, v, s ->
+          Emily.Fast.scaled_dot_product_attention(q, k, v,
+            sinks: s,
+            causal: true,
+            force_fused: true
+          )
+        end,
+        [q, k, v, sinks]
+      )
+
+      assert_equiv(
+        fn q, k, v, m, s ->
+          Emily.Fast.scaled_dot_product_attention_with_mask(q, k, v, m,
+            sinks: s,
+            force_fused: true
+          )
+        end,
+        [q, k, v, mask, sinks]
+      )
+    end
+
+    test "sdpa with force_fused raises when no fused kernel fits the shape" do
+      # No fused kernel exists for head dim 8, so each opcode must reject
+      # the forced call rather than fall back.
+      q = Nx.iota({1, 2, 4, 8}, type: :f32, backend: Emily.Backend) |> Nx.divide(64.0)
+      mask = Nx.broadcast(Nx.tensor(0.0, backend: Emily.Backend), {1, 1, 4, 4})
+      sinks = et([-1.0, 1.0])
+
+      funs = [
+        fn q, k, v, _m, _s ->
+          Emily.Fast.scaled_dot_product_attention(q, k, v, force_fused: true)
+        end,
+        fn q, k, v, m, _s ->
+          Emily.Fast.scaled_dot_product_attention_with_mask(q, k, v, m, force_fused: true)
+        end,
+        fn q, k, v, _m, s ->
+          Emily.Fast.scaled_dot_product_attention(q, k, v, sinks: s, force_fused: true)
+        end,
+        fn q, k, v, m, s ->
+          Emily.Fast.scaled_dot_product_attention_with_mask(q, k, v, m,
+            sinks: s,
+            force_fused: true
+          )
+        end
+      ]
+
+      for fun <- funs do
+        assert_raise ArgumentError, ~r/no fused kernel is available/, fn ->
+          run(fun, [q, q, q, mask, sinks], @native)
+        end
+      end
+    end
   end
 
   describe "quantized matmul block" do

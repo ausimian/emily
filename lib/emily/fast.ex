@@ -377,6 +377,25 @@ defmodule Emily.Fast do
       contributing zero to the numerator — the StreamingLLM trick for
       long-context decode. When absent the helper emits the same node
       as before (bitwise source-compatible).
+    * `:force_fused` — if `true`, always use one of MLX's fused
+      attention kernels instead of letting MLX choose per shape, and
+      raise `ArgumentError` when no fused kernel supports the shape.
+      Default `false`. See "Forcing the fused kernel" below.
+
+  ## Forcing the fused kernel
+
+  By default MLX picks between a fused, tiled kernel and an unfused
+  path that materialises the full `{batch, heads, q_len, k_len}` score
+  matrix. The unfused path is often faster, so MLX takes it for some
+  shapes — notably multi-token prefill with head dims 192 and 256 on
+  GPUs without Neural Accelerators. Its score matrix grows with
+  `q_len * k_len`, so long prompts can exhaust memory.
+
+  `force_fused: true` keeps attention memory bounded at the cost of
+  throughput (upstream measured 13–22% slower prefill at 32K–64K
+  context). Use it when long-context prefill runs out of memory; leave
+  it off otherwise. It has no effect on non-Emily backends, which run
+  the composed-defn fallback.
 
   ## Examples
 
@@ -398,7 +417,7 @@ defmodule Emily.Fast do
           keyword()
         ) :: Nx.Tensor.t()
   def scaled_dot_product_attention(q, k, v, opts \\ []) do
-    opts = Keyword.validate!(opts, [:scale, :sinks, causal: false])
+    opts = Keyword.validate!(opts, [:scale, :sinks, causal: false, force_fused: false])
     opts = Keyword.put_new_lazy(opts, :scale, fn -> default_sdpa_scale(q) end)
 
     case Keyword.pop(opts, :sinks) do
@@ -513,6 +532,8 @@ defmodule Emily.Fast do
     * `:scale` — see `scaled_dot_product_attention/4`. Default
       `1 / sqrt(head_dim)`.
     * `:sinks` — see `scaled_dot_product_attention/4`. Optional.
+    * `:force_fused` — see `scaled_dot_product_attention/4`. Default
+      `false`.
 
   ## Examples
 
@@ -536,7 +557,7 @@ defmodule Emily.Fast do
           keyword()
         ) :: Nx.Tensor.t()
   def scaled_dot_product_attention_with_mask(q, k, v, mask, opts \\ []) do
-    opts = Keyword.validate!(opts, [:scale, :sinks])
+    opts = Keyword.validate!(opts, [:scale, :sinks, force_fused: false])
     opts = Keyword.put_new_lazy(opts, :scale, fn -> default_sdpa_scale(q) end)
 
     case Keyword.pop(opts, :sinks) do
