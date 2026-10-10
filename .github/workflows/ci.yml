@@ -296,6 +296,69 @@ jobs:
           export SDKROOT="$(xcrun --show-sdk-path)"
           mix clang.tidy
 
+  # Compile-only check across each supported Elixir minor, paired with the
+  # newest OTP major that minor supports (Elixir's compatibility table).
+  # The precommit lane covers the pinned `.tool-versions` pair with the full
+  # test suite; this lane only asserts that `mix compile --warnings-as-errors`
+  # stays clean elsewhere, which catches new compiler warnings and
+  # deprecations. Versions are minor/major only, so each run resolves the
+  # latest patch release. The NIF is recompiled per cell because it builds
+  # against that OTP's erl_nif headers. MLX is not: like clang-tidy, the
+  # MLX cache is restore-only and its restore-keys fall back to main's
+  # install, so MLX only rebuilds when `@mlx_version` changes. `_build` is
+  # deliberately not cached so each cell is a clean compile.
+  compat:
+    name: compat (elixir ${{ matrix.elixir }}, otp ${{ matrix.otp }})
+    if: github.event_name != 'push' || github.ref_type == 'branch'
+    runs-on: macos-14
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - elixir: "1.18"
+            otp: "27"
+          - elixir: "1.19"
+            otp: "28"
+          - elixir: "1.20"
+            otp: "29"
+    env:
+      MIX_ENV: test
+      EMILY_MLX_VARIANT: aot
+      EMILY_CACHE: ~/Library/Caches/emily
+    steps:
+      - uses: actions/checkout@v6
+
+      # MLX >= 0.32.1 Metal kernels use `metal::remove_addrspace_t`, which
+      # the Metal stdlib in the macos-14 image's default Xcode (15.4)
+      # lacks. 16.2 is the newest Xcode on that image; the deployment
+      # target, not the SDK, sets the macOS 14 floor.
+      - name: Select Xcode 16.2
+        run: sudo xcode-select -s /Applications/Xcode_16.2.app
+
+      - name: Setup Beam
+        uses: erlef/setup-beam@v1
+        with:
+          otp-version: ${{ matrix.otp }}
+          elixir-version: ${{ matrix.elixir }}
+
+      - name: Restore deps
+        uses: actions/cache/restore@v5
+        with:
+          path: deps
+          key: deps-${{ runner.os }}-${{ hashFiles('mix.lock') }}
+          restore-keys: deps-${{ runner.os }}-
+
+      - name: Restore MLX
+        uses: actions/cache/restore@v5
+        with:
+          path: ~/Library/Caches/emily
+          key: mlx-${{ runner.os }}-aot-${{ hashFiles('c_src/**', 'Makefile', 'mix.exs', 'scripts/build-mlx.sh') }}
+          restore-keys: mlx-${{ runner.os }}-aot-
+
+      - run: mix deps.get
+
+      - run: mix compile --warnings-as-errors
+
   # ASan CI deferred: requires OTP built with --enable-sanitizers=address
   # (macOS SIP blocks DYLD_INSERT_LIBRARIES, and late-loaded libasan
   # fails). See Makefile and RELEASE.md for details.
