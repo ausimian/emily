@@ -156,7 +156,10 @@ defmodule Emily.Bumblebee.FastKernelsTest do
       causal: [causal: true],
       window: [window_size: {2, 1}],
       causal_window: [causal: true, window_size: {2, 2}],
-      scale: [scale: 0.5]
+      scale: [scale: 0.5],
+      # Checkpoints carry their training-time dropout rate (DistilBERT
+      # has 0.1); dropout is the identity at inference, so fuse anyway.
+      dropout: [dropout_rate: 0.1]
     ]
 
     for {name, opts} <- @attention_cases, {lane, {backend, compiler}} <- @lanes do
@@ -229,14 +232,6 @@ defmodule Emily.Bumblebee.FastKernelsTest do
 
         assert_same_output(model, rewritten, inputs, unquote(compiler))
       end
-    end
-
-    test "leaves attention with dropout in place" do
-      model = attention_model(dropout_rate: 0.1)
-      rewritten = FastKernels.apply_attention(model)
-
-      assert op_names(rewritten) |> Enum.member?(:attention_output_impl)
-      refute op_names(rewritten) |> Enum.member?(:fast_sdpa_impl)
     end
   end
 

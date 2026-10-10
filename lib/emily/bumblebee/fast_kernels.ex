@@ -66,9 +66,15 @@ if Code.ensure_loaded?(Axon) and Code.ensure_loaded?(Bumblebee.Layers) do
       * Norms with `:channel_index` other than `-1` (uncommon outside
         vision-CNN heads — those don't fit the fused kernel's
         last-axis-only contract). The original layer is left in place.
-      * Attention layers with `dropout_rate > 0`. Inference path is
-        `dropout_rate: 0` everywhere, so this is a no-op in practice;
-        training paths continue using composed defn.
+
+    ## Inference only
+
+    The rewrites target inference. Bumblebee copies a checkpoint's
+    training-time `attention_dropout_rate` into its attention layers
+    (0.1 for DistilBERT and other BERT-family models), but dropout
+    does nothing under `mode: :inference`, so attention layers are
+    fused whatever their `dropout_rate`. The fused layer applies no
+    dropout, so train with the stock model, not a rewritten one.
     """
 
     alias Nx.Defn.Expr
@@ -459,21 +465,16 @@ if Code.ensure_loaded?(Axon) and Code.ensure_loaded?(Bumblebee.Layers) do
       Axon.rewrite_nodes(model, &attention_rewriter(&1, opts[:force_fused]))
     end
 
-    # The rewriter: skip unless we're looking at attention_output_impl
-    # with dropout disabled. Flattened into `cond` to stay within the
-    # credo nesting limit.
-    defp attention_rewriter(%Axon.Node{op: op, opts: attn_opts}, force_fused) do
-      cond do
-        fn_mfa(op) != @attention_output_mfa ->
-          :skip
-
-        Keyword.get(attn_opts, :dropout_rate, 0.0) != 0 ->
-          :skip
-
-        true ->
-          fn [weights_axon, value_axon], _output ->
-            build_fused_attention(weights_axon, value_axon, force_fused)
-          end
+    # The rewriter: skip unless we're looking at attention_output_impl.
+    # `dropout_rate` is ignored: it is the checkpoint's training-time
+    # value, and dropout is the identity at inference.
+    defp attention_rewriter(%Axon.Node{op: op}, force_fused) do
+      if fn_mfa(op) == @attention_output_mfa do
+        fn [weights_axon, value_axon], _output ->
+          build_fused_attention(weights_axon, value_axon, force_fused)
+        end
+      else
+        :skip
       end
     end
 
