@@ -9,11 +9,11 @@ and EMLX baselines._
 
 | Field | Value |
 | ----- | ----- |
-| date | 2026-06-13 12:24 |
-| host | Apple M4 Pro (BEAM total 116 MB at write) |
+| date | 2026-07-22 18:56 |
+| host | Apple M4 Pro (BEAM total 118 MB at write) |
 | elixir / otp | 1.19.5 / 28 |
-| emily | 0.6.1 |
-| emlx | 0.3.1 |
+| emily | 1.0.0 |
+| emlx | 0.4.1 |
 | exla | 0.12.0 (host (1 device)) |
 | nx | 0.12.1 |
 | smoke run? | false |
@@ -24,65 +24,65 @@ _Ratios are `best Emily / baseline`; <1 means Emily is faster._
 
 | op | size | exla (CPU) | emlx (GPU) | emily-eager | emily-native | emily-fuse | best-emily/exla | best-emily/emlx |
 | -- | ---- | ---------- | ---------- | ----------- | ------------ | ---------- | --------------- | --------------- |
-| add | 256 | 112.0 | 343.6 | 276.9 | 296.7 | 255.2 | 2.28x | 0.74x |
-| add | 1024 | 258.7 | 417.4 | 423.6 | 491.8 | 486.3 | 1.64x | 1.02x |
-| add | 4096 | 2972.8 | 1536.0 | 1489.3 | 1523.0 | 1545.2 | 0.5x | 0.97x |
-| mul | 256 | 107.0 | 324.1 | 247.2 | 228.9 | 220.1 | 2.06x | 0.68x |
-| mul | 1024 | 242.1 | 438.4 | 418.0 | 489.5 | 480.2 | 1.73x | 0.95x |
-| mul | 4096 | 2764.0 | 1542.5 | 1639.6 | 1461.4 | 1478.5 | 0.53x | 0.95x |
-| exp | 256 | 134.2 | 297.1 | 219.1 | 246.0 | 211.1 | 1.57x | 0.71x |
-| exp | 1024 | 381.4 | 467.7 | 420.1 | 517.2 | 515.6 | 1.1x | 0.9x |
-| exp | 4096 | 3634.1 | 1223.5 | 1231.6 | 1140.6 | 1234.7 | 0.31x | 0.93x |
-| sum | 256 | 94.0 | 223.4 | 176.4 | 194.1 | 203.1 | 1.88x | 0.79x |
-| sum | 1024 | 203.4 | 351.0 | 331.9 | 315.6 | 355.0 | 1.55x | 0.9x |
-| sum | 4096 | 1882.1 | 649.2 | 776.9 | 714.3 | 817.8 | 0.38x | 1.1x |
-| softmax | 256 | 164.2 | 416.8 | 283.9 | 246.8 | 295.3 | 1.5x | 0.59x |
-| softmax | 1024 | 503.8 | 786.0 | 758.1 | 743.5 | 721.0 | 1.43x | 0.92x |
-| softmax | 4096 | 5433.8 | 2891.4 | 2889.6 | 2771.8 | 2244.5 | 0.41x | 0.78x |
-| matmul | 128 | 106.5 | 215.1 | 191.8 | 200.8 | 204.8 | 1.8x | 0.89x |
-| matmul | 512 | 459.6 | 692.0 | 642.3 | 515.5 | 643.2 | 1.12x | 0.74x |
-| matmul | 1024 | 2577.2 | 866.2 | 937.4 | 1028.0 | 801.9 | 0.31x | 0.93x |
-| matmul | 2048 | 17864.3 | 3578.4 | 3557.2 | 3593.9 | 3582.5 | 0.2x | 0.99x |
+| add | 256 | 105.0 | 252.8 | 240.2 | 225.3 | 218.1 | 2.08x | 0.86x |
+| add | 1024 | 232.9 | 359.8 | 343.7 | 377.7 | 361.8 | 1.48x | 0.96x |
+| add | 4096 | 3083.4 | 1459.2 | 1629.4 | 1435.1 | 1423.9 | 0.46x | 0.98x |
+| mul | 256 | 109.2 | 196.9 | 200.0 | 210.0 | 221.9 | 1.83x | 1.02x |
+| mul | 1024 | 229.1 | 381.1 | 377.9 | 350.2 | 353.4 | 1.53x | 0.92x |
+| mul | 4096 | 2893.7 | 1400.2 | 1410.0 | 1379.8 | 1426.2 | 0.48x | 0.99x |
+| exp | 256 | 108.2 | 194.8 | 175.8 | 198.4 | 198.8 | 1.62x | 0.9x |
+| exp | 1024 | 328.5 | 327.2 | 322.1 | 330.0 | 336.7 | 0.98x | 0.98x |
+| exp | 4096 | 3682.9 | 1101.0 | 1156.0 | 1112.4 | 1175.2 | 0.3x | 1.01x |
+| sum | 256 | 81.8 | 215.3 | 180.6 | 191.0 | 187.7 | 2.21x | 0.84x |
+| sum | 1024 | 194.1 | 253.0 | 227.2 | 250.6 | 248.3 | 1.17x | 0.9x |
+| sum | 4096 | 2017.7 | 722.3 | 730.3 | 588.7 | 824.0 | 0.29x | 0.82x |
+| softmax | 256 | 138.7 | 250.0 | 276.5 | 276.2 | 272.0 | 1.96x | 1.09x |
+| softmax | 1024 | 472.4 | 518.9 | 598.9 | 569.2 | 513.0 | 1.09x | 0.99x |
+| softmax | 4096 | 5697.2 | 2172.1 | 2765.2 | 2700.8 | 2196.1 | 0.39x | 1.01x |
+| matmul | 128 | 100.8 | 209.4 | 189.0 | 214.9 | 188.4 | 1.87x | 0.9x |
+| matmul | 512 | 449.2 | 540.6 | 537.6 | 559.2 | 560.6 | 1.2x | 0.99x |
+| matmul | 1024 | 2484.9 | 819.4 | 931.5 | 797.8 | 830.0 | 0.32x | 0.97x |
+| matmul | 2048 | 17717.1 | 3533.9 | 3503.6 | 3512.6 | 3545.0 | 0.2x | 0.99x |
 
 ## Tier 2 — DistilBERT QA (mean us/call)
 
 | lane | us/call |
 | ---- | ------------- |
-| exla (CPU) | 8985.0 |
-| emlx (GPU) | 19194.3 |
-| emily-eager (GPU) | 16452.7 |
-| emily-native (GPU) | 7058.7 |
-| emily-fuse (GPU) | 8504.3 |
+| exla (CPU) | 8890.0 |
+| emlx (GPU) | 9968.7 |
+| emily-eager (GPU) | 14820.7 |
+| emily-native (GPU) | 7020.7 |
+| emily-fuse (GPU) | 6937.7 |
 
-_best Emily lane vs EXLA (>1 = Emily faster): 1.27x_
+_best Emily lane vs EXLA (>1 = Emily faster): 1.28x_
 
-_best Emily lane vs EMLX (>1 = Emily faster): 2.72x_
+_best Emily lane vs EMLX (>1 = Emily faster): 1.44x_
 
 ## Tier 3 — Qwen3-0.6B decode (tokens/sec)
 
 | lane | tok/s |
 | ---- | ------------- |
-| exla (CPU) | 39.84 |
-| emlx (GPU) | 11.42 |
-| emily-eager (GPU) | 12.51 |
-| emily-native (GPU) | 59.96 |
-| emily-fuse (GPU) | 66.42 |
+| exla (CPU) | 40.15 |
+| emlx (GPU) | 53.81 |
+| emily-eager (GPU) | 11.96 |
+| emily-native (GPU) | 61.7 |
+| emily-fuse (GPU) | 67.57 |
 
-_best Emily lane vs EXLA (>1 = Emily faster): 1.67x_
+_best Emily lane vs EXLA (>1 = Emily faster): 1.68x_
 
-_best Emily lane vs EMLX (>1 = Emily faster): 5.82x_
+_best Emily lane vs EMLX (>1 = Emily faster): 1.26x_
 
 ## Tier 4 — ViT-base image classification (mean us/call)
 
 | lane | us/call |
 | ---- | ------------- |
-| exla (CPU) | 56191.3 |
+| exla (CPU) | 55880.3 |
 | emlx (GPU) | ERR |
-| emily-eager (GPU) | 38780.3 |
-| emily-native (GPU) | 23934.3 |
-| emily-fuse (GPU) | 27498.0 |
+| emily-eager (GPU) | 35582.3 |
+| emily-native (GPU) | 23958.7 |
+| emily-fuse (GPU) | 21790.7 |
 
-_best Emily lane vs EXLA (>1 = Emily faster): 2.35x_
+_best Emily lane vs EXLA (>1 = Emily faster): 2.56x_
 
 _best Emily lane vs EMLX (>1 = Emily faster): —_
 
@@ -90,38 +90,27 @@ _best Emily lane vs EMLX (>1 = Emily faster): —_
 
 | lane | us/call |
 | ---- | ------------- |
-| exla (CPU) | 88488.7 |
+| exla (CPU) | 87834.0 |
 | emlx (GPU) | ERR |
-| emily-eager (GPU) | 1815796.0 |
-| emily-native (GPU) | 961683.7 |
-| emily-fuse (GPU) | 981888.0 |
+| emily-eager (GPU) | 1920572.3 |
+| emily-native (GPU) | 928346.0 |
+| emily-fuse (GPU) | 955357.3 |
 
 _best Emily lane vs EXLA (>1 = Emily faster): 0.09x_
 
 _best Emily lane vs EMLX (>1 = Emily faster): —_
 
-## Addendum — Qwen3-4B decode (GPU-focused)
+## Qwen3-4B addendum (tokens/sec)
 
-_Manual addendum from `bench/qwen3_4b_emily_vs_emlx.exs`, rerun after the main
-three-way suite. Higher is better. The script has an explicit EXLA lane, but the
-safe default for Qwen3-4B on this 24 GB M4 Pro is GPU-only._
+_From `bench/qwen3_4b_emily_vs_emlx.exs` (same date/host, bf16, 32 new tokens,
+3 runs; GPU-only default — the EXLA lane is OOM-killed on this 24 GB machine)._
 
-| lane | mean tok/s | min | max | speedup vs EMLX |
-| ---- | ----------: | --: | --: | --------------: |
-| emlx (GPU) | 7.33 | 7.31 | 7.37 | 1.00x |
-| emily-eager (GPU) | 8.03 | 7.98 | 8.08 | 1.10x |
-| emily-native (GPU) | 22.27 | 22.16 | 22.32 | 3.04x |
-| emily-fuse (GPU) | 23.46 | 23.35 | 23.58 | 3.20x |
+| lane | mean tok/s | min | max | vs EMLX |
+| ---- | ---------: | --: | --: | ------: |
+| emlx (GPU) | 20.28 | 20.07 | 20.44 | 1.00x |
+| emily-eager (GPU) | 7.88 | 7.81 | 7.97 | 0.39x |
+| emily-native (GPU) | 22.63 | 22.61 | 22.64 | 1.12x |
+| emily-fuse (GPU) | 23.78 | 23.55 | 23.97 | 1.17x |
 
-_Best Emily lane vs EMLX: emily-fuse at 23.46 tok/s, 3.20x faster._
+_best Emily lane vs EMLX (>1 = Emily faster): 1.17x_
 
-### Qwen3-4B EXLA note
-
-An explicit EXLA smoke attempt was run with:
-
-`EMILY_BENCH_NEW_TOKENS=4 EMILY_BENCH_RUNS=1 EMILY_BENCH_WARMUP=0 EMILY_BENCH_LANES=exla,emlx,emily-fuse elixir bench/qwen3_4b_emily_vs_emlx.exs`
-
-It loaded `Qwen/Qwen3-4B` on `EXLA.Backend` as `:bf16` in 4.86 s, then the
-process was killed with exit 137 during the EXLA compile/run. No Qwen3-4B EXLA
-throughput number is reported; `bench/emily_vs_exla.exs` uses Qwen3-0.6B for the
-canonical completed three-way generation comparison.
