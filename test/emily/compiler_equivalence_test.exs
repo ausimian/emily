@@ -844,6 +844,20 @@ defmodule Emily.CompilerEquivalenceTest do
 
       assert_equiv(fn x, qw -> Emily.Quantization.quantized_matmul_defn(x, qw) end, [x, qw])
     end
+
+    test "affine 1-bit quantized_matmul_defn with transpose: false matches the Evaluator" do
+      # transpose: false packs [in, out], so the output template unpacks
+      # 32 lanes per u32 from the packed last axis.
+      w = Nx.iota({4, 128}, type: :f32, backend: Emily.Backend) |> Nx.divide(256.0)
+      qw = Emily.QuantizedWeight.from_dense(w, group_size: 64, bits: 1, transpose: false)
+      x = Nx.iota({2, 4}, type: :f32, backend: Emily.Backend) |> Nx.divide(8.0)
+
+      f = fn x, qw -> Emily.Quantization.quantized_matmul_defn(x, qw) end
+      native = run(f, [x, qw], @native)
+      assert native.shape == {2, 128}
+
+      assert_equiv(f, [x, qw])
+    end
   end
 
   describe "concatenate / conv" do

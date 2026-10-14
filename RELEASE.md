@@ -1,3 +1,14 @@
+### Added
+
+- `Emily.QuantizedWeight.from_dense/2` accepts `bits: 1` for `"affine"`
+  quantization, which MLX 0.32.4 added. Each element dequantizes to its
+  group's minimum or maximum, packed 32 to a `u32`. 1-bit weights work
+  with `Emily.Quantization.quantized_matmul/2`,
+  `quantized_matmul_defn/2` and `dequantize_defn/1`, and
+  `Emily.Quantization.defn_supported_bits/0` now includes `1`. On the
+  GPU, MLX widens every group's range to include zero, so a group whose
+  values are all negative dequantizes to its minimum or `0`.
+
 ### Changed
 
 - Updated the pinned MLX to 0.32.4. Emily picks up its upstream fixes

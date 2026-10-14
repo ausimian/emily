@@ -1,7 +1,7 @@
 defmodule Emily.QuantizedWeight do
   @moduledoc """
   Container for a matrix quantized via one of MLX's group-wise quantization
-  schemes (`"affine"` int4/int8, plus the microscaled variants
+  schemes (integer `"affine"`, plus the microscaled variants
   `"mxfp4"`, `"mxfp8"`, `"nvfp4"`).
 
   A `QuantizedWeight` bundles the packed integer weights with the per-group
@@ -89,7 +89,7 @@ defmodule Emily.QuantizedWeight do
           mode: mode()
         }
 
-  @valid_bits [2, 3, 4, 6, 8]
+  @valid_bits [1, 2, 3, 4, 6, 8]
   @valid_input_types [{:f, 32}, {:f, 16}, {:bf, 16}]
   @valid_modes ~w(affine mxfp4 mxfp8 nvfp4)
 
@@ -115,7 +115,11 @@ defmodule Emily.QuantizedWeight do
       Microscaled modes pin this to a specific value (see
       `Emily.QuantizedWeight` moduledoc).
     * `:bits` — default `4`. One of `#{inspect(@valid_bits)}` for
-      `"affine"`; pinned by the mode for microscaled variants.
+      `"affine"`; pinned by the mode for microscaled variants. With
+      `bits: 1`, each element dequantizes to its group's minimum or
+      maximum. On the GPU, MLX widens every group's range to include
+      zero, so a group whose values are all negative dequantizes to its
+      minimum or `0`.
     * `:transpose` — default `true`. Layout flag threaded to the
       `quantized_matmul` kernel. Leave as `true` for weights produced
       here; set `false` when wrapping pre-packed external checkpoints.

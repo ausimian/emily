@@ -85,6 +85,38 @@ defmodule Emily.Quantization.QuantizedMatmulTest do
     end
   end
 
+  describe "quantized_matmul/2 — 1-bit affine" do
+    for transpose <- [true, false] do
+      test "transpose=#{transpose} matches dot against the dequantized weight" do
+        transpose = unquote(transpose)
+
+        w =
+          Nx.iota({8, 128}, backend: Emily.Backend, type: :f32)
+          |> Nx.divide(512.0)
+          |> Nx.subtract(1.0)
+
+        in_feat = if transpose, do: 128, else: 8
+        out_feat = if transpose, do: 8, else: 128
+
+        x =
+          Nx.iota({3, in_feat}, backend: Emily.Backend, type: :f32)
+          |> Nx.divide(3 * in_feat)
+          |> Nx.subtract(0.5)
+
+        qw = QuantizedWeight.from_dense(w, bits: 1, group_size: 64, transpose: transpose)
+
+        actual = Quantization.quantized_matmul(x, qw)
+
+        dense = QuantizedWeight.to_dense(qw) |> Nx.backend_transfer(Nx.BinaryBackend)
+        dense = if transpose, do: Nx.transpose(dense), else: dense
+        expected = Nx.dot(Nx.backend_transfer(x, Nx.BinaryBackend), dense)
+
+        assert Nx.shape(actual) == {3, out_feat}
+        assert_close(actual, expected, tol: 1.0e-3)
+      end
+    end
+  end
+
   describe "quantized_matmul/2 — validation" do
     test "raises when input dtype doesn't match scales dtype" do
       w = Nx.iota({2, 64}, backend: Emily.Backend, type: :f32)
