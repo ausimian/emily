@@ -76,12 +76,17 @@ jobs:
           key: deps-${{ runner.os }}-${{ hashFiles('mix.lock') }}
           restore-keys: deps-${{ runner.os }}-
 
+      # The restore-key fallback stays within one mix.lock. `deps` can be
+      # an exact hit for a new lockfile while `_build` falls back to a
+      # build from an older one. `mix deps.get` then fetches nothing, so
+      # Mix never recompiles the deps that changed (#237). A lockfile
+      # change therefore starts `_build` cold; MLX is cached separately.
       - name: Cache build
         uses: actions/cache@v5
         with:
           path: _build
-          key: build-${{ runner.os }}-${{ matrix.variant }}-${{ hashFiles('mix.lock', 'c_src/**', 'Makefile', '.tool-versions', 'mix.exs', 'config/config.exs') }}
-          restore-keys: build-${{ runner.os }}-${{ matrix.variant }}-
+          key: build-${{ runner.os }}-${{ matrix.variant }}-${{ hashFiles('mix.lock') }}-${{ hashFiles('c_src/**', 'Makefile', '.tool-versions', 'mix.exs', 'config/config.exs') }}
+          restore-keys: build-${{ runner.os }}-${{ matrix.variant }}-${{ hashFiles('mix.lock') }}-
 
       # MLX prebuilt tarball (~40 MB AOT / ~5 MB JIT) + extracted install.
       # Keyed by the NIF sources and the pinned MLX version in mix.exs;
@@ -175,12 +180,13 @@ jobs:
           key: deps-${{ runner.os }}-${{ hashFiles('mix.lock') }}
           restore-keys: deps-${{ runner.os }}-
 
+      # Restores only within one mix.lock; see the precommit job (#237).
       - name: Cache build
         uses: actions/cache@v5
         with:
           path: _build
-          key: build-${{ runner.os }}-${{ matrix.variant }}-${{ hashFiles('mix.lock', 'c_src/**', 'Makefile', '.tool-versions', 'mix.exs', 'config/config.exs') }}
-          restore-keys: build-${{ runner.os }}-${{ matrix.variant }}-
+          key: build-${{ runner.os }}-${{ matrix.variant }}-${{ hashFiles('mix.lock') }}-${{ hashFiles('c_src/**', 'Makefile', '.tool-versions', 'mix.exs', 'config/config.exs') }}
+          restore-keys: build-${{ runner.os }}-${{ matrix.variant }}-${{ hashFiles('mix.lock') }}-
 
       - name: Cache MLX and NIF objects
         uses: actions/cache@v5
@@ -296,13 +302,14 @@ jobs:
       # precommit aot lane's `_build`, built under this same runner,
       # Xcode, MIX_ENV and variant, so the deps are already compiled.
       # Restore-only: this job never saves, so it can't race precommit's
-      # save of the same key.
+      # save of the same key. Like precommit, it only falls back to a
+      # `_build` from the same mix.lock (#237).
       - name: Restore build
         uses: actions/cache/restore@v5
         with:
           path: _build
-          key: build-${{ runner.os }}-aot-${{ hashFiles('mix.lock', 'c_src/**', 'Makefile', '.tool-versions', 'mix.exs', 'config/config.exs') }}
-          restore-keys: build-${{ runner.os }}-aot-
+          key: build-${{ runner.os }}-aot-${{ hashFiles('mix.lock') }}-${{ hashFiles('c_src/**', 'Makefile', '.tool-versions', 'mix.exs', 'config/config.exs') }}
+          restore-keys: build-${{ runner.os }}-aot-${{ hashFiles('mix.lock') }}-
 
       - run: mix deps.get
 
@@ -375,7 +382,9 @@ jobs:
 
       # Keyed by the versions setup-beam actually resolved (not the
       # matrix's minor/major), since Mix rebuilds every dep when the
-      # Elixir or OTP version changes.
+      # Elixir or OTP version changes. Exact match only: built deps from
+      # another mix.lock can be stale in ways `deps.get` won't notice when
+      # `deps` itself is an exact hit (#237).
       - name: Restore built deps
         id: built-deps
         uses: actions/cache/restore@v5
@@ -384,7 +393,6 @@ jobs:
             _build/test/lib
             !_build/test/lib/emily
           key: compat-deps-${{ runner.os }}-elixir-${{ steps.beam.outputs.elixir-version }}-otp-${{ steps.beam.outputs.otp-version }}-${{ hashFiles('mix.lock') }}
-          restore-keys: compat-deps-${{ runner.os }}-elixir-${{ steps.beam.outputs.elixir-version }}-otp-${{ steps.beam.outputs.otp-version }}-
 
       - run: mix deps.get
 
