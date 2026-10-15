@@ -122,6 +122,28 @@ defmodule Emily.QuantizedWeightTest do
 
       assert err8 < err4
     end
+
+    test "bits=1 maps every element to its group's min or max" do
+      # Two groups of 64 with distinct ranges, so a mix-up between groups
+      # would show. Both span zero: MLX's Metal kernel always includes
+      # zero in a group's range (see `from_dense/2`).
+      values = for i <- 0..127, do: (rem(i, 64) - 32) / 64.0 * (1 + div(i, 64))
+      w = Nx.tensor(values, backend: Emily.Backend, type: :f32) |> Nx.reshape({1, 128})
+
+      qw = QuantizedWeight.from_dense(w, bits: 1, group_size: 64)
+      # 32 one-bit lanes per u32.
+      assert Nx.shape(qw.value) == {1, 4}
+
+      recovered = qw |> QuantizedWeight.to_dense() |> Nx.to_flat_list()
+
+      for {group, dense} <-
+            Enum.zip(Enum.chunk_every(values, 64), Enum.chunk_every(recovered, 64)) do
+        {lo, hi} = Enum.min_max(group)
+        assert Enum.all?(dense, &(abs(&1 - lo) < 1.0e-5 or abs(&1 - hi) < 1.0e-5))
+        assert Enum.any?(dense, &(abs(&1 - lo) < 1.0e-5))
+        assert Enum.any?(dense, &(abs(&1 - hi) < 1.0e-5))
+      end
+    end
   end
 
   describe "Nx.Container semantics" do

@@ -20,6 +20,11 @@
 #
 #     mix test --only qwen3_full
 #
+# `:bonsai_full` checks 1-bit affine quantization against the real
+# `prism-ml/Bonsai-1.7B-mlx-1bit` checkpoint (~270 MB):
+#
+#     mix test --only bonsai_full
+#
 # (Soak tests deliberately stay in the default suite; see
 # `test/soak/memory_test.exs` for the rationale.)
 #
@@ -74,6 +79,7 @@ ExUnit.start(
     :distilbert_full,
     :training_full,
     :fast_kernels_full,
-    :qwen3_full
+    :qwen3_full,
+    :bonsai_full
   ]
 )

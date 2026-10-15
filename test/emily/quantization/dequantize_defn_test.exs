@@ -2,7 +2,7 @@ defmodule Emily.Quantization.DequantizeDefnTest do
   @moduledoc """
   Equality tests for `Emily.Quantization.dequantize_defn/1` against
   `QuantizedWeight.to_dense/1` (the Native path). Covers every
-  `bits ∈ {2, 3, 4, 6, 8}` × `group_size ∈ {32, 64, 128}` combo,
+  `bits ∈ {1, 2, 3, 4, 6, 8}` × `group_size ∈ {32, 64, 128}` combo,
   plus a rank-3 case and defn composability. Microscaled modes are
   rejected by the defn path; negative test below.
   """
@@ -15,7 +15,7 @@ defmodule Emily.Quantization.DequantizeDefnTest do
 
   import Emily.BackendGenerators, only: [assert_close: 3]
 
-  @bits [2, 3, 4, 6, 8]
+  @bits [1, 2, 3, 4, 6, 8]
   @group_sizes [32, 64, 128]
 
   describe "dequantize_defn/1 — equality with QuantizedWeight.to_dense/1" do
@@ -176,7 +176,7 @@ defmodule Emily.Quantization.DequantizeDefnTest do
     end
 
     test "raises on bits outside @defn_supported_bits via hand-built struct" do
-      # `QuantizedWeight.from_dense/2` rejects bits ∉ [2,3,4,6,8] before
+      # `QuantizedWeight.from_dense/2` rejects bits ∉ [1,2,3,4,6,8] before
       # the defn validator can fire, so the only reachable trigger for
       # `validate_defn_bits!/1` is a hand-constructed struct. Cover the
       # raise path so the validator stays load-bearing.

@@ -64,14 +64,13 @@ fine::ResourcePtr<Tensor> from_binary(
         " got " + std::to_string(data.size));
   }
 
-  // Allocate an MLX-owned buffer, memcpy into it, hand ownership to
-  // the array with a matching deleter. See comment above for why we
-  // don't alias the BEAM binary directly.
+  // Allocate an MLX-owned buffer, memcpy into it, and move ownership
+  // into the array, which frees it through the allocator. See comment
+  // above for why we don't alias the BEAM binary directly.
   auto buf = mx::allocator::malloc(expected);
-  std::memcpy(buf.raw_ptr(), data.data, expected);
-  auto deleter = [](mx::allocator::Buffer b) { mx::allocator::free(b); };
+  std::memcpy(buf.buffer().raw_ptr(), data.data, expected);
 
-  mx::array arr(buf, std::move(shape_ints), dtype, deleter);
+  mx::array arr(std::move(buf), std::move(shape_ints), dtype);
   return wrap(std::move(arr));
 }
 FINE_NIF(from_binary, 0);

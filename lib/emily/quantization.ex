@@ -17,7 +17,7 @@ defmodule Emily.Quantization do
       dequantize_defn(qw))` runs in two kernels (dequantize then
       dense matmul) instead of one.
     * `defn_supported_bits/0` — enumerates the bit widths the
-      defn-native path supports (`#{inspect([2, 3, 4, 6, 8])}`).
+      defn-native path supports (`#{inspect([1, 2, 3, 4, 6, 8])}`).
 
   See `Emily.QuantizedWeight` for the container struct and
   `Emily.QuantizedWeight.from_dense/2` for building one.
@@ -31,7 +31,7 @@ defmodule Emily.Quantization do
   alias Emily.QuantizedWeight
   alias Nx.Tensor, as: T
 
-  @defn_supported_bits [2, 3, 4, 6, 8]
+  @defn_supported_bits [1, 2, 3, 4, 6, 8]
 
   @doc """
   Bit widths supported by `dequantize_defn/1` (and therefore by
@@ -44,7 +44,7 @@ defmodule Emily.Quantization do
   ## Examples
 
       iex> Emily.Quantization.defn_supported_bits()
-      [2, 3, 4, 6, 8]
+      [1, 2, 3, 4, 6, 8]
 
   """
   @spec defn_supported_bits() :: [pos_integer()]
@@ -168,11 +168,11 @@ defmodule Emily.Quantization do
 
   # transpose: true (MLX/from_dense default) packs a [out, in] weight, so
   # out = value's first axis. transpose: false packs [in, out]; for
-  # bits ∈ {2,4,8} the packed last axis unpacks by 32/bits.
+  # bits ∈ {1,2,4,8} the packed last axis unpacks by 32/bits.
   defp qmm_out_features(%QuantizedWeight{value: value}, true), do: elem(Nx.shape(value), 0)
 
   defp qmm_out_features(%QuantizedWeight{value: value, bits: bits, mode: "affine"}, false)
-       when bits in [2, 4, 8] do
+       when bits in [1, 2, 4, 8] do
     # Affine packs `32 / bits` lanes per u32 along the last axis.
     shape = Nx.shape(value)
     elem(shape, tuple_size(shape) - 1) * div(32, bits)
@@ -236,7 +236,7 @@ defmodule Emily.Quantization do
   Supported: `bits ∈ #{inspect(@defn_supported_bits)}`. Two unpack
   paths are picked at trace time:
 
-    * `bits ∈ {2, 4, 8}` — integral lanes per u32, broadcast-shift
+    * `bits ∈ {1, 2, 4, 8}` — integral lanes per u32, broadcast-shift
       `w[..., :, lane] = (w_q[..., :] >> (lane * bits)) & mask`.
     * `bits ∈ {3, 6}` — lanes cross u32 boundaries, so we read
       adjacent u32 pairs as a u64, then shift by `rem(i * bits, 32)`
