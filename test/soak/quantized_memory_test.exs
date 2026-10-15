@@ -19,6 +19,7 @@ defmodule Emily.Soak.QuantizedMemoryTest do
 
   alias Emily.Native
   alias Emily.Quantization
+  alias Emily.Quantization.Transform
   alias Emily.QuantizedWeight
 
   @moduletag :soak
@@ -93,5 +94,67 @@ defmodule Emily.Soak.QuantizedMemoryTest do
            A single retained output per iteration would grow delta by
            #{@iters * @batch * @out_feat * 4} bytes.
            """
+  end
+
+  describe "Transform.quantize/3" do
+    # bf16 [4096, 4096] kernel = 32 MiB. int4 at group_size 64 keeps
+    # 8 MiB of packed values plus 1 MiB of bf16 scales and biases.
+    @units 4096
+    @source_bytes @units * @units * 2
+
+    test "frees the dense source kernels once the caller drops them" do
+      :erlang.garbage_collect()
+      Native.clear_cache()
+      baseline = Native.get_active_memory()
+
+      qstate = quantize_and_drop_source()
+
+      # A pinned source alone would add @source_bytes on top of the
+      # quantized weights.
+      delta = settled_delta(baseline, div(@source_bytes, 2))
+
+      assert delta < div(@source_bytes, 2),
+             """
+             active-memory delta #{delta} bytes after quantize/3; the
+             #{@source_bytes}-byte dense source kernel is still resident.
+             """
+
+      assert %QuantizedWeight{} = qstate.data["fc"]["kernel"]
+    end
+
+    # MLX releases a dropped array's buffer a few milliseconds after the
+    # BEAM collects its last reference, so poll until the active-memory
+    # delta drops below `limit` or 2 s pass. Returns the last delta seen.
+    defp settled_delta(baseline, limit, attempts \\ 40) do
+      :erlang.garbage_collect()
+      Native.clear_cache()
+      delta = Native.get_active_memory() - baseline
+
+      if delta < limit or attempts == 0 do
+        delta
+      else
+        Process.sleep(50)
+        settled_delta(baseline, limit, attempts - 1)
+      end
+    end
+
+    # Builds the dense model state, quantizes it and returns only the
+    # quantized state, so nothing outside MLX still references the
+    # dense kernel once this returns.
+    defp quantize_and_drop_source do
+      model =
+        Axon.input("features", shape: {nil, @units})
+        |> Axon.dense(@units, name: "fc")
+
+      kernel = Nx.iota({@units, @units}, backend: Emily.Backend, type: :bf16)
+      bias = Nx.broadcast(Nx.tensor(0, backend: Emily.Backend, type: :bf16), {@units})
+
+      # Materialize the kernel; a lazy iota would pin no memory at all.
+      :ok = Emily.eval(kernel.data.ref)
+
+      state = Axon.ModelState.new(%{"fc" => %{"kernel" => kernel, "bias" => bias}})
+      {_qmodel, qstate} = Transform.quantize(model, state, bits: 4, group_size: 64)
+      qstate
+    end
   end
 end

@@ -269,6 +269,7 @@ defmodule Emily.MixProject do
         Quantization: [
           Emily.Quantization,
           Emily.Quantization.Layers,
+          Emily.Quantization.Transform,
           Emily.QuantizedWeight
         ],
         Training: [Emily.MixedPrecision, Emily.MixedPrecision.LossScaler],

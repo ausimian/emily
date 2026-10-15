@@ -24,6 +24,8 @@ defmodule Emily.Quantization.TransformTest do
     :ok
   end
 
+  doctest Transform
+
   describe "quantize_dense_layers/2" do
     test "replaces :dense nodes with :quantized_dense" do
       model =
@@ -50,6 +52,30 @@ defmodule Emily.Quantization.TransformTest do
 
       assert props["fc1"] == :quantized_dense
       assert props["act"] == :relu
+    end
+
+    test "keeps generated layer names" do
+      model =
+        Axon.input("features", shape: {nil, 64})
+        |> Axon.dense(32)
+        |> Axon.dense(16)
+
+      props = model |> Transform.quantize_dense_layers() |> Axon.properties()
+
+      assert props["dense_0"] == :quantized_dense
+      assert props["dense_1"] == :quantized_dense
+    end
+
+    test "leaves layers matched by :except as :dense" do
+      model =
+        Axon.input("features", shape: {nil, 64})
+        |> Axon.dense(32, name: "fc1")
+        |> Axon.dense(16, name: "lm_head")
+
+      props = model |> Transform.quantize_dense_layers(except: ["lm_head"]) |> Axon.properties()
+
+      assert props["fc1"] == :quantized_dense
+      assert props["lm_head"] == :dense
     end
   end
 
@@ -123,7 +149,59 @@ defmodule Emily.Quantization.TransformTest do
       assert_roundtrip_close(model, {2, 64}, compiler: Emily.Compiler)
     end
 
-    defp assert_roundtrip_close(model, input_shape, compiler: compiler) do
+    test "layers matched by :except keep float kernels and still predict" do
+      model =
+        Axon.input("features", shape: {nil, 128})
+        |> Axon.dense(256, name: "fc1")
+        |> Axon.relu()
+        |> Axon.dense(64, name: "lm_head")
+
+      {qmodel, _qstate} =
+        assert_roundtrip_close(model, {3, 128},
+          compiler: Nx.Defn.Evaluator,
+          opts: [except: ["lm_head"]]
+        )
+
+      props = Axon.properties(qmodel)
+      assert props["fc1"] == :quantized_dense
+      assert props["lm_head"] == :dense
+    end
+
+    test "unnamed dense layers round-trip" do
+      model =
+        Axon.input("features", shape: {nil, 128})
+        |> Axon.dense(64)
+        |> Axon.relu()
+        |> Axon.dense(64)
+
+      assert_roundtrip_close(model, {2, 128}, compiler: Nx.Defn.Evaluator)
+    end
+
+    test "unnamed dense layers matched by :except keep their names" do
+      model =
+        Axon.input("features", shape: {nil, 128})
+        |> Axon.dense(64)
+        |> Axon.relu()
+        |> Axon.dense(64)
+        |> Axon.relu()
+        |> Axon.dense(64)
+
+      {qmodel, _qstate} =
+        assert_roundtrip_close(model, {2, 128},
+          compiler: Nx.Defn.Evaluator,
+          opts: [except: ["dense_1"]]
+        )
+
+      props = Axon.properties(qmodel)
+      assert props["dense_0"] == :quantized_dense
+      assert props["dense_1"] == :dense
+      assert props["dense_2"] == :quantized_dense
+    end
+
+    defp assert_roundtrip_close(model, input_shape, opts) do
+      compiler = Keyword.fetch!(opts, :compiler)
+      quantize_opts = Keyword.get(opts, :opts, [])
+
       # Init with Evaluator + fixed seed for determinism; predict with target compiler.
       {init_fn, _} = Axon.build(model, seed: @fixed_seed)
       {_, predict_fn} = Axon.build(model, compiler: compiler)
@@ -138,7 +216,11 @@ defmodule Emily.Quantization.TransformTest do
       expected = predict_fn.(state, x)
 
       {qmodel, qstate} =
-        Transform.quantize(model, state, bits: 4, group_size: 64, transpose: true)
+        Transform.quantize(
+          model,
+          state,
+          [bits: 4, group_size: 64, transpose: true] ++ quantize_opts
+        )
 
       {_, qpredict_fn} = Axon.build(qmodel, compiler: compiler)
       actual = qpredict_fn.(qstate, x)
@@ -159,6 +241,8 @@ defmodule Emily.Quantization.TransformTest do
 
       assert rel_err < @rel_tol,
              "relative error #{rel_err} exceeded #{@rel_tol * 100}% tolerance"
+
+      {qmodel, qstate}
     end
   end
 
