@@ -3,7 +3,7 @@
 ```elixir
 Mix.install(
   [
-    {:emily, "~> 1.1"},
+    {:emily, "~> 1.3"},
     {:bumblebee, "~> 0.7"},
     {:tokenizers, "~> 0.5"},
     {:nx, "~> 0.12"},
@@ -61,121 +61,34 @@ options, so the int4 quantized matmul lowers native too.
 
 ## Quantization transform
 
-Rewriting the Axon graph so every `:dense` node runs through
-`Emily.Quantization.Layers.quantized_dense/4` needs Axon, which is a
-test-only dep on the Emily package — Emily itself stays Axon-free so
-library consumers don't pull it transitively. The transform below is
-the recommended starting point: copy it into your own project
-alongside an Axon dep, and extend it as you need (a per-layer
-`:except` filter, stricter opts validation, different group sizes
-per layer).
-
-Two steps:
+`Emily.Quantization.Transform.quantize/3` does the rewrite in two
+steps:
 
 1. **Graph rewrite** — `Axon.rewrite_nodes/2` replaces each `:dense`
-   node with a `:quantized_dense` sub-graph built with `Axon.layer/3`.
-2. **Parameter quantization** — after init (or Bumblebee load), walk
-   the `Axon.ModelState` and swap each dense kernel for a
-   `%QuantizedWeight{}`.
+   node with a `:quantized_dense` layer whose forward pass dispatches
+   through `Emily.Quantization.Layers.quantized_dense/4`.
+2. **Parameter quantization** — each dense kernel in the
+   `Axon.ModelState` is swapped for a `%Emily.QuantizedWeight{}`, and
+   the quantized weights are evaluated so they no longer hold on to
+   the bf16 kernels they came from.
 
-```elixir
-defmodule DenseTransform do
-  alias Emily.Quantization.Layers
-  alias Emily.QuantizedWeight
+The transform needs Axon, which is an optional dependency of Emily;
+Bumblebee already pulls it in.
 
-  @default_opts [bits: 4, group_size: 128, transpose: true]
-
-  def quantize(model, model_state, opts \\ []) do
-    opts = Keyword.merge(@default_opts, opts)
-    {rewrite_graph(model), quantize_state(model, model_state, opts)}
-  end
-
-  # Replace every :dense node with a :quantized_dense layer whose
-  # forward pass dispatches through Emily.Quantization.Layers.quantized_dense/4.
-  defp rewrite_graph(model) do
-    Axon.rewrite_nodes(model, fn
-      %Axon.Node{op: :dense, meta: meta, name: name_fn} ->
-        fn [x], _output ->
-          quantized_dense_layer(x, meta[:units],
-            use_bias: meta[:use_bias],
-            name: name_fn
-          )
-        end
-
-      _ ->
-        :skip
-    end)
-  end
-
-  defp quantized_dense_layer(x, units, opts) do
-    # Axon 0.8 dropped `Axon.Shape.dense_kernel/dense_bias`; derive
-    # the shapes inline from the input — `{batch, …, in_features}` →
-    # kernel `{in_features, units}`, bias `{units}`.
-    kernel_shape = fn input_shape ->
-      in_features = elem(input_shape, tuple_size(input_shape) - 1)
-      {in_features, units}
-    end
-
-    bias_shape = fn _input_shape -> {units} end
-
-    kernel = Axon.param("kernel", kernel_shape, initializer: :glorot_uniform)
-
-    {inputs, op} =
-      if opts[:use_bias] do
-        bias = Axon.param("bias", bias_shape, initializer: :zeros)
-        {[x, kernel, bias], &Layers.quantized_dense/4}
-      else
-        {[x, kernel], &Layers.quantized_dense/3}
-      end
-
-    Axon.layer(op, inputs,
-      name: opts[:name],
-      meta: %{units: units, use_bias: opts[:use_bias]},
-      op_name: :quantized_dense
-    )
-  end
-
-  # Walk the ModelState, replacing each dense kernel tensor with a
-  # %QuantizedWeight{}. For the default transpose: true (AWQ / MLX
-  # convention, groups along the reduction axis) we pre-transpose the
-  # [in, out] kernel to [out, in] before calling from_dense/2.
-  defp quantize_state(model, state, opts) do
-    transpose = opts[:transpose]
-
-    dense_names =
-      model
-      |> Axon.properties()
-      |> Enum.filter(fn {_name, op} -> op == :dense end)
-      |> Enum.map(fn {name, _} -> name end)
-
-    Enum.reduce(dense_names, state, fn name, acc ->
-      update_in(acc, [Access.key!(:data), name, "kernel"], fn kernel ->
-        source = if transpose, do: Nx.transpose(kernel), else: kernel
-
-        QuantizedWeight.from_dense(source,
-          group_size: opts[:group_size],
-          bits: opts[:bits],
-          transpose: transpose
-        )
-      end)
-    end)
-  end
-end
-```
-
-> **Notes.** The transform only rewrites top-level `:dense` nodes; a
-> model with dense layers nested inside other Axon ops needs a
-> recursive rewriter. The `transpose: true` default stores weights as
+> **Notes.** The transform rewrites top-level `:dense` nodes; a model
+> with dense layers nested inside other Axon ops needs a recursive
+> rewriter. The `transpose: true` default stores weights as
 > `[out, in]` (MLX / AWQ convention, groups along the reduction axis);
 > set `false` if you're feeding a checkpoint that's already laid out
-> the other way. Bits must be one of `[2, 3, 4, 6, 8]` for MLX affine
-> quantization.
+> the other way. Bits must be one of `[1, 2, 3, 4, 6, 8]` for MLX
+> affine quantization. Pass `except: ["lm_head"]` (or any other
+> layer-name substrings) to keep some layers in full precision.
 
 ## Quantized inference
 
 ```elixir
 {qmodel, qparams} =
-  DenseTransform.quantize(model, params,
+  Emily.Quantization.Transform.quantize(model, params,
     bits: 4,
     group_size: 128,
     transpose: true

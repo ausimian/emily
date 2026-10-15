@@ -16,11 +16,10 @@
 # `tiny-random` fetches ~10 MB of HuggingFace checkpoints. `full`
 # adds the ~1.2 GB `Qwen/Qwen3-0.6B` fetch.
 #
-# The quantized variant (formerly `:qwen3_quant_full`) depends on
-# `Emily.Quantization.Transform`, which currently lives in
-# `test/support/` and so isn't reachable from a Mix.install consumer.
-# Once that module graduates to `lib/`, re-introduce a third test
-# module here under a `QWEN3_RUN=all` gate.
+# The quantized variant (formerly `:qwen3_quant_full`) was dropped when
+# `Emily.Quantization.Transform` was only in `test/support/`. It now
+# ships in `lib/`, so a third test module can return here under a
+# `QWEN3_RUN=all` gate.
 #
 # Switch back to `mix test` integration by bumping Bumblebee on Hex
 # (>= whichever release contains `Bumblebee.Text.Qwen3`) and pinning

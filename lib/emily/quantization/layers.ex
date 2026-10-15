@@ -7,9 +7,8 @@ defmodule Emily.Quantization.Layers do
   `mx::quantized_matmul` kernel (via `Emily.Quantization.quantized_matmul_defn/2`),
   which streams the packed low-bit weights directly rather than
   materializing a dense weight per call — the single-kernel path decode
-  loops want. The `qwen3_quantized` notebook walks through a concrete
-  `Axon.rewrite_nodes/2`-based graph rewrite that swaps every `:dense`
-  for a layer calling this op.
+  loops want. `Emily.Quantization.Transform` rewrites an Axon model so
+  every `:dense` layer calls this op.
   """
 
   import Nx.Defn

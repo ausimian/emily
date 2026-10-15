@@ -4,11 +4,9 @@
 # (affine 4-bit) via `Emily.Quantization.Transform`, then measures
 # tokens/sec through a compiled `Bumblebee.Text.generation` serving.
 #
-# Run in TEST env so `Emily.Quantization.Transform` (test/support) is on
-# the compile path, and in-project (NOT Mix.install) so it exercises the
-# LOCAL build:
+# Run in-project (NOT Mix.install) so it exercises the LOCAL build:
 #
-#     MIX_ENV=test mix run bench/qwen3_quantized_tps.exs
+#     mix run bench/qwen3_quantized_tps.exs
 #
 # Optional env: EMILY_BENCH_MODEL, EMILY_BENCH_NEW_TOKENS (64),
 # EMILY_BENCH_WARMUP (1), EMILY_BENCH_RUNS (3), EMILY_BENCH_GROUP_SIZE (64).
