@@ -204,6 +204,21 @@ defmodule Emily.Quantization.TransformTest do
       assert props["lm_head"] == :dense
     end
 
+    test "a mixed-precision model round-trips without casting the packed weights" do
+      policy = Axon.MixedPrecision.create_policy(params: {:f, 32}, compute: {:bf, 16})
+
+      model =
+        Axon.input("features", shape: {nil, 128})
+        |> Axon.dense(256, name: "fc1")
+        |> Axon.relu()
+        |> Axon.dense(64, name: "fc2")
+        |> Axon.MixedPrecision.apply_policy(policy)
+
+      {_qmodel, qstate} = assert_roundtrip_close(model, {3, 128}, compiler: Nx.Defn.Evaluator)
+
+      assert Nx.type(qstate.data["fc1"]["kernel"].value) == {:u, 32}
+    end
+
     test "unnamed dense layers round-trip" do
       model =
         Axon.input("features", shape: {nil, 128})
