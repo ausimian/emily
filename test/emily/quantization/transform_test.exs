@@ -16,6 +16,7 @@ defmodule Emily.Quantization.TransformTest do
 
   use ExUnit.Case, async: true
 
+  alias Emily.Quantization.Layers
   alias Emily.Quantization.Transform
   alias Emily.QuantizedWeight
 
@@ -64,6 +65,42 @@ defmodule Emily.Quantization.TransformTest do
 
       assert props["dense_0"] == :quantized_dense
       assert props["dense_1"] == :quantized_dense
+    end
+
+    test "keeps generated names of existing :quantized_dense layers" do
+      x =
+        Axon.input("features", shape: {nil, 64})
+        |> Axon.dense(64)
+
+      kernel = Axon.param("kernel", fn shape -> {elem(shape, 1), 16} end)
+
+      model =
+        Axon.layer(&Layers.quantized_dense/3, [x, kernel], op_name: :quantized_dense)
+
+      assert Axon.properties(model)["quantized_dense_0"] == :quantized_dense
+
+      props = model |> Transform.quantize_dense_layers() |> Axon.properties()
+
+      assert props["dense_0"] == :quantized_dense
+      assert props["quantized_dense_0"] == :quantized_dense
+    end
+
+    test "keeps the dense layers' parameters and mixed-precision policy" do
+      policy = Axon.MixedPrecision.create_policy(compute: {:bf, 16})
+
+      model =
+        Axon.input("features", shape: {nil, 64})
+        |> Axon.dense(32, name: "fc", bias_initializer: :ones)
+        |> Axon.MixedPrecision.apply_policy(policy)
+
+      [dense] = for {_, %Axon.Node{op: :dense} = n} <- model.nodes, do: n
+
+      qnode =
+        Transform.quantize_dense_layers(model).nodes[dense.id]
+
+      assert qnode.op_name == :quantized_dense
+      assert qnode.parameters == dense.parameters
+      assert qnode.policy == policy
     end
 
     test "leaves layers matched by :except as :dense" do

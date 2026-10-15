@@ -89,7 +89,7 @@ if Code.ensure_loaded?(Axon) do
 
     Axon's param initializers run inside an `Nx.Defn.jit` trace, but
     `Emily.QuantizedWeight.from_dense/2` calls a NIF. So the rewriter
-    declares kernels as float templates (matching `Axon.dense`) and
+    keeps `Axon.dense`'s float kernel parameter and
     `quantize_model_state/3` swaps them for `%QuantizedWeight{}` *after*
     init — the same pattern `Axon.Quantization.quantize_model_state/2`
     uses.
@@ -130,13 +130,13 @@ if Code.ensure_loaded?(Axon) do
     Rewrite every `:dense` node in `model` into a `:quantized_dense` node
     that dispatches through `Emily.Quantization.Layers.quantized_dense/4`.
 
-    The replacement layer's kernel parameter is declared with an
-    `[in, out]` float template, identical to `Axon.dense`'s kernel, so
-    the `init_fn` from `Axon.build/2` on the rewritten model still works
-    and returns a valid (if unquantized) placeholder state. Before
-    calling `predict_fn`, either swap that state's kernels for
-    `%QuantizedWeight{}` with `quantize_model_state/3`, or supply a
-    state whose kernels are already quantized.
+    Only the node's op changes. Its parameters, mixed-precision policy,
+    hooks and mode carry over. The rewritten model needs a state whose
+    kernels are already `%QuantizedWeight{}`: initialize or load the
+    original model's state and pass it through `quantize_model_state/3`,
+    or supply a pre-quantized state. Axon's `init_fn` for the rewritten
+    model runs the layers it initializes, so it cannot build that state
+    itself.
 
     Layer names are preserved, including generated ones such as
     `"dense_0"`, so an existing float `Axon.ModelState`'s keys still
@@ -153,21 +153,26 @@ if Code.ensure_loaded?(Axon) do
 
     """
     @spec quantize_dense_layers(Axon.t(), keyword()) :: Axon.t()
-    def quantize_dense_layers(%Axon{} = model, opts \\ []) do
+    def quantize_dense_layers(%Axon{nodes: nodes} = model, opts \\ []) do
       opts = validate_opts!(opts)
       dense_layers = dense_layers(model, opts[:except])
 
-      model
-      |> pin_dense_names()
-      |> Axon.rewrite_nodes(fn
-        %Axon.Node{op: :dense, id: id, meta: meta} when is_map_key(dense_layers, id) ->
-          fn [%Axon{} = x], _output ->
-            quantized_dense(x, meta[:units], use_bias: meta[:use_bias], name: dense_layers[id])
-          end
+      # Every reachable node gets its resolved name as a fixed string.
+      # Axon numbers unnamed layers per op, so turning some `:dense` nodes
+      # into `:quantized_dense` would otherwise renumber the unnamed
+      # layers of both ops and detach them from their parameters.
+      nodes =
+        for {id, name} <- layer_names(model), into: nodes do
+          node = %{nodes[id] | name: fn _op_name, _op_counts -> name end}
 
-        _ ->
-          :skip
-      end)
+          if is_map_key(dense_layers, id) do
+            {id, %{node | op: quantized_dense_op(node), op_name: :quantized_dense}}
+          else
+            {id, node}
+          end
+        end
+
+      %{model | nodes: nodes}
     end
 
     @doc """
@@ -237,31 +242,8 @@ if Code.ensure_loaded?(Axon) do
           do: {id, name}
     end
 
-    # Give every `:dense` node its resolved name as a fixed string. Axon
-    # numbers unnamed layers per op, so once some dense layers become
-    # `:quantized_dense`, an unnamed one left as `:dense` (by `:except`)
-    # would be renumbered and lose its parameters.
-    defp pin_dense_names(%Axon{nodes: nodes} = model) do
-      names = layer_names(model)
-
-      nodes =
-        Map.new(nodes, fn
-          {id, %Axon.Node{op: :dense} = node} when is_map_key(names, id) ->
-            name = names[id]
-            {id, %{node | name: fn _op_name, _op_counts -> name end}}
-
-          entry ->
-            entry
-        end)
-
-      %{model | nodes: nodes}
-    end
-
     # Resolve each node's layer name the way `Axon.properties/1` does:
     # parents first, with each `name_fn` seeing the op counts so far.
-    # The rewrite passes these names on as strings, so an unnamed
-    # `dense_0` stays `dense_0` rather than becoming `quantized_dense_0`
-    # and losing its parameters.
     defp layer_names(%Axon{output: id, nodes: nodes}) do
       {names, _op_counts} = resolve_names(id, nodes, {%{}, %{}})
       names
@@ -277,43 +259,13 @@ if Code.ensure_loaded?(Axon) do
       {Map.put(names, id, name), Map.update(op_counts, op_name, 1, &(&1 + 1))}
     end
 
-    # Build the quantized-dense layer's Axon sub-graph. Declares kernel
-    # with a `[in, out]` float template so init_fn succeeds; the predict
-    # path pattern-matches on %QuantizedWeight{} and therefore assumes
-    # the state has been quantized via `quantize_model_state/3` (or a
-    # pre-quantized checkpoint).
-    defp quantized_dense(x, units, opts) do
-      opts =
-        Keyword.validate!(opts, [
-          :name,
-          use_bias: true,
-          kernel_initializer: :glorot_uniform,
-          bias_initializer: :zeros
-        ])
+    # Axon calls a function op with the layer inputs, the parameters and
+    # the layer opts, so a dense node with a bias needs the 4-arity op.
+    defp quantized_dense_op(%Axon.Node{parameters: [_kernel, _bias]}),
+      do: &Layers.quantized_dense/4
 
-      # Axon 0.8 dropped `Axon.Shape.dense_kernel/dense_bias`; inline
-      # the shape derivation — input is `{batch, …, in_features}`,
-      # kernel is `{in_features, units}`, bias is `{units}`.
-      kernel_shape = fn input_shape ->
-        in_features = elem(input_shape, tuple_size(input_shape) - 1)
-        {in_features, units}
-      end
-
-      bias_shape = fn _input_shape -> {units} end
-
-      kernel = Axon.param("kernel", kernel_shape, initializer: opts[:kernel_initializer])
-
-      {inputs, op} =
-        if opts[:use_bias] do
-          bias = Axon.param("bias", bias_shape, initializer: opts[:bias_initializer])
-          {[x, kernel, bias], &Layers.quantized_dense/4}
-        else
-          {[x, kernel], &Layers.quantized_dense/3}
-        end
-
-      meta = %{units: units, use_bias: opts[:use_bias]}
-      Axon.layer(op, inputs, name: opts[:name], meta: meta, op_name: :quantized_dense)
-    end
+    defp quantized_dense_op(%Axon.Node{parameters: [_kernel]}),
+      do: &Layers.quantized_dense/3
 
     # Quantize one batch of layers' kernels, then evaluate them before
     # returning so the batch holds no pending reference to its sources.
