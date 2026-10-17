@@ -14,9 +14,9 @@ defmodule Emily.MixProject do
   # Precompiled NIF targets this `@version` ships. Used as an
   # early fail-fast guard in the hex-consumer fetch step (an
   # unsupported target 404s on the tarball download, but the list
-  # lets us raise with a clearer message). Checksums are not pinned
-  # here; the consumer fetches a `.sha256` sidecar alongside each
-  # tarball at compile time.
+  # lets us raise with a clearer message). Checksums are pinned in
+  # `native_checksums.txt` (shipped inside the hex package) and
+  # verified at compile time; there is no `.sha256` sidecar.
   @supported_targets [
     {:aot, "macos-arm64"},
     {:jit, "macos-arm64"}
