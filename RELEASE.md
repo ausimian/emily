@@ -14,3 +14,11 @@
   instead of staying resident until the first forward pass. The
   `qwen3_quantized` livebook now calls `quantize/3` instead of defining
   its own transform.
+
+### Fixed
+
+- Under `native: true`, `Nx.cumulative_sum/2`, `cumulative_product/2`,
+  `cumulative_max/2` and `cumulative_min/2` on any axis but the last now
+  read their own operand. They previously used the function's first
+  input instead, which gave a silently wrong result when the shapes
+  matched and an MLX `[slice]` error when they did not.
