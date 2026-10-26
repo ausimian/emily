@@ -1377,14 +1377,23 @@ defmodule Emily.IR do
   # Cumulative families. Like Emily.Backend.block/4, the last-axis case uses
   # the native MLX `cumsum`/`cumprod`/`cummax`/`cummin` kernel; interior axes
   # (which MLX can't always factor) fall back to the block's composed
-  # expansion. Nx cumulation is always inclusive.
+  # expansion, bound to the real operand via the TopK-style parameter
+  # seeding (unseeded, its fresh :parameter would resolve to the outer
+  # function's input 0). Nx cumulation is always inclusive.
   defp lower_block(%mod{axis: axis, reverse: reverse}, [t], expr, out, state)
        when is_map_key(@cumulative_blocks, mod) do
+    {rt, state} = lower_node(t, state)
+
     if axis == tuple_size(out.shape) - 1 do
-      {rt, state} = lower_node(t, state)
       op = Map.fetch!(@cumulative_blocks, mod)
       emit_coerced(state, op, [rt], [[axis], [bool_int(reverse)]], out.type)
     else
+      seed =
+        expr
+        |> collect_block_params(%{})
+        |> Map.new(fn {id, 0} -> {id, rt} end)
+
+      state = %{state | cache: Map.merge(state.cache, seed)}
       lower_node(expr, state)
     end
   end

@@ -31,6 +31,35 @@ defmodule Emily.CompilerIndexingTest do
     end
   end
 
+  # Interior axes lower the block's composed expansion, whose parameters
+  # must bind to the op's own operand rather than the function's input 0.
+  # The operand here is input 1, so a wrong binding gives a silently
+  # wrong (but same-shaped) result.
+  test "cumulative ops along a non-last axis read their own operand" do
+    a = Nx.iota({2, 3, 4}, type: :f32, backend: Emily.Backend)
+    b = Nx.multiply(Nx.add(a, 1), 10)
+
+    for op <- [:cumulative_sum, :cumulative_product, :cumulative_max, :cumulative_min],
+        axis <- [0, 1],
+        reverse <- [false, true] do
+      out = equiv(fn _a, b -> apply(Nx, op, [b, [axis: axis, reverse: reverse]]) end, [a, b])
+
+      expected =
+        apply(Nx, op, [Nx.backend_copy(b, Nx.BinaryBackend), [axis: axis, reverse: reverse]])
+
+      assert Nx.to_flat_list(out) == Nx.to_flat_list(expected)
+    end
+  end
+
+  # An operand whose rank differs from input 0's made the misbound
+  # expansion raise an MLX slice error (Transmuter's DETR positional
+  # embedding hits this shape).
+  test "cumulative sum on a non-last axis of a reshaped operand" do
+    x = t([[[1.0, 0.0, 1.0, 1.0], [1.0, 1.0, 0.0, 1.0], [0.0, 1.0, 1.0, 1.0]]])
+    out = equiv(fn x -> x |> Nx.squeeze(axes: [0]) |> Nx.cumulative_sum(axis: 0) end, [x])
+    assert Nx.to_flat_list(out) == [1.0, 0.0, 1.0, 1.0, 2.0, 1.0, 1.0, 2.0, 2.0, 2.0, 2.0, 3.0]
+  end
+
   test "single-axis gather" do
     x = t([10.0, 20.0, 30.0, 40.0])
     idx = t([[3], [1], [0]], type: :s64)
