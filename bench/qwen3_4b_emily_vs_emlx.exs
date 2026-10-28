@@ -46,7 +46,7 @@
 Mix.install([
   {:emily, path: Path.expand("..", __DIR__)},
   {:exla, "~> 0.12"},
-  {:emlx, "~> 0.3.1"},
+  {:emlx, "~> 0.4.0"},
   # Versions track Emily's own deps (Bumblebee 0.7 / Axon 0.8 / Nx 0.12);
   # keep them in sync with mix.exs so the standalone install resolves.
   {:bumblebee, "~> 0.7"},

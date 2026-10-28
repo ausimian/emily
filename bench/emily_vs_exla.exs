@@ -62,7 +62,7 @@
 Mix.install([
   {:emily, path: Path.expand("..", __DIR__)},
   {:exla, "~> 0.12"},
-  {:emlx, "~> 0.3.1"},
+  {:emlx, "~> 0.4.0"},
   {:bumblebee, "~> 0.7"},
   {:axon, "~> 0.8"},
   {:tokenizers, "~> 0.5"},
