@@ -26,20 +26,21 @@ jobs:
   precommit:
     name: precommit (${{ matrix.os }}, variant=${{ matrix.variant }})
     if: github.event_name != 'push' || github.ref_type == 'branch'
-    # AOT prebuilt is built on macos-14 and is the older-macOS-compatible
-    # path. JIT prebuilt is built on macos-26 and isn't portable back to
-    # macos-14 (the macOS 26 libSystem grew `__fmaxf16` and other half-
-    # float intrinsics that MLX's Metal stack ends up referencing). Each
-    # lane therefore runs on the runner whose SDK the prebuilt targets.
+    # AOT prebuilt is the older-macOS-compatible path: its deployment
+    # target pins a macOS 14 floor, so it builds on macos-15 (the oldest
+    # hosted image). JIT prebuilt is built on macos-26 and isn't portable
+    # back to macOS 14 (the macOS 26 libSystem grew `__fmaxf16` and other
+    # half-float intrinsics that MLX's Metal stack ends up referencing).
+    # Each lane runs on the runner its release build uses.
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
         include:
-          - os: macos-14
+          - os: macos-15
             variant: aot
             min: "14.0"
-            xcode: "16.2"
+            xcode: "16.4"
           - os: macos-26
             variant: jit
             min: "26.2"
@@ -55,10 +56,10 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      # MLX >= 0.32.1 Metal kernels use `metal::remove_addrspace_t`, which
-      # the Metal stdlib in the macos-14 image's default Xcode (15.4)
-      # lacks. 16.2 is the newest Xcode on that image; the deployment
-      # target, not the SDK, sets the macOS 14 floor.
+      # MLX >= 0.32.1 Metal kernels use `metal::remove_addrspace_t`, so
+      # they need Xcode 16 or later. Pin 16.4 rather than trust the
+      # image default, which can move. The deployment target, not the
+      # SDK, sets the macOS 14 floor.
       - name: Select Xcode ${{ matrix.xcode }}
         if: matrix.xcode
         run: sudo xcode-select -s /Applications/Xcode_${{ matrix.xcode }}.app
@@ -140,10 +141,10 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: macos-14
+          - os: macos-15
             variant: aot
             min: "14.0"
-            xcode: "16.2"
+            xcode: "16.4"
           - os: macos-26
             variant: jit
             min: "26.2"
@@ -159,10 +160,10 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      # MLX >= 0.32.1 Metal kernels use `metal::remove_addrspace_t`, which
-      # the Metal stdlib in the macos-14 image's default Xcode (15.4)
-      # lacks. 16.2 is the newest Xcode on that image; the deployment
-      # target, not the SDK, sets the macOS 14 floor.
+      # MLX >= 0.32.1 Metal kernels use `metal::remove_addrspace_t`, so
+      # they need Xcode 16 or later. Pin 16.4 rather than trust the
+      # image default, which can move. The deployment target, not the
+      # SDK, sets the macOS 14 floor.
       - name: Select Xcode ${{ matrix.xcode }}
         if: matrix.xcode
         run: sudo xcode-select -s /Applications/Xcode_${{ matrix.xcode }}.app
@@ -237,7 +238,7 @@ jobs:
   cppcheck:
     name: cppcheck (NIF static analysis)
     if: github.event_name != 'push' || github.ref_type == 'branch'
-    runs-on: macos-14
+    runs-on: macos-15
     steps:
       - uses: actions/checkout@v6
 
@@ -259,7 +260,7 @@ jobs:
   clang-tidy:
     name: clang-tidy (NIF static analysis)
     if: github.event_name != 'push' || github.ref_type == 'branch'
-    runs-on: macos-14
+    runs-on: macos-15
     env:
       MIX_ENV: test
       EMILY_MLX_VARIANT: aot
@@ -267,12 +268,12 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      # MLX >= 0.32.1 Metal kernels use `metal::remove_addrspace_t`, which
-      # the Metal stdlib in the macos-14 image's default Xcode (15.4)
-      # lacks. 16.2 is the newest Xcode on that image; the deployment
-      # target, not the SDK, sets the macOS 14 floor.
-      - name: Select Xcode 16.2
-        run: sudo xcode-select -s /Applications/Xcode_16.2.app
+      # MLX >= 0.32.1 Metal kernels use `metal::remove_addrspace_t`, so
+      # they need Xcode 16 or later. Pin 16.4 rather than trust the
+      # image default, which can move. The deployment target, not the
+      # SDK, sets the macOS 14 floor.
+      - name: Select Xcode 16.4
+        run: sudo xcode-select -s /Applications/Xcode_16.4.app
 
       - name: Setup Beam
         uses: erlef/setup-beam@v1
@@ -334,7 +335,7 @@ jobs:
   compat:
     name: compat (elixir ${{ matrix.elixir }}, otp ${{ matrix.otp }})
     if: github.event_name != 'push' || github.ref_type == 'branch'
-    runs-on: macos-14
+    runs-on: macos-15
     strategy:
       fail-fast: false
       matrix:
@@ -352,12 +353,12 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      # MLX >= 0.32.1 Metal kernels use `metal::remove_addrspace_t`, which
-      # the Metal stdlib in the macos-14 image's default Xcode (15.4)
-      # lacks. 16.2 is the newest Xcode on that image; the deployment
-      # target, not the SDK, sets the macOS 14 floor.
-      - name: Select Xcode 16.2
-        run: sudo xcode-select -s /Applications/Xcode_16.2.app
+      # MLX >= 0.32.1 Metal kernels use `metal::remove_addrspace_t`, so
+      # they need Xcode 16 or later. Pin 16.4 rather than trust the
+      # image default, which can move. The deployment target, not the
+      # SDK, sets the macOS 14 floor.
+      - name: Select Xcode 16.4
+        run: sudo xcode-select -s /Applications/Xcode_16.4.app
 
       - name: Setup Beam
         id: beam
