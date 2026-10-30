@@ -707,9 +707,13 @@ defmodule Emily.MixProject do
   # the whole HTTPS round-trip on a peer node instead — the child VM
   # spawned by :peer has a fresh, un-pruned code path, so standard
   # httpc + public_key just work.
+  #
+  # The peer is deliberately unnamed. Control runs over stdio, so it
+  # needs no distribution, and a named peer inherits the parent's name
+  # mode: under a longnames parent (Livebook's Mix.install) it boots
+  # with `-name` and dies on hosts without a fully qualified hostname.
   defp http_download!(url, dest) do
-    {:ok, pid, _node} =
-      :peer.start_link(%{connection: :standard_io, name: :peer.random_name()})
+    {:ok, pid, _node} = :peer.start_link(%{connection: :standard_io})
 
     try do
       {:ok, _} = :peer.call(pid, :application, :ensure_all_started, [:inets])
