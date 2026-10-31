@@ -57,7 +57,13 @@ defmodule Emily.Compiler do
     * `:device` — `:gpu` (default) or `:cpu`. Forwarded to
       `Emily.Backend` via the `__to_backend__/1` callback.
     * `:hooks`, `:debug_options`, `:garbage_collect` — passed through
-      to `Nx.Defn.Evaluator` unchanged. See its moduledoc.
+      to `Nx.Defn.Evaluator` unchanged. See its moduledoc. Under
+      `native: true`, an `io_call` that has a default callback
+      (`print_value/2`, for example) or a hook registered under its name
+      can't be compiled natively, so the defn falls back to the
+      Evaluator (see `:native_fallback`). A named `io_call` with neither,
+      such as Bumblebee generation's `:token` when nothing streams it,
+      is a no-op and compiles natively.
     * `:max_concurrency` — accepted for `Nx.Serving` compatibility,
       but multi-partition serving is rejected because MLX kernel
       dispatch isn't thread-safe. Pass `1` (the default) to silence.
@@ -201,7 +207,7 @@ defmodule Emily.Compiler do
   #
   # The Expr trace (`fun.(vars)`) runs *outside* the rescue so a genuine
   # caller error surfaces unchanged; only the lowering + program build is
-  # guarded. `Emily.IR.lower/1` raises `ArgumentError` on an op or
+  # guarded. `Emily.IR.lower/2` raises `ArgumentError` on an op or
   # construct it can't lower yet. Unless `:native_fallback` is `:raise`,
   # we emit a one-shot `[:emily, :compiler, :fallback]` event and return
   # `:fallback`, so the caller routes the whole defn through
@@ -232,7 +238,7 @@ defmodule Emily.Compiler do
     # `n_inputs` to the real arity so the eval-time input count matches.
     n_inputs = length(Composite.flatten_list(vars))
 
-    case lower(Enum.reverse(leaves_rev), mode, key) do
+    case lower(Enum.reverse(leaves_rev), mode, key, Keyword.get(opts, :hooks, %{})) do
       {:ok, ir} -> {:ok, replay_closure(template, %{ir | n_inputs: n_inputs}, eval_mode)}
       :fallback -> :fallback
     end
@@ -259,15 +265,15 @@ defmodule Emily.Compiler do
     end
   end
 
-  # Lower the output leaves to a flat IR. `Emily.IR.lower/1` is the *only*
+  # Lower the output leaves to a flat IR. `Emily.IR.lower/2` is the *only*
   # guarded step: it raises `ArgumentError` on an op or construct it can't
   # lower yet, which we turn into a graceful `:fallback` (or re-raise in
   # `:raise` mode). `Program.compile/1` is deliberately kept outside the
   # rescue (in `replay_closure/3`) — it raises only on malformed IR, i.e. a
   # compiler bug, which must surface loudly rather than be masked as an
   # "unsupported op" fallback.
-  defp lower(leaves, mode, key) do
-    {:ok, IR.lower(leaves)}
+  defp lower(leaves, mode, key, hooks) do
+    {:ok, IR.lower(leaves, hooks: hooks)}
   rescue
     e in ArgumentError ->
       case mode do

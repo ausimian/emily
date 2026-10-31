@@ -313,7 +313,7 @@ defmodule Emily.IR do
 
   alias Emily.Fast.Block, as: FB
   alias Emily.Quantization.Block, as: QB
-  alias Nx.Defn.Tree
+  alias Nx.Defn.Composite
   alias Nx.Tensor, as: T
 
   # Nx Expr op -> IR opcode. Arithmetic/bitwise cast both operands to the
@@ -400,10 +400,17 @@ defmodule Emily.IR do
   so the caller can reassemble its output container by zipping the
   program's results back in order. Captured weights / materialized
   constants are held as native tensor refs in `captures` / `consts`.
+
+  ## Options
+
+    * `:hooks` - the defn `:hooks` map. A named `io_call` with no default
+      callback and no hook here is a no-op and lowers to its data; any
+      other `io_call` raises.
   """
-  @spec lower([T.t()]) :: t()
-  def lower(output_leaves) when is_list(output_leaves) do
+  @spec lower([T.t()], keyword()) :: t()
+  def lower(output_leaves, opts \\ []) when is_list(output_leaves) do
     state = %{
+      hooks: Keyword.get(opts, :hooks, %{}),
       cache: %{},
       instrs: [],
       n_instrs: 0,
@@ -1132,17 +1139,37 @@ defmodule Emily.IR do
     {{:multi_refs, refs}, state}
   end
 
-  # attach_token: sequences a token (hooks) before `expr`. With no active
-  # hook the token is a no-op, so pass through to the inner expr. Hooks
-  # would need a callback into Elixir mid-graph (program-split) — deferred.
-  defp lower_op(%T{data: %Nx.Defn.Expr{op: :attach_token, args: [token, expr]}}, state) do
-    if Tree.has_hooks?(token, %{}) do
+  # io_call: args [data, callback_spec, template, ref]. Runs a host-side
+  # callback (hook, print_value, runtime_raise) on `data`, then returns
+  # `data` unchanged. A callback would need a mid-graph call into Elixir
+  # (program-split), so raise and let the compiler fall back to the
+  # Evaluator, which runs it. A named io_call with no default callback and
+  # no entry in `:hooks` (e.g. Bumblebee generation's `:token`) is a no-op,
+  # resolved the way Nx.Defn.Evaluator does, so it lowers to its data. A
+  # container `data` is consumed through `:elem` over its flattened leaves,
+  # as the Evaluator flattens it.
+  defp lower_op(
+         %T{data: %Nx.Defn.Expr{op: :io_call, args: [data, callback_spec, template, _ref]}},
+         state
+       ) do
+    leaves = Composite.flatten_list([data])
+
+    unless io_call_callback(callback_spec, state.hooks) == nil and
+             Enum.all?(leaves, &match?(%T{data: %Nx.Defn.Expr{}}, &1)) do
       raise ArgumentError,
-            "Emily Expr compiler does not support hooks under native compilation " <>
-              "(they require a mid-graph callback into Elixir)."
+            "Emily Expr compiler does not support io_call with a callback " <>
+              "(hooks, print_value, runtime_raise) under native compilation " <>
+              "(it requires a mid-graph callback into Elixir)."
     end
 
-    lower_node(expr, state)
+    case template do
+      %T{} ->
+        lower_node(data, state)
+
+      _ ->
+        {refs, state} = Enum.map_reduce(leaves, state, &lower_node/2)
+        {{:multi_refs, refs}, state}
+    end
   end
 
   # reduce / window_reduce with a user-supplied BEAM reducer cannot be
@@ -1181,8 +1208,8 @@ defmodule Emily.IR do
       |> Enum.with_index()
       |> Map.new(fn {%T{data: %Nx.Defn.Expr{id: id}}, i} -> {id, {:input, i}} end)
 
-    cond_ir = lower_subgraph([cond], param_seed, arity)
-    body_ir = lower_subgraph(body_leaves, param_seed, arity)
+    cond_ir = lower_subgraph([cond], param_seed, arity, state.hooks)
+    body_ir = lower_subgraph(body_leaves, param_seed, arity, state.hooks)
 
     {base, state} = emit_multi(state, :while, init_refs, [[arity]], [cond_ir, body_ir], arity)
 
@@ -1627,8 +1654,9 @@ defmodule Emily.IR do
   # bound state rather than being treated as captures. The sub-IR carries its
   # own captures/consts (e.g. weights the body closes over) and `n_inputs`
   # = arity. Replayed by the C++ `while` arm with the current state as inputs.
-  defp lower_subgraph(output_leaves, param_seed, arity) do
+  defp lower_subgraph(output_leaves, param_seed, arity, hooks) do
     state = %{
+      hooks: hooks,
       cache: param_seed,
       instrs: [],
       n_instrs: 0,
@@ -1660,6 +1688,10 @@ defmodule Emily.IR do
     instr = %{opcode: opcode, operands: operands, iattrs: iattrs, subprograms: subprograms}
     {base, %{state | instrs: [instr | state.instrs], n_instrs: state.n_instrs + arity}}
   end
+
+  # Mirrors Nx.Defn.Evaluator's resolve_io_call/2.
+  defp io_call_callback({:fn, fun}, _hooks), do: fun
+  defp io_call_callback({:named, name, callback}, hooks), do: hooks[name] || callback
 
   defp bool_int(true), do: 1
   defp bool_int(false), do: 0

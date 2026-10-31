@@ -59,12 +59,12 @@
 
 Mix.install([
   {:emily, path: Path.expand("..", __DIR__)},
-  # Versions track Emily's own deps (Bumblebee 0.7 / Axon 0.8 / Nx 0.12);
+  # Versions track Emily's own deps (Bumblebee 0.8 / Axon 0.9 / Nx 1.0);
   # keep them in sync with mix.exs so the standalone install resolves.
-  {:bumblebee, "~> 0.7"},
-  {:axon, "~> 0.8"},
+  {:bumblebee, "~> 0.8"},
+  {:axon, "~> 0.9"},
   {:tokenizers, "~> 0.5"},
-  {:nx, "~> 0.12"}
+  {:nx, "~> 1.0"}
 ])
 
 defmodule Emily.Bench.Qwen3 do

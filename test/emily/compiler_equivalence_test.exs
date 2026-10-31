@@ -535,6 +535,23 @@ defmodule Emily.CompilerEquivalenceTest do
       assert out.type == {:f, 32}
     end
 
+    # Axon 0.9 wraps its activations in `Nx.block` structs that
+    # Emily.Backend has no clause for, so the evaluator runs their composed
+    # expansion through the catch-all. The IR lowers that same expansion,
+    # so a model's activations stay native and bit-identical.
+    test "Axon activation blocks lower their composed expansion" do
+      x = et([[0.5, -1.25, 2.0, 0.1], [-3.0, 0.0, 1.5, -0.2]])
+
+      for act <- [
+            &Axon.Activations.gelu/1,
+            &Axon.Activations.relu/1,
+            &Axon.Activations.silu/1,
+            &Axon.Activations.softmax/1
+          ] do
+        assert_equiv(act, [x])
+      end
+    end
+
     # A block Emily.Backend.block/4 runs through a native kernel must not
     # lower its composed expansion: the result would silently diverge
     # from the evaluator. QR's `:complete` mode has no IR lowering yet, so
@@ -555,6 +572,7 @@ defmodule Emily.CompilerEquivalenceTest do
 
       refute Emily.Backend.native_block?(%Nx.Block.Phase{})
       refute Emily.Backend.native_block?(%Nx.Block.TopK{})
+      refute Emily.Backend.native_block?(%Axon.Activations.GeLU{})
     end
   end
 
