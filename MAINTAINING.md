@@ -95,7 +95,7 @@ out `{variant × target}`:
 
 | Variant | Target       | Runner      |
 | ------- | ------------ | ----------- |
-| aot     | macos-arm64  | `macos-14`  |
+| aot     | macos-arm64  | `macos-15`  |
 | jit     | macos-arm64  | `macos-26`  |
 
 Each cell clones `:mlx_src`, builds MLX + the NIF from source
@@ -300,5 +300,8 @@ JIT NIF therefore requires macOS 26.2+ at runtime as well as build
 time, which is why the JIT CI lane runs on `macos-26` — the binary
 won't dlopen on older hosts.
 
-The AOT lane has no such constraint and is built on `macos-14`, so
-the AOT NIF runs anywhere from macOS 14 upward.
+The AOT lane has no such constraint. It builds on `macos-15` with a
+macOS 14.0 deployment target, which MLX also passes to the Metal
+compiler when it builds `mlx.metallib`, so the AOT NIF runs anywhere
+from macOS 14 upward. `scripts/verify-nif-floor.sh` checks the NIF
+side of that in CI.
