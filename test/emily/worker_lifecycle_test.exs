@@ -32,6 +32,28 @@ defmodule Emily.WorkerLifecycleTest do
     end
   end
 
+  # Dropped workers are torn down asynchronously: each finishes its
+  # in-flight GPU work before the reaper joins it, so memory drains over
+  # time rather than all at once. Poll until active memory falls to
+  # `limit`, returning the last reading. A real leak still fails at the
+  # deadline.
+  defp await_active_memory_at_most(limit, deadline_ms \\ 10_000) do
+    deadline = System.monotonic_time(:millisecond) + deadline_ms
+    poll_active_memory(limit, deadline)
+  end
+
+  defp poll_active_memory(limit, deadline) do
+    Native.clear_cache()
+    active = Native.get_active_memory()
+
+    if active <= limit or System.monotonic_time(:millisecond) >= deadline do
+      active
+    else
+      Process.sleep(50)
+      poll_active_memory(limit, deadline)
+    end
+  end
+
   test "create_worker rejects a non-positive queue limit" do
     assert_raise ArgumentError, fn -> Native.create_worker(0) end
     assert_raise ArgumentError, fn -> Native.create_worker(-1) end
@@ -105,11 +127,10 @@ defmodule Emily.WorkerLifecycleTest do
     end
 
     :erlang.garbage_collect()
-    Process.sleep(200)
-    Native.clear_cache()
 
     # Still responsive (no reaper deadlock/crash) and memory is reclaimed.
-    assert Native.get_active_memory() <= base + 64_000_000
+    limit = base + 64_000_000
+    assert await_active_memory_at_most(limit) <= limit
   end
 
   test "Emily.Stream.close/1 stops the worker; later use raises" do
