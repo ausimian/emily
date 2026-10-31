@@ -514,7 +514,7 @@ defmodule Emily.CompilerEquivalenceTest do
 
     # Nx.phase (Nx.Block.Phase) := atan2(imag(t), real(t)). Backend
     # falls through to the composed expansion (no fused kernel); the IR
-    # lowers the same expansion via the TopK-style param-seeding, so the
+    # lowers the same expansion, bound to the real arg, so the
     # result is bit-identical to the evaluator. Exercise the four
     # quadrants plus the real axis (phase == 0 for real, ±pi for
     # negative real) and the imaginary axis (±pi/2).
@@ -533,6 +533,28 @@ defmodule Emily.CompilerEquivalenceTest do
 
       out = assert_equiv(&Nx.phase/1, [x])
       assert out.type == {:f, 32}
+    end
+
+    # A block Emily.Backend.block/4 runs through a native kernel must not
+    # lower its composed expansion: the result would silently diverge
+    # from the evaluator. QR's `:complete` mode has no IR lowering yet, so
+    # it raises (and `native_fallback: :eval` routes it to the evaluator).
+    test "a natively dispatched block with no IR lowering raises" do
+      a = et([[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]])
+
+      assert_raise ArgumentError, ~r/Nx.Block.LinAlg.QR/, fn ->
+        run(&Nx.LinAlg.qr(&1, mode: :complete), [a], @native ++ [native_fallback: :raise])
+      end
+    end
+
+    test "native_block?/1 is true only for structs Emily.Backend dispatches natively" do
+      assert Emily.Backend.native_block?(%Nx.Block.LogicalNot{})
+      assert Emily.Backend.native_block?(%Nx.Block.CumulativeSum{})
+      assert Emily.Backend.native_block?(%Emily.Fast.Block.SDPAWithSinks{})
+      assert Emily.Backend.native_block?(%Emily.Quantization.Block.QuantizedMatmul{})
+
+      refute Emily.Backend.native_block?(%Nx.Block.Phase{})
+      refute Emily.Backend.native_block?(%Nx.Block.TopK{})
     end
   end
 
