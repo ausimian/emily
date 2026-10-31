@@ -313,7 +313,7 @@ defmodule Emily.IR do
 
   alias Emily.Fast.Block, as: FB
   alias Emily.Quantization.Block, as: QB
-  alias Nx.Defn.Tree
+  alias Nx.Defn.Composite
   alias Nx.Tensor, as: T
 
   # Nx Expr op -> IR opcode. Arithmetic/bitwise cast both operands to the
@@ -400,10 +400,17 @@ defmodule Emily.IR do
   so the caller can reassemble its output container by zipping the
   program's results back in order. Captured weights / materialized
   constants are held as native tensor refs in `captures` / `consts`.
+
+  ## Options
+
+    * `:hooks` - the defn `:hooks` map. A named `io_call` with no default
+      callback and no hook here is a no-op and lowers to its data; any
+      other `io_call` raises.
   """
-  @spec lower([T.t()]) :: t()
-  def lower(output_leaves) when is_list(output_leaves) do
+  @spec lower([T.t()], keyword()) :: t()
+  def lower(output_leaves, opts \\ []) when is_list(output_leaves) do
     state = %{
+      hooks: Keyword.get(opts, :hooks, %{}),
       cache: %{},
       instrs: [],
       n_instrs: 0,
@@ -872,9 +879,9 @@ defmodule Emily.IR do
 
   # Nx.block node: args [struct, in_args, expr, callback]. Known fused
   # structs lower to their fused opcode (matching Emily.Backend.block/4,
-  # which the Evaluator dispatches through); unknown structs lower by
-  # recursing into `expr` — the pre-composed default expansion into
-  # primitives — so there is still no runtime fallback.
+  # which the Evaluator dispatches through); any other struct the backend
+  # doesn't dispatch natively lowers its `expr` — the pre-composed default
+  # expansion into primitives — so there is still no runtime fallback.
   defp lower_op(
          %T{data: %Nx.Defn.Expr{op: :block, args: [struct, in_args, expr, _cb]}} = t,
          state
@@ -1132,17 +1139,37 @@ defmodule Emily.IR do
     {{:multi_refs, refs}, state}
   end
 
-  # attach_token: sequences a token (hooks) before `expr`. With no active
-  # hook the token is a no-op, so pass through to the inner expr. Hooks
-  # would need a callback into Elixir mid-graph (program-split) — deferred.
-  defp lower_op(%T{data: %Nx.Defn.Expr{op: :attach_token, args: [token, expr]}}, state) do
-    if Tree.has_hooks?(token, %{}) do
+  # io_call: args [data, callback_spec, template, ref]. Runs a host-side
+  # callback (hook, print_value, runtime_raise) on `data`, then returns
+  # `data` unchanged. A callback would need a mid-graph call into Elixir
+  # (program-split), so raise and let the compiler fall back to the
+  # Evaluator, which runs it. A named io_call with no default callback and
+  # no entry in `:hooks` (e.g. Bumblebee generation's `:token`) is a no-op,
+  # resolved the way Nx.Defn.Evaluator does, so it lowers to its data. A
+  # container `data` is consumed through `:elem` over its flattened leaves,
+  # as the Evaluator flattens it.
+  defp lower_op(
+         %T{data: %Nx.Defn.Expr{op: :io_call, args: [data, callback_spec, template, _ref]}},
+         state
+       ) do
+    leaves = Composite.flatten_list([data])
+
+    unless io_call_callback(callback_spec, state.hooks) == nil and
+             Enum.all?(leaves, &match?(%T{data: %Nx.Defn.Expr{}}, &1)) do
       raise ArgumentError,
-            "Emily Expr compiler does not support hooks under native compilation " <>
-              "(they require a mid-graph callback into Elixir)."
+            "Emily Expr compiler does not support io_call with a callback " <>
+              "(hooks, print_value, runtime_raise) under native compilation " <>
+              "(it requires a mid-graph callback into Elixir)."
     end
 
-    lower_node(expr, state)
+    case template do
+      %T{} ->
+        lower_node(data, state)
+
+      _ ->
+        {refs, state} = Enum.map_reduce(leaves, state, &lower_node/2)
+        {{:multi_refs, refs}, state}
+    end
   end
 
   # reduce / window_reduce with a user-supplied BEAM reducer cannot be
@@ -1181,8 +1208,8 @@ defmodule Emily.IR do
       |> Enum.with_index()
       |> Map.new(fn {%T{data: %Nx.Defn.Expr{id: id}}, i} -> {id, {:input, i}} end)
 
-    cond_ir = lower_subgraph([cond], param_seed, arity)
-    body_ir = lower_subgraph(body_leaves, param_seed, arity)
+    cond_ir = lower_subgraph([cond], param_seed, arity, state.hooks)
+    body_ir = lower_subgraph(body_leaves, param_seed, arity, state.hooks)
 
     {base, state} = emit_multi(state, :while, init_refs, [[arity]], [cond_ir, body_ir], arity)
 
@@ -1377,9 +1404,7 @@ defmodule Emily.IR do
   # Cumulative families. Like Emily.Backend.block/4, the last-axis case uses
   # the native MLX `cumsum`/`cumprod`/`cummax`/`cummin` kernel; interior axes
   # (which MLX can't always factor) fall back to the block's composed
-  # expansion, bound to the real operand via the TopK-style parameter
-  # seeding (unseeded, its fresh :parameter would resolve to the outer
-  # function's input 0). Nx cumulation is always inclusive.
+  # expansion (see lower_expansion/3). Nx cumulation is always inclusive.
   defp lower_block(%mod{axis: axis, reverse: reverse}, [t], expr, out, state)
        when is_map_key(@cumulative_blocks, mod) do
     {rt, state} = lower_node(t, state)
@@ -1388,13 +1413,7 @@ defmodule Emily.IR do
       op = Map.fetch!(@cumulative_blocks, mod)
       emit_coerced(state, op, [rt], [[axis], [bool_int(reverse)]], out.type)
     else
-      seed =
-        expr
-        |> collect_block_params(%{})
-        |> Map.new(fn {id, 0} -> {id, rt} end)
-
-      state = %{state | cache: Map.merge(state.cache, seed)}
-      lower_node(expr, state)
+      lower_expansion([t], expr, state)
     end
   end
 
@@ -1421,36 +1440,6 @@ defmodule Emily.IR do
   defp lower_block(%Nx.Block.IRFFT{length: length, axis: axis}, [t], _expr, out, state) do
     {rt, state} = lower_node(t, state)
     emit_coerced(state, :irfftn, [rt], [[length], [axis]], out.type)
-  end
-
-  # Nx.top_k (Nx.Block.TopK) — a multi-output block `{values, indices}`.
-  # Emily.Backend has no `top_k` override (mx::topk yields values only, not the
-  # indices Nx's contract requires), so the evaluator computes it via the
-  # block's *default expansion*: argsort(desc) -> take_along_axis -> slice the
-  # top k. Every op in that expansion already lowers, so lower the expansion
-  # itself and hand the two leaf refs back as a projectable tuple for `:elem`
-  # (the `{:multi_refs, …}` machinery the tuple-`cond` path added). Because it
-  # IS the evaluator's expansion, the result is bit-identical.
-  defp lower_block(%Nx.Block.TopK{}, in_args, expr, _t, state) when is_tuple(expr) do
-    # `Nx.Defn.Expr.expr_block` builds the expansion against FRESH per-position
-    # `:parameter` nodes, not the real `in_args` — so lowering `expr` directly
-    # would resolve a block parameter to the OUTER function's `{:input, pos}`
-    # (a different tensor entirely). Bind them first: lower the real args, then
-    # seed the cache so each block parameter resolves to its arg's ref (the
-    # same binding `while` does via `param_seed`). Then lower the expansion's
-    # leaves — bit-identical to the evaluator, which runs the same expansion.
-    args = Enum.take_while(in_args, &(not is_list(&1)))
-    {arg_refs, state} = Enum.map_reduce(args, state, &lower_node/2)
-    leaves = Tuple.to_list(expr)
-
-    seed =
-      leaves
-      |> Enum.reduce(%{}, &collect_block_params/2)
-      |> Map.new(fn {id, pos} -> {id, Enum.at(arg_refs, pos)} end)
-
-    state = %{state | cache: Map.merge(state.cache, seed)}
-    {leaf_refs, state} = Enum.map_reduce(leaves, state, &lower_node/2)
-    {{:multi_refs, leaf_refs}, state}
   end
 
   # Nx.logical_not (Nx.Block.LogicalNot). Mirrors
@@ -1506,25 +1495,6 @@ defmodule Emily.IR do
     axes = Enum.to_list(0..(tuple_size(a.shape) - 1)//1)
     {result, state} = emit(state, :all, [close], [axes, [0]])
     coerce(result, out.type, state)
-  end
-
-  # Nx.phase (Nx.Block.Phase) := atan2(imag(t), real(t)). Backend
-  # falls through to the composed expansion (no fused kernel); the IR
-  # does the same here, bound to the real in_args via the TopK-style
-  # parameter seeding (block-local :parameter nodes are FRESH and would
-  # otherwise resolve to the outer function's input slots). All three
-  # primitives in the expansion (atan2/imag/real) already lower
-  # natively, so the result is bit-identical to the Evaluator.
-  defp lower_block(%Nx.Block.Phase{}, [t], expr, _out, state) do
-    {arg_ref, state} = lower_node(t, state)
-
-    seed =
-      expr
-      |> collect_block_params(%{})
-      |> Map.new(fn {id, 0} -> {id, arg_ref} end)
-
-    state = %{state | cache: Map.merge(state.cache, seed)}
-    lower_node(expr, state)
   end
 
   # ---- LinAlg blocks (Nx.Block.LinAlg.*) ----
@@ -1624,33 +1594,53 @@ defmodule Emily.IR do
     {{:multi_refs, [u_ref, s_ref, v_ref]}, state}
   end
 
-  # Nx.LinAlg.determinant — Backend has no fused kernel; the eager path
-  # runs the block's composed expansion (2x2 / 3x3 / NxN). The IR does
-  # the same here via TopK-style param seeding so the result is
-  # bit-identical to the evaluator.
-  defp lower_block(%Nx.Block.LinAlg.Determinant{}, [t], expr, _out, state) do
-    {arg_ref, state} = lower_node(t, state)
+  # A struct Emily.Backend.block/4 dispatches natively but that has no
+  # clause above (e.g. QR mode: :complete) raises: lowering
+  # its composed expansion would silently diverge from the Evaluator, which
+  # runs the fused / native kernel — a worse failure than a clear
+  # "unsupported". Additional fused blocks are added alongside their opcode.
+  #
+  # Every other struct (Axon activations, Nx.Block.TopK / Phase /
+  # LinAlg.Determinant, ...) lowers its composed expansion. The backend's
+  # catch-all runs that same expansion, so the result is bit-identical to
+  # the Evaluator.
+  defp lower_block(struct, in_args, expr, _t, state) do
+    if Emily.Backend.native_block?(struct) do
+      raise ArgumentError,
+            "Emily Expr compiler does not yet lower the block " <>
+              "#{inspect(struct)} (no fallback): Emily.Backend runs it through a " <>
+              "native kernel, so its composed expansion would diverge from the evaluator."
+    end
+
+    lower_expansion(in_args, expr, state)
+  end
+
+  # Lower a block's composed expansion `expr`. `Nx.Defn.Expr.block/4`
+  # builds it against FRESH per-position `:parameter` nodes, not the real
+  # `in_args` — so lowering `expr` directly would resolve a block parameter
+  # to the OUTER function's `{:input, pos}` (a different tensor entirely).
+  # Bind them first: lower the real tensor args (the trailing opts lists
+  # are static), then seed the cache so each block parameter resolves to
+  # its arg's ref (the same binding `while` does via `param_seed`). A
+  # tuple-valued expansion (e.g. Nx.Block.TopK's `{values, indices}`)
+  # hands its leaf refs back as a projectable tuple for `:elem`.
+  defp lower_expansion(in_args, expr, state) do
+    args = Enum.take_while(in_args, &(not is_list(&1)))
+    {arg_refs, state} = Enum.map_reduce(args, state, &lower_node/2)
 
     seed =
       expr
-      |> collect_block_params(%{})
-      |> Map.new(fn {id, 0} -> {id, arg_ref} end)
+      |> block_params()
+      |> Map.new(fn {id, pos} -> {id, Enum.at(arg_refs, pos)} end)
 
     state = %{state | cache: Map.merge(state.cache, seed)}
-    lower_node(expr, state)
-  end
 
-  # Any other block struct raises. Lowering the block's composed
-  # expansion would silently diverge from the Evaluator whenever
-  # Emily.Backend.block/4 dispatches that struct through a fused / native
-  # kernel (e.g. SDPAWithSinks, the Nx.Block.LinAlg.* families) — a
-  # worse failure than a clear "unsupported".
-  # Additional fused blocks are added alongside their opcode.
-  defp lower_block(struct, _in_args, _expr, _t, _state) do
-    raise ArgumentError,
-          "Emily Expr compiler does not yet lower the block " <>
-            "#{inspect(struct.__struct__)} (no fallback). Supported: RMSNorm, " <>
-            "LayerNorm, RoPE, RoPEWithFreqs, SDPA, SDPAWithMask, Einsum, QuantizedMatmul."
+    if is_tuple(expr) do
+      {leaf_refs, state} = Enum.map_reduce(Tuple.to_list(expr), state, &lower_node/2)
+      {{:multi_refs, leaf_refs}, state}
+    else
+      lower_node(expr, state)
+    end
   end
 
   # The flattened loop-carried state of a `while` arg: Nx delivers it as a
@@ -1664,8 +1654,9 @@ defmodule Emily.IR do
   # bound state rather than being treated as captures. The sub-IR carries its
   # own captures/consts (e.g. weights the body closes over) and `n_inputs`
   # = arity. Replayed by the C++ `while` arm with the current state as inputs.
-  defp lower_subgraph(output_leaves, param_seed, arity) do
+  defp lower_subgraph(output_leaves, param_seed, arity, hooks) do
     state = %{
+      hooks: hooks,
       cache: param_seed,
       instrs: [],
       n_instrs: 0,
@@ -1698,6 +1689,10 @@ defmodule Emily.IR do
     {base, %{state | instrs: [instr | state.instrs], n_instrs: state.n_instrs + arity}}
   end
 
+  # Mirrors Nx.Defn.Evaluator's resolve_io_call/2.
+  defp io_call_callback({:fn, fun}, _hooks), do: fun
+  defp io_call_callback({:named, name, callback}, hooks), do: hooks[name] || callback
+
   defp bool_int(true), do: 1
   defp bool_int(false), do: 0
 
@@ -1705,23 +1700,25 @@ defmodule Emily.IR do
 
   # Collect `{parameter_id => position}` for every block-local `:parameter`
   # reachable from `node` *in the current block scope*. Used to bind a
-  # block expansion's fresh parameters to the real in_args (see the
-  # Nx.Block.TopK / Nx.Block.LinAlg.Determinant lowerings). For nested
-  # `:block` nodes (e.g. determinant's expansion calls Nx.LinAlg.lu),
-  # walk only the in_args — which reference outer-scope tensors — and
-  # NOT the nested `expr`, whose fresh inner block params live in a
-  # different scope and would otherwise leak in as spurious positions.
-  defp collect_block_params(%T{data: %Nx.Defn.Expr{op: :parameter, id: id, args: [pos]}}, acc),
-    do: Map.put_new(acc, id, pos)
+  # block expansion's fresh parameters to the real in_args (see
+  # lower_expansion/3). For nested `:block` nodes (e.g. determinant's
+  # expansion calls Nx.LinAlg.lu), walk only the in_args — which reference
+  # outer-scope tensors — and NOT the nested `expr`, whose fresh inner
+  # block params live in a different scope and would otherwise leak in as
+  # spurious positions. A nested `while` is scoped the same way: its
+  # loop-carried `:parameter`s belong to the loop, so walk only its
+  # initial state. Each Expr id is visited once, so a shared subtree in a
+  # large expansion isn't re-walked along every path to it.
+  defp block_params(node) do
+    {params, _seen} = collect_block_params(node, {%{}, MapSet.new()})
+    params
+  end
 
-  defp collect_block_params(
-         %T{data: %Nx.Defn.Expr{op: :block, args: [_struct, in_args, _expr, _cb]}},
-         acc
-       ),
-       do: Enum.reduce(in_args, acc, &collect_block_params/2)
-
-  defp collect_block_params(%T{data: %Nx.Defn.Expr{args: args}}, acc),
-    do: Enum.reduce(args, acc, &collect_block_params/2)
+  defp collect_block_params(%T{data: %Nx.Defn.Expr{id: id} = expr}, {params, seen} = acc) do
+    if MapSet.member?(seen, id),
+      do: acc,
+      else: collect_expr_params(expr, {params, MapSet.put(seen, id)})
+  end
 
   defp collect_block_params(list, acc) when is_list(list),
     do: Enum.reduce(list, acc, &collect_block_params/2)
@@ -1730,6 +1727,18 @@ defmodule Emily.IR do
     do: Enum.reduce(Tuple.to_list(tuple), acc, &collect_block_params/2)
 
   defp collect_block_params(_other, acc), do: acc
+
+  defp collect_expr_params(%Nx.Defn.Expr{op: :parameter, id: id, args: [pos]}, {params, seen}),
+    do: {Map.put_new(params, id, pos), seen}
+
+  defp collect_expr_params(%Nx.Defn.Expr{op: :block, args: [_struct, in_args, _expr, _cb]}, acc),
+    do: collect_block_params(in_args, acc)
+
+  defp collect_expr_params(%Nx.Defn.Expr{op: :while, args: [initial | _]}, acc),
+    do: collect_block_params(initial, acc)
+
+  defp collect_expr_params(%Nx.Defn.Expr{args: args}, acc),
+    do: collect_block_params(args, acc)
 
   defp float_like?({kind, _}) when kind in [:f, :bf, :c], do: true
   defp float_like?(_), do: false

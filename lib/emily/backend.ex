@@ -1679,6 +1679,50 @@ defmodule Emily.Backend do
 
   alias Emily.Fast.Block, as: FB
 
+  # Every struct with a `block/4` clause below — keep in lockstep with
+  # them. `Emily.IR` lowers the composed expansion of any block struct
+  # *not* listed here (the same expansion the catch-all runs), and raises
+  # for a listed one it has no fused lowering for, so a missing entry
+  # makes native compilation silently diverge from the Evaluator.
+  @native_blocks [
+    Nx.Block.LogicalNot,
+    Nx.Block.AllClose,
+    Nx.Block.Take,
+    Nx.Block.TakeAlongAxis,
+    Nx.Block.FFT2,
+    Nx.Block.IFFT2,
+    Nx.Block.RFFT,
+    Nx.Block.IRFFT,
+    Nx.Block.LinAlg.LU,
+    Nx.Block.LinAlg.SVD,
+    Nx.Block.LinAlg.QR,
+    Nx.Block.LinAlg.Cholesky,
+    Nx.Block.LinAlg.Eigh,
+    Nx.Block.LinAlg.Solve,
+    Nx.Block.CumulativeSum,
+    Nx.Block.CumulativeProduct,
+    Nx.Block.CumulativeMin,
+    Nx.Block.CumulativeMax,
+    FB.RMSNorm,
+    FB.LayerNorm,
+    FB.RoPE,
+    FB.RoPEWithFreqs,
+    FB.SDPA,
+    FB.SDPAWithSinks,
+    FB.SDPAWithMask,
+    FB.SDPAWithMaskAndSinks,
+    FB.Einsum,
+    Emily.Quantization.Block.QuantizedMatmul
+  ]
+
+  @doc false
+  # Whether `block/4` may dispatch `struct` to a native kernel rather than
+  # the catch-all's composed fallback. The cumulative blocks count even
+  # though an interior axis falls back: the answer depends on the operand
+  # shape, not just the struct.
+  @spec native_block?(struct()) :: boolean()
+  def native_block?(%mod{}), do: mod in @native_blocks
+
   @impl true
   def block(struct, output, args, fun)
 

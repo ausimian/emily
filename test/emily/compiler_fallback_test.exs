@@ -88,6 +88,82 @@ defmodule Emily.CompilerFallbackTest do
     end
   end
 
+  describe "io_call" do
+    defn(printed(x), do: x |> Nx.multiply(2.0) |> print_value() |> Nx.add(1.0))
+
+    # A named io_call with no default callback is a no-op unless a hook is
+    # registered under its name at JIT time (Bumblebee's `:token` is one).
+    defn(named_io(x), do: x |> Nx.multiply(2.0) |> io_call(:cm7_hook) |> Nx.add(1.0))
+
+    defn named_io_container(x) do
+      {a, b} = io_call({x, Nx.multiply(x, 2.0)}, :cm7_hook)
+      Nx.add(a, b)
+    end
+
+    test "print_value falls back to the evaluator, which runs the callback" do
+      ref = make_ref()
+      attach([:emily, :compiler, :fallback], ref)
+      x = t([1.0, 2.0])
+
+      {out, printed} =
+        ExUnit.CaptureIO.with_io(fn ->
+          Nx.Defn.jit(&printed/1, compiler: Emily.Compiler, native: true, native_fallback: :eval).(
+            x
+          )
+        end)
+
+      assert_receive {^ref, :event, %{count: 1}, %{reason: reason}}
+      assert reason =~ "io_call"
+      assert printed =~ "[2.0, 4.0]"
+      assert Nx.to_flat_list(out) == [3.0, 5.0]
+    end
+
+    test "print_value raises under native_fallback: :raise" do
+      assert_raise ArgumentError, ~r/io_call/, fn ->
+        Nx.Defn.jit(&printed/1, compiler: Emily.Compiler, native: true, native_fallback: :raise).(
+          t([1.0])
+        )
+      end
+    end
+
+    test "a named io_call with no hook registered compiles native" do
+      x = t([1.0, 2.0])
+      opts = [compiler: Emily.Compiler, native: true, native_fallback: :raise]
+
+      for fun <- [&named_io/1, &named_io_container/1] do
+        out = Nx.Defn.jit(fun, opts).(x)
+        eval = Nx.Defn.jit(fun, compiler: Emily.Compiler).(x)
+        assert Nx.to_binary(out) == Nx.to_binary(eval)
+      end
+    end
+
+    test "a named io_call with a hook registered falls back and runs the hook" do
+      pid = self()
+      hooks = %{cm7_hook: fn value -> send(pid, {:hooked, Nx.to_flat_list(value)}) end}
+      x = t([1.0, 2.0])
+
+      out =
+        Nx.Defn.jit(&named_io/1,
+          compiler: Emily.Compiler,
+          native: true,
+          native_fallback: :eval,
+          hooks: hooks
+        ).(x)
+
+      assert_receive {:hooked, [2.0, 4.0]}
+      assert Nx.to_flat_list(out) == [3.0, 5.0]
+
+      assert_raise ArgumentError, ~r/io_call/, fn ->
+        Nx.Defn.jit(&named_io/1,
+          compiler: Emily.Compiler,
+          native: true,
+          native_fallback: :raise,
+          hooks: hooks
+        ).(x)
+      end
+    end
+  end
+
   describe "native_fallback: :raise (strict, the conformance-gate mode)" do
     test "an unsupported op raises rather than falling back" do
       assert_raise ArgumentError, ~r/reduce/, fn ->
