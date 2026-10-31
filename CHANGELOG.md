@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 <!-- %% CHANGELOG_ENTRIES %% -->
 
+## 1.3.1 - 2026-10-31
+
+### Fixed
+
+- Installing emily from Livebook (`Mix.install`) no longer crashes while
+  downloading the precompiled NIF with "Can't set long node name!". The
+  download ran on a named peer VM, which fails to boot under a
+  longnames-distributed parent when the hostname is not fully qualified.
+  The peer now starts without distribution.
+
 ## 1.3.0 - 2026-10-26
 
 ### Added
